@@ -1,8 +1,0 @@
-﻿{
-  "buildCommand": "npx expo export -p web",
-  "outputDirectory": "dist",
-  "installCommand": "npm ci --no-audit --no-fund",
-  "rewrites": [
-    { "source": "/(.*)", "destination": "/index.html" }
-  ]
-}
