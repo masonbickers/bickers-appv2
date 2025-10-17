@@ -1,7 +1,7 @@
 "use client";
 
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { collection, doc, getDoc, getDocs, setDoc } from "firebase/firestore";
+import { collection, doc, getDoc, getDocs, serverTimestamp, setDoc } from "firebase/firestore";
 import { useEffect, useState } from "react";
 import {
   Alert,
@@ -14,10 +14,10 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
-  View,
+  View
 } from "react-native";
 import Icon from "react-native-vector-icons/Feather";
-import { db } from "../../firebaseConfig";
+import { db } from "../../../firebaseConfig";
 
 const days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 
@@ -75,10 +75,19 @@ export default function WeekTimesheet() {
   const router = useRouter();
   const employee = global.employee || { userCode: "TEMP", name: "Unknown" };
 
+  const DEFAULT_YARD_START = "08:00";
+  const DEFAULT_YARD_END = "16:30";
+
   const [timesheet, setTimesheet] = useState({
     employeeCode: employee.userCode,
     weekStart: id,
-    days: days.reduce((acc, d) => ({ ...acc, [d]: { mode: "yard", dayNotes: "" } }), {}),
+    days: days.reduce((acc, d) => {
+      const isWeekend = d === "Saturday" || d === "Sunday";
+      acc[d] = isWeekend
+        ? { mode: "off", dayNotes: "" } // weekends default OFF
+        : { mode: "yard", leaveTime: DEFAULT_YARD_START, arriveBack: DEFAULT_YARD_END, dayNotes: "" };
+      return acc;
+    }, {}),
     notes: "",
     submitted: false,
   });
@@ -138,7 +147,7 @@ export default function WeekTimesheet() {
         function getDayName(dateStr) {
           const d = new Date(dateStr);
           const idx = d.getDay();
-          return ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"][idx];
+          return ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][idx];
         }
 
         // Map jobs
@@ -151,16 +160,15 @@ export default function WeekTimesheet() {
             })
             .filter(Boolean);
 
-          if (codes.includes(employee.userCode)) {
-            (job.bookingDates || []).forEach((date) => {
-              if (weekDates.includes(date)) {
-                const dayName = getDayName(date);
-                if (jobMap[dayName]) {
-                  jobMap[dayName].push(job);
-                }
-              }
-            });
-          }
+        if (codes.includes(employee.userCode)) {
+          const dates = Array.isArray(job.bookingDates) ? job.bookingDates : [];
+          dates.forEach((date) => {
+            if (weekDates.includes(date)) {
+              const dayName = getDayName(date);
+              if (jobMap[dayName]) jobMap[dayName].push(job);
+            }
+          });
+        }
         });
 
         // Map holidays
@@ -190,12 +198,113 @@ export default function WeekTimesheet() {
     })();
   }, [id, employee]);
 
-  // Save
+  function withDefaultYardTimes(ts) {
+    const weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
+    const next = { ...ts, days: { ...ts.days } };
+
+    weekdays.forEach((d) => {
+      const e = { ...(next.days?.[d] || {}) };
+      const mode = String(e.mode || "yard").toLowerCase();
+
+      if (mode === "yard") {
+        if (!e.leaveTime) e.leaveTime = DEFAULT_YARD_START;
+        if (!e.arriveBack && !e.arriveTime) e.arriveBack = DEFAULT_YARD_END;
+      }
+      next.days[d] = e;
+    });
+
+    return next;
+  }
+
+  // Build a snapshot for quick queries and summaries
+  function buildJobSnapshot(jobsByDayMap) {
+    const byDay = Object.fromEntries(
+      days.map((d) => [
+        d,
+        (jobsByDayMap[d] || []).map((j) => ({
+          bookingId: j.id,
+          jobNumber: j.jobNumber || "",
+          client: j.client || "",
+          location: j.location || "",
+        })),
+      ])
+    );
+
+    const flat = days.flatMap((d) => (byDay[d] || []).map((j) => ({ dayName: d, ...j })));
+
+    const bookingIds = Array.from(new Set(flat.map((x) => x.bookingId)));
+    const jobNumbers = Array.from(new Set(flat.map((x) => x.jobNumber).filter(Boolean)));
+    const bookingIdsByDay = Object.fromEntries(days.map((d) => [d, (byDay[d] || []).map((x) => x.bookingId)]));
+    const jobNumbersByDay = Object.fromEntries(
+      days.map((d) => [d, (byDay[d] || []).map((x) => x.jobNumber).filter(Boolean)])
+    );
+
+    return { byDay, flat, bookingIds, jobNumbers, bookingIdsByDay, jobNumbersByDay };
+  }
+
+  // Imprint jobs into days and set a primary bookingId/jobNumber + dateISO
+  function imprintJobsIntoDays(ts, jobsByDayMap, weekStartISO) {
+    const copy = { ...ts, days: { ...ts.days } };
+
+    const start = new Date(`${weekStartISO}T00:00:00`);
+    const isoByDay = {};
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(start);
+      d.setDate(start.getDate() + i);
+      d.setHours(0, 0, 0, 0);
+      isoByDay[days[i]] = d.toISOString().slice(0, 10);
+    }
+
+    for (const day of days) {
+      const dayEntry = { ...(copy.days[day] || {}) };
+      const jobs = (jobsByDayMap[day] || []).map((j) => ({
+        bookingId: j.id,
+        jobNumber: j.jobNumber || "",
+        client: j.client || "",
+        location: j.location || "",
+      }));
+
+      dayEntry.jobs = jobs;
+      dayEntry.hasJob = jobs.length > 0;
+      dayEntry.bookingId = jobs[0]?.bookingId || null;
+      dayEntry.jobNumber = jobs[0]?.jobNumber || null;
+      dayEntry.dateISO = isoByDay[day];
+
+      copy.days[day] = dayEntry;
+    }
+    return copy;
+  }
+
+  // Save (draft)
   const saveTimesheet = async () => {
     try {
       const ref = doc(db, "timesheets", `${employee.userCode}_${id}`);
-      await setDoc(ref, timesheet);
-      Alert.alert("✅ Saved", "Your timesheet has been saved.");
+      let ts = withDefaultYardTimes(timesheet);
+
+      // Imprint per-day primary bookingId/jobNumber + dateISO
+      ts = imprintJobsIntoDays(ts, jobsByDay, id);
+
+      // Build snapshot arrays (bookingIds, jobNumbers, etc.)
+      const jobSnapshot = buildJobSnapshot(jobsByDay);
+
+      // Optional: set top-level single job if week is single-job
+      const singleJobId = jobSnapshot.bookingIds.length === 1 ? jobSnapshot.bookingIds[0] : null;
+      const singleJobNumber = jobSnapshot.jobNumbers.length === 1 ? jobSnapshot.jobNumbers[0] : null;
+
+      const payload = {
+        ...ts,
+        weekStart: id,
+        employeeCode: employee.userCode,
+        employeeName: employee.name || null,
+        jobSnapshot,
+        jobId: singleJobId,
+        jobNumber: singleJobNumber,
+        updatedAt: serverTimestamp(),
+        submitted: false,
+      };
+
+      await setDoc(ref, payload, { merge: true });
+      Alert.alert("✅ Saved", "Your timesheet has been saved as a draft.");
       router.back();
     } catch (err) {
       console.error(err);
@@ -204,18 +313,37 @@ export default function WeekTimesheet() {
   };
 
   // Submit (final)
-const submitTimesheet = async () => {
-  try {
-    const ref = doc(db, "timesheets", `${employee.userCode}_${id}`);
-    await setDoc(ref, { ...timesheet, submitted: true });
-    Alert.alert("📤 Submitted", "Your timesheet has been submitted.");
-    router.back();
-  } catch (err) {
-    console.error(err);
-    Alert.alert("❌ Error", "Could not submit timesheet");
-  }
-};
+  const submitTimesheet = async () => {
+    try {
+      const ref = doc(db, "timesheets", `${employee.userCode}_${id}`);
+      let ts = withDefaultYardTimes(timesheet);
+      ts = imprintJobsIntoDays(ts, jobsByDay, id);
+      const jobSnapshot = buildJobSnapshot(jobsByDay);
 
+      const singleJobId = jobSnapshot.bookingIds.length === 1 ? jobSnapshot.bookingIds[0] : null;
+      const singleJobNumber = jobSnapshot.jobNumbers.length === 1 ? jobSnapshot.jobNumbers[0] : null;
+
+      const payload = {
+        ...ts,
+        weekStart: id,
+        employeeCode: employee.userCode,
+        employeeName: employee.name || null,
+        jobSnapshot,
+        jobId: singleJobId,
+        jobNumber: singleJobNumber,
+        updatedAt: serverTimestamp(),
+        submitted: true,
+        submittedAt: serverTimestamp(),
+      };
+
+      await setDoc(ref, payload, { merge: true });
+      Alert.alert("📤 Submitted", "Your timesheet has been submitted.");
+      router.back();
+    } catch (err) {
+      console.error(err);
+      Alert.alert("❌ Error", "Could not submit timesheet");
+    }
+  };
 
   // Update helper
   const updateDay = (day, field, value) => {
@@ -241,7 +369,7 @@ const submitTimesheet = async () => {
 
   return (
     <SafeAreaView style={styles.container}>
-      <ScrollView contentContainerStyle={{ paddingBottom: 70 }}>
+      <ScrollView contentContainerStyle={{ paddingBottom: 80 }}>
         {/* 🔙 Back */}
         <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
           <Icon name="arrow-left" size={20} color="#fff" />
@@ -249,6 +377,33 @@ const submitTimesheet = async () => {
         </TouchableOpacity>
 
         <Text style={styles.title}>📝 Timesheet: Week of {id}</Text>
+
+        {/* Status pill + hint (purely visual) */}
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 }}>
+          <View
+            style={[
+              { paddingVertical: 4, paddingHorizontal: 10, borderRadius: 999, borderWidth: 1 },
+              timesheet.submitted
+                ? { backgroundColor: "#bbf7d0", borderColor: "#86efac" }
+                : { backgroundColor: "#fed7aa", borderColor: "#fdba74" },
+            ]}
+          >
+            <Text
+              style={{
+                color: timesheet.submitted ? "#052e16" : "#7c2d12",
+                fontWeight: "800",
+                fontSize: 12,
+              }}
+            >
+              {timesheet.submitted ? "Submitted" : "Draft (not submitted)"}
+            </Text>
+          </View>
+          {!timesheet.submitted && (
+            <Text style={{ color: "#9ca3af", fontSize: 12 }}>
+              Save keeps a draft. Submit sends it for approval.
+            </Text>
+          )}
+        </View>
 
         {days.map((day) => {
           const entry = timesheet.days[day] || { mode: "yard", dayNotes: "" };
@@ -305,17 +460,15 @@ const submitTimesheet = async () => {
                         options={timeOptions}
                       />
                       {/* Notes for the day */}
-<TextInput
-  placeholder="Notes for this day"
-  placeholderTextColor="#777"
-  style={styles.dayInput}
-  multiline
-  value={entry.dayNotes || ""}
-  onChangeText={(t) => updateDay(day, "dayNotes", t)}
-/>
-
+                      <TextInput
+                        placeholder="Notes for this day"
+                        placeholderTextColor="#777"
+                        style={styles.dayInput}
+                        multiline
+                        value={entry.dayNotes || ""}
+                        onChangeText={(t) => updateDay(day, "dayNotes", t)}
+                      />
                     </View>
-                    
                   )}
 
                   {entry.mode === "onset" && (
@@ -366,17 +519,14 @@ const submitTimesheet = async () => {
                         />
                       </View>
                       {/* Notes for the day */}
-<TextInput
-  placeholder="Notes for this day"
-  placeholderTextColor="#777"
-  style={styles.dayInput}
-  multiline
-  value={entry.dayNotes || ""}
-  onChangeText={(t) => updateDay(day, "dayNotes", t)}
-/>
-
-
-
+                      <TextInput
+                        placeholder="Notes for this day"
+                        placeholderTextColor="#777"
+                        style={styles.dayInput}
+                        multiline
+                        value={entry.dayNotes || ""}
+                        onChangeText={(t) => updateDay(day, "dayNotes", t)}
+                      />
                     </View>
                   )}
                 </>
@@ -385,21 +535,21 @@ const submitTimesheet = async () => {
               ) : (
                 <>
                   {/* Yard default */}
-                <Text style={{ color: "#ccc", marginBottom: 6, fontWeight: "bold" }}>Yard Day</Text>
-                <View style={styles.onSetBlock}>
-                  <TimeDropdown
-                    label="Start Time"
-                    value={entry.leaveTime || "08:00"}
-                    onSelect={(t) => updateDay(day, "leaveTime", t)}
-                    options={timeOptions}
-                  />
-                  <TimeDropdown
-                    label="Finish Time"
-                    value={entry.arriveBack || "16:30"}
-                    onSelect={(t) => updateDay(day, "arriveBack", t)}
-                    options={timeOptions}
-                  />
-                </View>
+                  <Text style={{ color: "#ccc", marginBottom: 6, fontWeight: "bold" }}>Yard Day</Text>
+                  <View style={styles.onSetBlock}>
+                    <TimeDropdown
+                      label="Start Time"
+                      value={entry.leaveTime || "08:00"}
+                      onSelect={(t) => updateDay(day, "leaveTime", t)}
+                      options={timeOptions}
+                    />
+                    <TimeDropdown
+                      label="Finish Time"
+                      value={entry.arriveBack || "16:30"}
+                      onSelect={(t) => updateDay(day, "arriveBack", t)}
+                      options={timeOptions}
+                    />
+                  </View>
 
                   <TextInput
                     placeholder="Notes for this day"
@@ -423,22 +573,31 @@ const submitTimesheet = async () => {
           value={timesheet.notes}
           onChangeText={(t) => setTimesheet((prev) => ({ ...prev, notes: t }))}
         />
+
         <View style={{ flexDirection: "row", justifyContent: "space-between", margin: 10 }}>
-  <TouchableOpacity
-    style={[styles.actionButton, { backgroundColor: "#666" }]}
-    onPress={saveTimesheet}
-  >
-    <Text style={styles.actionButtonText}>💾 Save</Text>
-  </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.actionButton, { backgroundColor: "#666" }]}
+            onPress={saveTimesheet}
+          >
+            <Text style={styles.actionButtonText}>💾 Save Draft</Text>
+          </TouchableOpacity>
 
-  <TouchableOpacity
-    style={[styles.actionButton, { backgroundColor: "#22c55e" }]}
-    onPress={submitTimesheet}
-  >
-    <Text style={styles.actionButtonText}>📤 Submit</Text>
-  </TouchableOpacity>
-</View>
-
+          <TouchableOpacity
+            style={[styles.actionButton, { backgroundColor: "#22c55e" }]}
+            onPress={() =>
+              Alert.alert(
+                "Submit timesheet?",
+                "After submission your manager will receive it. You can still re-open and update if needed.",
+                [
+                  { text: "Cancel", style: "cancel" },
+                  { text: "Submit", style: "default", onPress: submitTimesheet },
+                ]
+              )
+            }
+          >
+            <Text style={styles.actionButtonText}>📤 Submit for Approval</Text>
+          </TouchableOpacity>
+        </View>
       </ScrollView>
     </SafeAreaView>
   );
@@ -448,12 +607,14 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#000", padding: 6 },
   backBtn: { flexDirection: "row", alignItems: "center", marginBottom: 10 },
   backText: { color: "#fff", fontSize: 15, marginLeft: 6 },
-  title: { fontSize: 16, fontWeight: "bold", color: "#fff", marginBottom: 8 },
+  title: { fontSize: 16, fontWeight: "bold", color: "#fff", marginBottom: 6 },
   dayBlock: {
     backgroundColor: "#1a1a1a",
-    padding: 6,
-    borderRadius: 6,
-    marginBottom: 8,
+    padding: 8,
+    borderRadius: 8,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: "#262626",
   },
   dayTitle: { fontSize: 14, fontWeight: "bold", color: "#fff", marginBottom: 4 },
   holidayBlock: {
@@ -461,57 +622,58 @@ const styles = StyleSheet.create({
     backgroundColor: "#331111",
     borderRadius: 6,
     marginTop: 4,
+    borderWidth: 1,
+    borderColor: "#4b1d1d",
   },
-  modeRow: { flexDirection: "row", marginBottom: 6 },
+  modeRow: { flexDirection: "row", marginBottom: 6, gap: 6 },
   modeBtn: {
     flex: 1,
     backgroundColor: "#333",
-    padding: 6,
-    borderRadius: 4,
-    marginRight: 4,
+    padding: 8,
+    borderRadius: 6,
     alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#3a3a3a",
   },
-  modeBtnActive: { backgroundColor: "#22c55e" },
-  modeText: { color: "#fff", fontSize: 13 },
+  modeBtnActive: { backgroundColor: "#22c55e", borderColor: "#22c55e" },
+  modeText: { color: "#fff", fontSize: 13, fontWeight: "700" },
   onSetBlock: { marginTop: 4 },
   label: { color: "#ccc", fontSize: 12, marginBottom: 2 },
   dropdownBox: {
     backgroundColor: "#333",
-    padding: 8,
-    borderRadius: 6,
-    marginBottom: 4,
+    padding: 10,
+    borderRadius: 8,
+    marginBottom: 6,
+    borderWidth: 1,
+    borderColor: "#3a3a3a",
   },
   dayInput: {
     backgroundColor: "#222",
     color: "#fff",
-    padding: 6,
-    borderRadius: 6,
-    marginTop: 4,
+    padding: 8,
+    borderRadius: 8,
+    marginTop: 6,
     fontSize: 12,
+    borderWidth: 1,
+    borderColor: "#333",
   },
   input: {
-    backgroundColor: "#333",
+    backgroundColor: "#1f1f1f",
     color: "#fff",
-    padding: 8,
-    borderRadius: 6,
+    padding: 10,
+    borderRadius: 8,
     margin: 8,
     fontSize: 13,
     height: 55,
+    borderWidth: 1,
+    borderColor: "#2b2b2b",
   },
   toggleRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    marginVertical: 4,
+    marginVertical: 6,
   },
-  saveButton: {
-    backgroundColor: "#22c55e",
-    alignItems: "center",
-    padding: 12,
-    borderRadius: 6,
-    margin: 10,
-  },
-  saveButtonText: { color: "#000", fontWeight: "bold", fontSize: 15 },
   modalOverlay: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.6)",
@@ -537,19 +699,20 @@ const styles = StyleSheet.create({
     padding: 8,
     backgroundColor: "#111",
     borderRadius: 6,
-    marginBottom: 4,
+    marginBottom: 6,
+    borderWidth: 1,
+    borderColor: "#222",
   },
   actionButton: {
-  flex: 1,
-  alignItems: "center",
-  padding: 12,
-  borderRadius: 6,
-  marginHorizontal: 5,
-},
-actionButtonText: {
-  color: "#000",
-  fontWeight: "bold",
-  fontSize: 15,
-},
-
+    flex: 1,
+    alignItems: "center",
+    padding: 12,
+    borderRadius: 8,
+    marginHorizontal: 5,
+  },
+  actionButtonText: {
+    color: "#000",
+    fontWeight: "bold",
+    fontSize: 15,
+  },
 });

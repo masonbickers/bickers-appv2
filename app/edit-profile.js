@@ -2,16 +2,16 @@ import { useRouter } from 'expo-router';
 import { doc, getDoc } from 'firebase/firestore';
 import { useEffect, useState } from 'react';
 import {
-    SafeAreaView,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
+  SafeAreaView,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
 } from 'react-native';
 import Icon from 'react-native-vector-icons/Feather';
+import { auth, db } from '../firebaseConfig';
 import Footer from './components/footer';
-import { auth, db } from './firebaseConfig';
 
 export default function ProfilePage() {
   const router = useRouter();

@@ -1,17 +1,16 @@
 import { useRouter } from 'expo-router';
 import { useState } from 'react';
 import {
-    SafeAreaView,
-    ScrollView,
-    StyleSheet,
-    Switch,
-    Text,
-    TouchableOpacity,
-    View,
+  SafeAreaView,
+  ScrollView,
+  StyleSheet,
+  Switch,
+  Text,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import Icon from 'react-native-vector-icons/Feather';
-import { useColorScheme } from '../hooks/useColorScheme'; // ✅ custom hook
-import Footer from './components/footer';
+import { useColorScheme } from '../hooks/useColorScheme'; // custom hook
 
 export default function SettingsPage() {
   const router = useRouter();
@@ -32,7 +31,7 @@ export default function SettingsPage() {
       group: 'App',
       items: [
         { label: 'Notifications', icon: 'bell', type: 'toggle' },
-        { label: 'Dark Mode', icon: 'moon', type: 'theme' }, // ✅ theme toggle
+        { label: 'Dark Mode', icon: 'moon', type: 'theme' }, // theme toggle
       ],
     },
     {
@@ -51,15 +50,7 @@ export default function SettingsPage() {
         { backgroundColor: isDark ? '#000' : '#fff' },
       ]}
     >
-      {/* 🔙 Back Button */}
-      <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
-        <Icon name="arrow-left" size={22} color={isDark ? '#fff' : '#000'} />
-        <Text style={[styles.backText, { color: isDark ? '#fff' : '#000' }]}>
-          Back
-        </Text>
-      </TouchableOpacity>
-
-      <ScrollView contentContainerStyle={styles.scrollContent}>
+      <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
         <Text style={[styles.title, { color: isDark ? '#fff' : '#000' }]}>
           Settings
         </Text>
@@ -74,12 +65,16 @@ export default function SettingsPage() {
             >
               {section.group}
             </Text>
+
             {section.items.map((item, index) => (
               <View
                 key={index}
                 style={[
                   styles.item,
-                  { backgroundColor: isDark ? '#1a1a1a' : '#f2f2f2' },
+                  {
+                    backgroundColor: isDark ? '#1a1a1a' : '#f2f2f2',
+                    borderColor: isDark ? '#2a2a2a' : '#e5e5e5',
+                  },
                 ]}
               >
                 <View style={styles.itemLeft}>
@@ -113,30 +108,24 @@ export default function SettingsPage() {
                     thumbColor={isDark ? '#fff' : '#888'}
                   />
                 ) : (
-                  <TouchableOpacity onPress={item.onPress}>
-                    <Icon name="chevron-right" size={20} color="#888" />
+                  <TouchableOpacity onPress={item.onPress} accessibilityRole="button">
+                    <Icon name="chevron-right" size={20} color={isDark ? '#888' : '#777'} />
                   </TouchableOpacity>
                 )}
               </View>
             ))}
           </View>
         ))}
-      </ScrollView>
 
-      <Footer />
+        <View style={{ height: 24 }} />
+      </ScrollView>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1 },
-  backButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 12,
-  },
-  backText: { fontSize: 16, marginLeft: 6 },
-  scrollContent: { paddingHorizontal: 16, paddingBottom: 40 },
+  scrollContent: { paddingHorizontal: 16, paddingBottom: 24, paddingTop: 12 },
   title: {
     fontSize: 22,
     fontWeight: '700',
@@ -147,11 +136,12 @@ const styles = StyleSheet.create({
   sectionTitle: { fontSize: 14, fontWeight: 'bold', marginBottom: 10 },
   item: {
     padding: 14,
-    borderRadius: 8,
+    borderRadius: 10,
     marginBottom: 10,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    borderWidth: 1,
   },
   itemLeft: { flexDirection: 'row', alignItems: 'center' },
   itemText: { fontSize: 16, marginLeft: 10 },

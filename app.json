@@ -8,14 +8,19 @@
     "scheme": "bickersapp",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
+
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.bickers.bickersapp",
       "buildNumber": "1",
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSCameraUsageDescription": "Allow camera to take recce photos.",
+        "NSPhotoLibraryUsageDescription": "Allow access to add recce photos from your library.",
+        "NSPhotoLibraryAddUsageDescription": "Allow saving processed recce photos to your library."
       }
     },
+
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
@@ -23,8 +28,14 @@
       },
       "edgeToEdgeEnabled": true,
       "package": "com.bickers.bickersapp",
-      "versionCode": 1
+      "versionCode": 1,
+      "permissions": [
+        "CAMERA",
+        "READ_MEDIA_IMAGES",
+        "READ_EXTERNAL_STORAGE"
+      ]
     },
+
     "web": {
       "bundler": "metro",
       "output": "static",
@@ -39,9 +50,11 @@
         "description": "Bickers Action bookings & operations."
       }
     },
+
     "runtimeVersion": {
       "policy": "appVersion"
     },
+
     "plugins": [
       "expo-router",
       [
@@ -54,11 +67,20 @@
         }
       ],
       "expo-font",
-      "expo-web-browser"
+      "expo-web-browser",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow Bickers to access your photos.",
+          "cameraPermission": "Allow Bickers to access your camera."
+        }
+      ]
     ],
+
     "experiments": {
       "typedRoutes": true
     },
+
     "extra": {
       "router": {},
       "eas": {
