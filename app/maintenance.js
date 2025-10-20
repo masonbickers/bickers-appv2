@@ -1,10 +1,13 @@
+// VehicleIssuesPage.js
 import { Picker } from '@react-native-picker/picker';
 import { addDoc, collection, getDocs } from 'firebase/firestore';
 import { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Modal,
   Platform,
+  Pressable,
   SafeAreaView,
   ScrollView,
   StyleSheet,
@@ -17,6 +20,80 @@ import Icon from 'react-native-vector-icons/Feather';
 import { db } from '../firebaseConfig';
 
 const MAX_CHARS = 600;
+
+/* ------------------------- Mobile-friendly Select ------------------------- */
+// Android: native <Picker mode="dialog">
+// iOS: tap field -> modal bottom sheet with wheel + Done
+function Select({ value, onChange, items, placeholder = 'Select…', disabled, testID }) {
+  const [open, setOpen] = useState(false);
+  const selectedLabel =
+    items.find((i) => i.value === value)?.label || '';
+
+  if (Platform.OS === 'android') {
+    return (
+      <View style={styles.pickerShellAndroid}>
+        <Picker
+          mode="dialog"
+          enabled={!disabled}
+          selectedValue={value}
+          onValueChange={onChange}
+          dropdownIconColor="#fff"
+          style={{ color: '#fff', height: 44, width: '100%' }}
+          testID={testID}
+        >
+          <Picker.Item label={`-- ${placeholder} --`} value="" />
+          {items.map((i) => (
+            <Picker.Item key={i.value} label={i.label} value={i.value} />
+          ))}
+        </Picker>
+      </View>
+    );
+  }
+
+  // iOS
+  return (
+    <>
+      <Pressable
+        onPress={() => !disabled && setOpen(true)}
+        style={[styles.selectField, disabled && { opacity: 0.6 }]}
+        accessibilityRole="button"
+        testID={testID}
+      >
+        <Text style={[styles.selectFieldText, !selectedLabel && { color: '#8b8b8b' }]}>
+          {selectedLabel || `-- ${placeholder} --`}
+        </Text>
+      </Pressable>
+
+      <Modal
+        visible={open}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setOpen(false)}
+      >
+        <Pressable style={styles.modalBackdrop} onPress={() => setOpen(false)} />
+        <View style={styles.sheet}>
+          <View style={styles.sheetToolbar}>
+            <TouchableOpacity onPress={() => setOpen(false)}>
+              <Text style={styles.doneText}>Done</Text>
+            </TouchableOpacity>
+          </View>
+          <Picker
+            selectedValue={value}
+            onValueChange={(v) => onChange(v)}
+            style={{ width: '100%', height: 216, backgroundColor: '#111' }}
+            itemStyle={{ color: '#fff' }}
+          >
+            <Picker.Item label={`-- ${placeholder} --`} value="" />
+            {items.map((i) => (
+              <Picker.Item key={i.value} label={i.label} value={i.value} />
+            ))}
+          </Picker>
+        </View>
+      </Modal>
+    </>
+  );
+}
+/* ------------------------------------------------------------------------- */
 
 // normalize category
 const normalizeCategory = (cat) => {
@@ -136,28 +213,14 @@ export default function VehicleIssuesPage() {
                   <Text style={styles.cardHeaderText}>Category</Text>
                 </View>
 
-                <View
-                  style={[
-                    styles.pickerShell,
-                    Platform.OS === 'android' && { overflow: 'visible' }, // <-- important
-                  ]}
-                >
-                  <Picker
-                    // Use dialog on Android to avoid clipping/overlap issues
-                    mode={Platform.OS === 'android' ? 'dialog' : 'dropdown'}
-                    selectedValue={selectedCategory}
-                    onValueChange={(value) => setSelectedCategory(value)}
-                    dropdownIconColor={Platform.OS === 'android' ? '#fff' : undefined}
-                    style={styles.picker}
-                    itemStyle={Platform.OS === 'ios' ? styles.pickerItemIOS : undefined}
-                    enabled={!submitting}
-                  >
-                    <Picker.Item label="-- Select Category --" value="" />
-                    {categories.map((cat) => (
-                      <Picker.Item key={cat} label={cat} value={cat} />
-                    ))}
-                  </Picker>
-                </View>
+                <Select
+                  value={selectedCategory}
+                  onChange={setSelectedCategory}
+                  placeholder="Select Category"
+                  disabled={submitting}
+                  items={categories.map((cat) => ({ label: cat, value: cat }))}
+                  testID="category-select"
+                />
               </View>
 
               {/* Vehicle */}
@@ -167,28 +230,17 @@ export default function VehicleIssuesPage() {
                   <Text style={styles.cardHeaderText}>Vehicle</Text>
                 </View>
 
-                <View
-                  style={[
-                    styles.pickerShell,
-                    Platform.OS === 'android' && { overflow: 'visible' }, // <-- important
-                    !selectedCategory && { opacity: 0.6 },
-                  ]}
-                >
-                  <Picker
-                    mode={Platform.OS === 'android' ? 'dialog' : 'dropdown'}
-                    enabled={!!selectedCategory && !submitting}
-                    selectedValue={selectedVehicle}
-                    onValueChange={(value) => setSelectedVehicle(value)}
-                    dropdownIconColor={Platform.OS === 'android' ? '#fff' : undefined}
-                    style={styles.picker}
-                    itemStyle={Platform.OS === 'ios' ? styles.pickerItemIOS : undefined}
-                  >
-                    <Picker.Item label="-- Select Vehicle --" value="" />
-                    {filteredVehicles.map((v) => (
-                      <Picker.Item key={v.id} label={v.name || 'Unnamed Vehicle'} value={v.id} />
-                    ))}
-                  </Picker>
-                </View>
+                <Select
+                  value={selectedVehicle}
+                  onChange={setSelectedVehicle}
+                  placeholder="Select Vehicle"
+                  disabled={!selectedCategory || submitting}
+                  items={filteredVehicles.map((v) => ({
+                    label: v.name || 'Unnamed Vehicle',
+                    value: v.id,
+                  }))}
+                  testID="vehicle-select"
+                />
 
                 {selectedVehicle ? (
                   <View style={styles.metaRow}>
@@ -262,16 +314,43 @@ const styles = StyleSheet.create({
   cardHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 },
   cardHeaderText: { color: '#eaeaea', fontSize: 14, fontWeight: '700' },
 
-  pickerShell: {
+  // Android inline shell
+  pickerShellAndroid: {
     backgroundColor: '#151515',
     borderWidth: 1,
     borderColor: '#252525',
     borderRadius: 10,
-    // NOTE: on Android we set overflow: 'visible' inline where used
     overflow: 'hidden',
   },
-  picker: { color: '#fff', height: 44, width: '100%' },
-  pickerItemIOS: { color: '#fff' },
+
+  // iOS tap field
+  selectField: {
+    backgroundColor: '#151515',
+    borderWidth: 1,
+    borderColor: '#252525',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+  },
+  selectFieldText: { color: '#fff' },
+
+  // iOS modal sheet
+  modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)' },
+  sheet: {
+    backgroundColor: '#0f0f0f',
+    borderTopLeftRadius: 14,
+    borderTopRightRadius: 14,
+    paddingBottom: 24,
+  },
+  sheetToolbar: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#222',
+  },
+  doneText: { color: '#fff', fontWeight: '700' },
 
   metaRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10 },
   meta: { color: '#bdbdbd', fontSize: 12 },

@@ -52,7 +52,7 @@ const buttons = [
   { label: 'Employee Contacts', icon: 'users', group: 'HR' },
   { label: 'Holidays', icon: 'briefcase', group: 'HR' },
   { label: 'Time Sheet', icon: 'clock', group: 'HR' },
-  { label: 'Client Contacts', icon: 'phone', group: 'Other' },
+  { label: 'Spec Sheets', icon: 'file-text', group: 'Other' }, // <- was Client Contacts
   { label: 'Job Numbers', icon: 'hash', group: 'Other' },
   { label: 'Risk Assessments', icon: 'alert-circle', group: 'Other' },
   { label: 'Insurance & Compliance', icon: 'shield', group: 'Other' },
@@ -879,6 +879,10 @@ const saveRecce = async () => {
                         else if (btn.label === 'Time Sheet') router.push('/timesheet');
                         else if (btn.label === 'Vehicle Maintenance') router.push('/maintenance');
                         else if (btn.label === 'Settings') router.push('/settings');
+                        else if (btn.label === 'Spec Sheets') router.push('/spec-sheets'); // <-- add this
+                        else if (btn.label === 'Insurance & Compliance') router.push('/insurance');          // if app/insurance.js
+
+
                       }}
                     >
                       <Icon name={btn.icon} size={24} color="#fff" style={{ marginBottom: 6 }} />

@@ -12,17 +12,17 @@ export default function Footer() {
   const tabs = [
     { label: 'Home',     route: '/screens/homescreen', icon: 'home' },
     { label: 'Schedule', route: '/screens/schedule',   icon: 'calendar' },
-    { label: 'Diary',    route: '/work-diary',         icon: 'document-text' },
+    { label: 'Job',    route: '/job',         icon: 'document-text' },
     { label: 'Contacts', route: '/contacts',           icon: 'people' },
     // ⬇️ changed
     { label: 'Me',       route: '/me',                 icon: 'person-circle' },
   ];
 
   const accent = '#C8102E';
-  const fg = isDark ? '#fff' : '#0f0f0f';
-  const bg = isDark ? '#0A0A0A' : '#FFFFFF';
-  const border = isDark ? '#202020' : '#E6E6E6';
-  const muted = isDark ? '#A7A7A7' : '#6b6b6b';
+  const fg = isDark ? '#ffffffff' : '#ffffffff';
+  const bg = isDark ? '#000000ff' : '#000000ff';
+  const border = isDark ? '#000000ff' : '#ffffffff';
+  const muted = isDark ? '#A7A7A7' : '#ffffffff';
 
   return (
     <View style={[styles.container, { backgroundColor: 'transparent' }]}>
