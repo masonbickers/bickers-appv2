@@ -3,19 +3,19 @@ import { onAuthStateChanged } from "firebase/auth";
 import { getDownloadURL, getMetadata, listAll, ref } from "firebase/storage";
 import { useEffect, useMemo, useState } from "react";
 import {
-    ActivityIndicator,
-    FlatList,
-    SafeAreaView,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  FlatList,
+  SafeAreaView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from "react-native";
 
 // ✅ make sure this path is correct for your project structure
 // If this file is app/spec-sheets/index.js, this is likely ../../firebaseConfig
-import { auth, storage } from "../firebaseConfig";
+import { auth, storage } from "../../firebaseConfig";
 
 // ✅ trailing slash avoids ambiguous matches and mirrors console pathing
 const FOLDER_PATH = "spec sheets/"; 

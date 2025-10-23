@@ -1,7 +1,7 @@
 import { collection, doc, getDocs, updateDoc } from "firebase/firestore";
 import { useEffect } from "react";
 import { Text, View } from "react-native";
-import { db } from "../firebaseConfig";
+import { db } from "../../firebaseConfig";
 
 // simple function to generate random 4-digit code
 const generateCode = () => {

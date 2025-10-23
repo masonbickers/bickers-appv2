@@ -1,14 +1,14 @@
 // app/uploader.js
 import { useState } from 'react';
 import {
-    Alert,
-    Image,
-    Platform,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  Alert,
+  Image,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -16,11 +16,11 @@ import * as ImageManipulator from 'expo-image-manipulator';
 import * as ImagePicker from 'expo-image-picker';
 
 import {
-    getDownloadURL,
-    ref,
-    uploadBytesResumable,
+  getDownloadURL,
+  ref,
+  uploadBytesResumable,
 } from 'firebase/storage';
-import { auth, storage } from '../firebaseConfig';
+import { auth, storage } from '../../firebaseConfig';
 
 // Cross-SDK ImagePicker constant (new + old)
 const IMAGES_ONLY =

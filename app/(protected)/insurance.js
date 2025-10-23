@@ -3,15 +3,15 @@ import * as WebBrowser from 'expo-web-browser';
 import { getDownloadURL, getMetadata, listAll, ref } from 'firebase/storage';
 import { useCallback, useEffect, useState } from 'react';
 import {
-    ActivityIndicator,
-    FlatList,
-    RefreshControl,
-    SafeAreaView,
-    Text,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  FlatList,
+  RefreshControl,
+  SafeAreaView,
+  Text,
+  TouchableOpacity,
+  View,
 } from 'react-native';
-import { storage } from '../firebaseConfig'; // <-- adjust path if placed in /screens/
+import { storage } from '../../firebaseConfig'; // <-- adjust path if placed in /screens/
 
 function formatBytes(bytes = 0) {
   const units = ['B', 'KB', 'MB', 'GB'];

@@ -13,7 +13,7 @@ import {
 } from "react-native";
 import { Calendar } from "react-native-calendars";
 import Icon from "react-native-vector-icons/Feather";
-import { db } from "../firebaseConfig";
+import { db } from "../../firebaseConfig";
 
 export default function HolidayRequestPage() {
   const router = useRouter();

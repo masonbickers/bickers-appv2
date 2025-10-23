@@ -1,9 +1,9 @@
 import { onAuthStateChanged } from "firebase/auth";
 import { useEffect, useState } from "react";
 import { ActivityIndicator, View } from "react-native";
-import { auth } from "../firebaseConfig";
+import { auth } from "../../firebaseConfig";
+import LoginScreen from "./login";
 import HomeScreen from "./screens/homescreen";
-import LoginScreen from "./screens/login";
 
 export default function Page() {
   const [user, setUser] = useState(undefined); // undefined = still checking

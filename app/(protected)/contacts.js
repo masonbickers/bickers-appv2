@@ -14,7 +14,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { db } from '../firebaseConfig';
+import { db } from '../../firebaseConfig';
 
 export default function EmployeeListPage() {
   const router = useRouter();
@@ -130,13 +130,7 @@ export default function EmployeeListPage() {
           {/* Header row with Upload button */}
           <View style={styles.headerRow}>
             <Text style={styles.header}>Employee Contacts</Text>
-            <TouchableOpacity
-              style={styles.uploaderBtn}
-              onPress={() => router.push('/uploader')} // change to 'screens/uploader' if needed
-              accessibilityLabel="Go to uploader"
-            >
-              <Text style={styles.uploaderBtnText}>Upload</Text>
-            </TouchableOpacity>
+
           </View>
 
           {/* Search bar */}

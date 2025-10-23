@@ -18,7 +18,7 @@ const IMAGES_ONLY = MediaEnum?.Images ?? undefined;
 // Firebase
 import { signOut } from 'firebase/auth';
 
-import { auth, db, storage } from '../../firebaseConfig';
+import { auth, db, storage } from '../../../firebaseConfig';
 
 
 // React Native UI
@@ -53,10 +53,10 @@ const buttons = [
   { label: 'Holidays', icon: 'briefcase', group: 'HR' },
   { label: 'Time Sheet', icon: 'clock', group: 'HR' },
   { label: 'Spec Sheets', icon: 'file-text', group: 'Other' }, // <- was Client Contacts
-  { label: 'Job Numbers', icon: 'hash', group: 'Other' },
-  { label: 'Risk Assessments', icon: 'alert-circle', group: 'Other' },
+
+
   { label: 'Insurance & Compliance', icon: 'shield', group: 'Other' },
-  { label: 'Company Updates', icon: 'info', group: 'Other' },
+
   { label: 'Settings', icon: 'settings', group: 'Other' },
 ];
 
@@ -158,7 +158,7 @@ export default function HomeScreen() {
     try {
       await signOut(auth);
       global.employee = null;
-      router.replace('/screens/login');
+      router.replace('/(auth)/login');
     } catch (error) {
       console.error('Error signing out:', error);
     }
@@ -586,7 +586,7 @@ const saveRecce = async () => {
           {/* Header */}
           <View style={styles.headerRow}>
             <Image
-              source={require('../../assets/images/bickers-action-logo.png')}
+              source={require('../../../assets/images/bickers-action-logo.png')}
               style={styles.logo}
               resizeMode="contain"
             />

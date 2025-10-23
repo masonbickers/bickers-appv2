@@ -12,7 +12,7 @@ import {
   View,
 } from 'react-native';
 import DropDownPicker from 'react-native-dropdown-picker';
-import Footer from './components/footer';
+import Footer from '../components/footer';
 
 
 

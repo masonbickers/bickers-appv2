@@ -1,6 +1,6 @@
 import * as ImageManipulator from "expo-image-manipulator";
 import { getDownloadURL, ref, uploadBytesResumable } from "firebase/storage";
-import { storage } from "../../firebaseConfig";
+import { storage } from "../../../firebaseConfig";
 
 /**
  * Resizes to JPEG, uploads with progress, returns { downloadURL, fullPath }.

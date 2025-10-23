@@ -12,7 +12,7 @@ import {
   View,
 } from "react-native";
 import Icon from "react-native-vector-icons/Feather";
-import { db } from "../firebaseConfig"; // ✅ adjust path if needed
+import { db } from "../../firebaseConfig"; // ✅ adjust path if needed
 
 // ───────────────────────── helpers (unchanged logic) ─────────────────────────
 function getMonday(d) {

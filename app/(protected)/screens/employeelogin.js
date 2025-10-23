@@ -2,7 +2,7 @@ import { useRouter } from "expo-router";
 import { collection, getDocs, query, where } from "firebase/firestore";
 import { useState } from "react";
 import { Alert, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
-import { db } from "../../firebaseConfig";
+import { db } from "../../../firebaseConfig";
 
 export default function EmployeeLogin() {
   const [code, setCode] = useState("");

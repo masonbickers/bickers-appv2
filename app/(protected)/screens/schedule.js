@@ -10,7 +10,7 @@ import {
   View,
 } from 'react-native';
 import { Calendar } from 'react-native-calendars';
-import { db } from '../../firebaseConfig';
+import { db } from '../../../firebaseConfig';
 
 export default function SchedulePage() {
   const router = useRouter();

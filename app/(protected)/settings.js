@@ -10,7 +10,7 @@ import {
   View,
 } from 'react-native';
 import Icon from 'react-native-vector-icons/Feather';
-import { useColorScheme } from '../hooks/useColorScheme'; // custom hook
+import { useColorScheme } from '../../hooks/useColorScheme'; // custom hook
 
 export default function SettingsPage() {
   const router = useRouter();

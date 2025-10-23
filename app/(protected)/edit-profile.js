@@ -10,16 +10,16 @@ import {
   TouchableOpacity,
 } from 'react-native';
 import Icon from 'react-native-vector-icons/Feather';
-import { auth, db } from '../firebaseConfig';
-import Footer from './components/footer';
+import { auth, db } from '../../firebaseConfig';
+// ⛔️ Removed: import Footer from '../components/footer';
 
 export default function ProfilePage() {
   const router = useRouter();
-  const employee = global.employee; // ✅ set at login
+  const employee = global.employee; // set at login
   const user = auth.currentUser;
 
   const [name, setName] = useState('');
-  const [email, setEmail] = useState(''); // will prefer auth email
+  const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
   const [userCode, setUserCode] = useState('');
 
@@ -39,15 +39,8 @@ export default function ProfilePage() {
         setName(data.name || '');
         setPhone(data.phone || '');
         setUserCode(data.userCode || '');
-
-        // ✅ Prefer Firebase Auth email if logged in
-        if (user?.email) {
-          setEmail(user.email);
-        } else {
-          setEmail(data.email || '');
-        }
+        setEmail(user?.email ?? data.email ?? '');
       } else if (user) {
-        // fallback if no Firestore record
         setName(user.displayName || '');
         setEmail(user.email || '');
       }
@@ -58,7 +51,7 @@ export default function ProfilePage() {
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      {/* 🔙 Back Button */}
+      {/* Back Button */}
       <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
         <Icon name="arrow-left" size={22} color="#fff" />
         <Text style={styles.backText}>Back</Text>
@@ -67,36 +60,13 @@ export default function ProfilePage() {
       <ScrollView contentContainerStyle={styles.scrollContent}>
         <Text style={styles.title}>👤 My Profile</Text>
 
-        {/* Name */}
-        <TextInput
-          style={[styles.input, styles.lockedInput]}
-          value={name}
-          editable={false}
-        />
-
-        {/* Email (always from Firebase Auth if available) */}
-        <TextInput
-          style={[styles.input, styles.lockedInput]}
-          value={email}
-          editable={false}
-        />
-
-        {/* Phone (from Firestore) */}
-        <TextInput
-          style={[styles.input, styles.lockedInput]}
-          value={phone}
-          editable={false}
-        />
-
-        {/* User Code (read-only) */}
-        <TextInput
-          style={[styles.input, styles.lockedInput]}
-          value={userCode}
-          editable={false}
-        />
+        <TextInput style={[styles.input, styles.lockedInput]} value={name} editable={false} />
+        <TextInput style={[styles.input, styles.lockedInput]} value={email} editable={false} />
+        <TextInput style={[styles.input, styles.lockedInput]} value={phone} editable={false} />
+        <TextInput style={[styles.input, styles.lockedInput]} value={userCode} editable={false} />
       </ScrollView>
 
-      <Footer />
+      {/* ⛔️ Removed page-level <Footer /> */}
     </SafeAreaView>
   );
 }
@@ -105,6 +75,7 @@ const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: '#000' },
   backButton: { flexDirection: 'row', alignItems: 'center', padding: 12 },
   backText: { color: '#fff', fontSize: 16, marginLeft: 6 },
+  // Keep enough bottom padding so the global footer doesn’t overlap content
   scrollContent: { padding: 16, paddingBottom: 100 },
   title: {
     color: '#fff',

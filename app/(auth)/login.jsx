@@ -34,11 +34,14 @@ import { auth, db } from "../../firebaseConfig";
 export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+
+  // NEW: employee email field for code-based login
+  const [employeeEmail, setEmployeeEmail] = useState("");
   const [employeeCode, setEmployeeCode] = useState("");
+
   const router = useRouter();
 
   const setSession = async (data) => {
-    // Persist role + name for the rest of the app (homescreen/header/guards)
     await AsyncStorage.multiSet([
       ["sessionRole", data.role || ""],
       ["displayName", data.displayName || ""],
@@ -47,7 +50,7 @@ export default function LoginPage() {
     ]);
   };
 
-  /** 🔑 Manager Login */
+  /** 🔑 Manager Login (login OR signup if not found) */
   const handleManagerLogin = async () => {
     try {
       const userCredential = await signInWithEmailAndPassword(
@@ -58,7 +61,6 @@ export default function LoginPage() {
       const user = userCredential.user;
       await ensureUserInFirestore(user);
 
-      // Save a manager session + a friendly display name
       await setSession({
         role: "manager",
         displayName: user.displayName || user.email || "Manager",
@@ -67,7 +69,7 @@ export default function LoginPage() {
       });
 
       Alert.alert("Welcome back!", `Logged in as ${user.email}`);
-      router.replace("/screens/homescreen");
+      router.replace("/"); // app/(protected)/index.js
     } catch (err) {
       if (err?.code === "auth/user-not-found") {
         try {
@@ -97,22 +99,23 @@ export default function LoginPage() {
     }
   };
 
-  /** 🔑 Employee Login */
+  /** 🔑 Employee Login (code + email must match employee doc) */
   const handleEmployeeLogin = async () => {
-    if (!employeeCode) {
-      Alert.alert("Missing code", "Please enter your 4-digit employee code");
-      return;
-    }
-
+    // Basic inputs
     const codeStr = String(employeeCode).replace(/\D/g, "").padStart(4, "0");
-    if (codeStr.length !== 4) {
-      Alert.alert("Invalid code", "Employee code must be 4 digits");
+    const emailStr = String(employeeEmail).trim().toLowerCase();
+
+    if (!codeStr || codeStr.length !== 4) {
+      Alert.alert("Invalid code", "Employee code must be 4 digits.");
       return;
     }
-    const codeNum = Number(codeStr);
+    if (!emailStr) {
+      Alert.alert("Missing email", "Please enter your work email.");
+      return;
+    }
 
     try {
-      // Be authenticated for rules; anonymous is fine.
+      // Must be authenticated for security rules; anonymous is ok for this step
       if (!auth.currentUser) await signInAnonymously(auth);
 
       // Find employee by code (string first, then number)
@@ -120,12 +123,13 @@ export default function LoginPage() {
         query(collection(db, "employees"), where("userCode", "==", codeStr), limit(1))
       );
       if (snap.empty) {
+        const codeNum = Number(codeStr);
         snap = await getDocs(
           query(collection(db, "employees"), where("userCode", "==", codeNum), limit(1))
         );
       }
       if (snap.empty) {
-        Alert.alert("Invalid code", "No employee found with that code");
+        Alert.alert("Invalid code", "No employee found with that code.");
         return;
       }
 
@@ -136,17 +140,45 @@ export default function LoginPage() {
         return;
       }
 
+      // ---- NEW: email must match employee.email (case-insensitive)
+      const empEmail = String(employee.email || "").trim().toLowerCase();
+
+      // Optional: support array of emails on employee docs
+      const empEmails = Array.isArray(employee.emails)
+        ? employee.emails.map((e) => String(e || "").trim().toLowerCase())
+        : [];
+
+      const emailMatches =
+        (!!empEmail && empEmail === emailStr) ||
+        (empEmails.length > 0 && empEmails.includes(emailStr));
+
+      if (!emailMatches) {
+        // If no email on file, block by default (safer). You can relax this if you want.
+        if (!empEmail && empEmails.length === 0) {
+          Alert.alert(
+            "Email not on file",
+            "We don't have an email recorded for this employee. Please contact an admin."
+          );
+          return;
+        }
+        Alert.alert(
+          "Email mismatch",
+          "The email entered doesn't match the employee record. Please check and try again."
+        );
+        return;
+      }
+
       global.employee = employee;
 
       // Save an employee session + their name so the homescreen can greet properly
       await setSession({
         role: "employee",
         displayName: employee.name || "Employee",
-        email: employee.email || "",
+        email: employee.email || employeeEmail, // prefer Firestore email if present
         employeeId: employee.id,
       });
 
-      Alert.alert("Welcome", `Hello ${employee.name}`);
+      Alert.alert("Welcome", `Hello ${employee.name || employeeEmail}`);
       router.replace("/screens/homescreen");
     } catch (err) {
       Alert.alert("Error", err?.message || "Error");
@@ -209,20 +241,29 @@ export default function LoginPage() {
 
           {/* Divider */}
           <View style={styles.divider}>
-            <View style={styles.line} />
+            <View className="line" style={styles.line} />
             <Text style={styles.orText}>OR</Text>
-            <View style={styles.line} />
+            <View className="line" style={styles.line} />
           </View>
 
-          {/* Employee Login */}
+          {/* Employee Login (code + email must match) */}
           <TextInput
             style={styles.input}
-            placeholder="Enter Employee Code"
+            placeholder="Employee Code (4 digits)"
             placeholderTextColor="#888"
             value={employeeCode}
             onChangeText={setEmployeeCode}
             keyboardType="number-pad"
             maxLength={4}
+          />
+          <TextInput
+            style={styles.input}
+            placeholder="Work Email (must match record)"
+            placeholderTextColor="#888"
+            value={employeeEmail}
+            onChangeText={setEmployeeEmail}
+            autoCapitalize="none"
+            keyboardType="email-address"
           />
           <TouchableOpacity style={styles.buttonAlt} onPress={handleEmployeeLogin}>
             <Text style={styles.buttonText}>Employee Log In</Text>

@@ -22,7 +22,7 @@ import {
 import Icon from "react-native-vector-icons/Feather";
 
 // ✅ If your firebaseConfig is at project root (/firebaseConfig.js), change to "../firebaseConfig"
-import { auth, db } from "../firebaseConfig";
+import { auth, db } from "../../firebaseConfig";
 
 const buttonSpacing = 12;
 const screenWidth = Dimensions.get("window").width;
@@ -229,9 +229,6 @@ export default function MePage() {
   const tiles = useMemo(
     () => [
       { label: "My Schedule", icon: "calendar", onPress: () => router.push("/screens/schedule") },
-      { label: "Time Sheet",  icon: "clock",    onPress: () => router.push("/timesheets") },
-      { label: "Holidays",    icon: "briefcase",onPress: () => router.push("/holidaypage") },
-      { label: "Work Diary",  icon: "clipboard",onPress: () => router.push("/work-diary") },
       { label: "Contacts",    icon: "users",    onPress: () => router.push("/contacts") },
       { label: "Profile",     icon: "user",     onPress: () => router.push("/edit-profile") },
     ],
@@ -257,7 +254,7 @@ export default function MePage() {
           {/* Header */}
           <View style={styles.headerRow}>
             <Image
-              source={require("../assets/images/bickers-action-logo.png")}
+              source={require("../../assets/images/bickers-action-logo.png")}
               style={styles.logo}
               resizeMode="contain"
             />

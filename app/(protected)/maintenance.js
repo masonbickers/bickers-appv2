@@ -17,7 +17,7 @@ import {
   View,
 } from 'react-native';
 import Icon from 'react-native-vector-icons/Feather';
-import { db } from '../firebaseConfig';
+import { db } from '../../firebaseConfig';
 
 const MAX_CHARS = 600;
 
