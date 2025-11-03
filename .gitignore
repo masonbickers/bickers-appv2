@@ -1,0 +1,17 @@
+# Node / Expo
+node_modules/
+npm-debug.log*
+yarn.lock
+pnpm-lock.yaml
+.expo/
+.expo-shared/
+dist/
+web-build/
+# Native
+ios/
+android/
+# macOS
+.DS_Store
+# Env
+.env
+.env.*
