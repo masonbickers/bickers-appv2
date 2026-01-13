@@ -1,18 +1,17 @@
 {
   "expo": {
-    "name": "bickers-app",
+    "name": "Bickers",
     "slug": "bickers-app",
-    "version": "1.0.0",
+    "version": "1.0.2",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "bickersapp",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
-
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.bickers.bickersapp",
-      "buildNumber": "1",
+      "bundleIdentifier": "com.bickers.booking",
+      "buildNumber": "3",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         "NSCameraUsageDescription": "Allow camera to take recce photos.",
@@ -20,7 +19,6 @@
         "NSPhotoLibraryAddUsageDescription": "Allow saving processed recce photos to your library."
       }
     },
-
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
@@ -29,13 +27,23 @@
       "edgeToEdgeEnabled": true,
       "package": "com.bickers.bickersapp",
       "versionCode": 1,
+      "useNextNotificationsApi": true,
+      "googleServicesFile": "./google-services.json",
       "permissions": [
-        "CAMERA",
-        "READ_MEDIA_IMAGES",
-        "READ_EXTERNAL_STORAGE"
+        "android.permission.CAMERA",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.VIBRATE",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.CAMERA",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.VIBRATE",
+        "android.permission.RECORD_AUDIO"
       ]
     },
-
     "web": {
       "bundler": "metro",
       "output": "static",
@@ -50,11 +58,9 @@
         "description": "Bickers Action bookings & operations."
       }
     },
-
     "runtimeVersion": {
       "policy": "appVersion"
     },
-
     "plugins": [
       "expo-router",
       [
@@ -74,18 +80,27 @@
           "photosPermission": "Allow Bickers to access your photos.",
           "cameraPermission": "Allow Bickers to access your camera."
         }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/notification-icon.png",
+          "color": "#000000"
+        }
       ]
     ],
-
     "experiments": {
       "typedRoutes": true
     },
-
     "extra": {
       "router": {},
+      "API_URL": "http://localhost:3001",
       "eas": {
         "projectId": "10adb241-72a5-4439-aa1a-e889302c92b3"
       }
+    },
+    "updates": {
+      "url": "https://u.expo.dev/10adb241-72a5-4439-aa1a-e889302c92b3"
     }
   }
 }
