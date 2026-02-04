@@ -1,25 +1,19 @@
-import { onAuthStateChanged } from "firebase/auth";
-import { useEffect, useState } from "react";
-import { ActivityIndicator, View } from "react-native";
-import { auth } from "../../firebaseConfig";
-import LoginScreen from "./login";
-import HomeScreen from "./screens/homescreen";
+// app/(protected)/index.js
+import { Redirect } from "expo-router";
+import { useAuth } from "../providers/AuthProvider"; // ← import the hook (one level up from (protected))
 
-export default function Page() {
-  const [user, setUser] = useState(undefined); // undefined = still checking
+export default function ProtectedIndexRedirect() {
+  const { user, loading } = useAuth();
 
-  useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (u) => setUser(u ?? null));
-    return () => unsub();
-  }, []);
+  // Wait for Firebase to hydrate once (prevents flicker/loop)
+  if (loading) return null;
 
-  if (user === undefined) {
-    return (
-      <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
-        <ActivityIndicator size="large" />
-      </View>
-    );
+  if (user) {
+    // You’re already inside the (protected) group, so use a RELATIVE path:
+    return <Redirect href="./screens/homescreen" />;
+    // (If you prefer absolute, include the group: href="/(protected)/screens/homescreen")
   }
 
-  return <View style={{ flex: 1 }}>{user ? <HomeScreen /> : <LoginScreen />}</View>;
+  // If somehow reached here without a user, push to the auth stack:
+  return <Redirect href="/(auth)/login" />;
 }

@@ -1,21 +1,54 @@
+// hooks/useThemeColor.ts
+import { useTheme } from "../app/providers/ThemeProvider";
+
+// Match the props signature Expo expects
+type ThemeProps = {
+  light?: string;
+  dark?: string;
+};
+
 /**
- * Learn more about light and dark modes:
- * https://docs.expo.dev/guides/color-schemes/
+ * Bridge between Expo's "ThemedView/ThemedText" helpers and your ThemeProvider.
+ *
+ * Any Expo component that calls useThemeColor("background" | "text" | "tint" | ...)
+ * will now resolve via ThemeProvider.colors instead of the old Colors constant.
  */
-
-import { Colors } from '@/constants/Colors';
-import { useColorScheme } from '@/hooks/useColorScheme';
-
 export function useThemeColor(
-  props: { light?: string; dark?: string },
-  colorName: keyof typeof Colors.light & keyof typeof Colors.dark
+  props: ThemeProps,
+  colorName:
+    | "background"
+    | "surface"
+    | "surfaceAlt"
+    | "border"
+    | "text"
+    | "textMuted"
+    | "accent"
+    | "accentSoft"
+    | "danger"
+    | "success"
+    // expo-style extra names so ThemedView/Text don’t crash
+    | "tint"
+    | "tabIconDefault"
+    | "tabIconSelected"
 ) {
-  const theme = useColorScheme() ?? 'light';
-  const colorFromProps = props[theme];
+  const { colors, colorScheme } = useTheme();
 
+  // If caller passes an explicit override (lightColor/darkColor), honour it
+  const colorFromProps = props[colorScheme];
   if (colorFromProps) {
     return colorFromProps;
-  } else {
-    return Colors[theme][colorName];
   }
+
+  // Direct mapping if the colour exists on your palette
+  if (colorName in colors) {
+    return (colors as any)[colorName];
+  }
+
+  // Fallback mappings for Expo’s default keys
+  if (colorName === "tint") return colors.accent;
+  if (colorName === "tabIconDefault") return colors.textMuted;
+  if (colorName === "tabIconSelected") return colors.accent;
+
+  // Final fallback
+  return colors.text;
 }

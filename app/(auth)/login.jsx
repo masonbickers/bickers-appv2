@@ -1,10 +1,7 @@
+// app/(auth)/login.jsx
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useRouter } from "expo-router";
-import {
-  createUserWithEmailAndPassword,
-  signInAnonymously,
-  signInWithEmailAndPassword,
-} from "firebase/auth";
+import { signInAnonymously } from "firebase/auth";
 import {
   collection,
   doc,
@@ -29,166 +26,42 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+
 import { auth, db } from "../../firebaseConfig";
+import { useAuth } from "../providers/AuthProvider";
+import { useTheme } from "../providers/ThemeProvider";
 
 export default function LoginPage() {
+  // Manager fields (future)
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
 
-  // NEW: employee email field for code-based login
+  // Employee fields
   const [employeeEmail, setEmployeeEmail] = useState("");
   const [employeeCode, setEmployeeCode] = useState("");
 
-  const router = useRouter();
+  const [loading, setLoading] = useState(false);
 
+  const router = useRouter();
+  const { reloadSession } = useAuth();
+  const { colors } = useTheme();
+
+  // ───────────────────────────────── helpers ─────────────────────────────────
   const setSession = async (data) => {
     await AsyncStorage.multiSet([
       ["sessionRole", data.role || ""],
       ["displayName", data.displayName || ""],
       ["employeeId", data.employeeId || ""],
       ["employeeEmail", data.email || ""],
+      ["employeeUserCode", data.userCode || ""], // used by AuthProvider
+      ["userCode", data.userCode || ""],         // used by Footer / routing rules
     ]);
-  };
-
-  /** 🔑 Manager Login (login OR signup if not found) */
-  const handleManagerLogin = async () => {
-    try {
-      const userCredential = await signInWithEmailAndPassword(
-        auth,
-        email.trim(),
-        password
-      );
-      const user = userCredential.user;
-      await ensureUserInFirestore(user);
-
-      await setSession({
-        role: "manager",
-        displayName: user.displayName || user.email || "Manager",
-        email: user.email || "",
-        employeeId: "",
-      });
-
-      Alert.alert("Welcome back!", `Logged in as ${user.email}`);
-      router.replace("/"); // app/(protected)/index.js
-    } catch (err) {
-      if (err?.code === "auth/user-not-found") {
-        try {
-          const userCredential = await createUserWithEmailAndPassword(
-            auth,
-            email.trim(),
-            password
-          );
-          const user = userCredential.user;
-          await ensureUserInFirestore(user);
-
-          await setSession({
-            role: "manager",
-            displayName: user.displayName || user.email || "Manager",
-            email: user.email || "",
-            employeeId: "",
-          });
-
-          Alert.alert("Account created!", `Welcome, ${user.email}`);
-          router.replace("/screens/homescreen");
-        } catch (signupErr) {
-          Alert.alert("Signup failed", signupErr?.message || "Error");
-        }
-      } else {
-        Alert.alert("Login failed", err?.message || "Error");
-      }
-    }
-  };
-
-  /** 🔑 Employee Login (code + email must match employee doc) */
-  const handleEmployeeLogin = async () => {
-    // Basic inputs
-    const codeStr = String(employeeCode).replace(/\D/g, "").padStart(4, "0");
-    const emailStr = String(employeeEmail).trim().toLowerCase();
-
-    if (!codeStr || codeStr.length !== 4) {
-      Alert.alert("Invalid code", "Employee code must be 4 digits.");
-      return;
-    }
-    if (!emailStr) {
-      Alert.alert("Missing email", "Please enter your work email.");
-      return;
-    }
-
-    try {
-      // Must be authenticated for security rules; anonymous is ok for this step
-      if (!auth.currentUser) await signInAnonymously(auth);
-
-      // Find employee by code (string first, then number)
-      let snap = await getDocs(
-        query(collection(db, "employees"), where("userCode", "==", codeStr), limit(1))
-      );
-      if (snap.empty) {
-        const codeNum = Number(codeStr);
-        snap = await getDocs(
-          query(collection(db, "employees"), where("userCode", "==", codeNum), limit(1))
-        );
-      }
-      if (snap.empty) {
-        Alert.alert("Invalid code", "No employee found with that code.");
-        return;
-      }
-
-      const employee = { id: snap.docs[0].id, ...snap.docs[0].data() };
-
-      if (employee?.status === "disabled") {
-        Alert.alert("Access blocked", "Your account is disabled. Contact admin.");
-        return;
-      }
-
-      // ---- NEW: email must match employee.email (case-insensitive)
-      const empEmail = String(employee.email || "").trim().toLowerCase();
-
-      // Optional: support array of emails on employee docs
-      const empEmails = Array.isArray(employee.emails)
-        ? employee.emails.map((e) => String(e || "").trim().toLowerCase())
-        : [];
-
-      const emailMatches =
-        (!!empEmail && empEmail === emailStr) ||
-        (empEmails.length > 0 && empEmails.includes(emailStr));
-
-      if (!emailMatches) {
-        // If no email on file, block by default (safer). You can relax this if you want.
-        if (!empEmail && empEmails.length === 0) {
-          Alert.alert(
-            "Email not on file",
-            "We don't have an email recorded for this employee. Please contact an admin."
-          );
-          return;
-        }
-        Alert.alert(
-          "Email mismatch",
-          "The email entered doesn't match the employee record. Please check and try again."
-        );
-        return;
-      }
-
-      global.employee = employee;
-
-      // Save an employee session + their name so the homescreen can greet properly
-      await setSession({
-        role: "employee",
-        displayName: employee.name || "Employee",
-        email: employee.email || employeeEmail, // prefer Firestore email if present
-        employeeId: employee.id,
-      });
-
-      Alert.alert("Welcome", `Hello ${employee.name || employeeEmail}`);
-      router.replace("/screens/homescreen");
-    } catch (err) {
-      Alert.alert("Error", err?.message || "Error");
-    }
   };
 
   const ensureUserInFirestore = async (user) => {
     const userRef = doc(db, "users", user.uid);
-    const userSnap = await getDoc(userRef);
-    if (!userSnap.exists()) {
+    const snap = await getDoc(userRef);
+    if (!snap.exists()) {
       await setDoc(userRef, {
         uid: user.uid,
         email: user.email,
@@ -198,8 +71,132 @@ export default function LoginPage() {
     }
   };
 
+  // ───────────────────────────── Employee Login ─────────────────────────────
+  const handleEmployeeLogin = async () => {
+    if (loading) return;
+    setLoading(true);
+
+    // 🔑 canonical 4-digit code from the input
+    const codeStr = String(employeeCode).replace(/\D/g, "").padStart(4, "0");
+    const emailStr = String(employeeEmail).trim().toLowerCase();
+
+    if (!codeStr || codeStr.length !== 4) {
+      Alert.alert("Invalid code", "Employee code must be 4 digits.");
+      setLoading(false);
+      return;
+    }
+    if (!emailStr) {
+      Alert.alert("Missing email", "Please enter your work email.");
+      setLoading(false);
+      return;
+    }
+
+    try {
+      // Anonymous auth so Firestore rules allow the query
+      if (!auth.currentUser) await signInAnonymously(auth);
+
+      // Find employee by userCode (string, then number)
+      let snap = await getDocs(
+        query(
+          collection(db, "employees"),
+          where("userCode", "==", codeStr),
+          limit(1)
+        )
+      );
+      if (snap.empty) {
+        const codeNum = Number(codeStr);
+        snap = await getDocs(
+          query(
+            collection(db, "employees"),
+            where("userCode", "==", codeNum),
+            limit(1)
+          )
+        );
+      }
+
+      if (snap.empty) {
+        Alert.alert("Invalid code", "No employee found with that code.");
+        setLoading(false);
+        return;
+      }
+
+      const employee = { id: snap.docs[0].id, ...snap.docs[0].data() };
+
+      if (employee?.status === "disabled") {
+        Alert.alert("Access blocked", "Your account is disabled. Contact admin.");
+        setLoading(false);
+        return;
+      }
+
+      // Email must match employee record (case insensitive)
+      const empEmail = String(employee.email || "").trim().toLowerCase();
+      const empEmails = Array.isArray(employee.emails)
+        ? employee.emails.map((e) => String(e || "").trim().toLowerCase())
+        : [];
+
+      const emailMatches =
+        (!!empEmail && empEmail === emailStr) ||
+        (empEmails.length > 0 && empEmails.includes(emailStr));
+
+      if (!emailMatches) {
+        if (!empEmail && empEmails.length === 0) {
+          Alert.alert(
+            "Email not on file",
+            "We don't have an email recorded for this employee. Please contact an admin."
+          );
+        } else {
+          Alert.alert(
+            "Email mismatch",
+            "The email entered doesn't match the employee record. Please check and try again."
+          );
+        }
+        setLoading(false);
+        return;
+      }
+
+      // Legacy global
+      global.employee = employee;
+
+      // 🔐 SESSION DATA — store exactly what they typed (normalised)
+      const sessionData = {
+        role: "employee",
+        displayName: employee.name || "Employee",
+        email: employee.email || employeeEmail,
+        employeeId: employee.id,
+        userCode: codeStr,
+      };
+
+      await setSession(sessionData);
+
+      if (reloadSession) {
+        await reloadSession();
+      }
+
+      Alert.alert("Welcome", `Hello ${employee.name || employeeEmail}`);
+
+      console.log("LOGIN codeStr =", codeStr);
+
+      // 🔥 ROUTING:
+      // app/(protected)/service.js      -> "/service"
+      // app/(protected)/screens/homescreen.js -> "/screens/homescreen"
+      if (codeStr === "1234") {
+        router.replace("service/home");
+      } else {
+        router.replace("/screens/homescreen");
+      }
+
+      setLoading(false);
+    } catch (err) {
+      Alert.alert("Error", err?.message || "Error");
+      setLoading(false);
+    }
+  };
+
+  // ─────────────────────────────── UI ───────────────────────────────
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView
+      style={[styles.safeArea, { backgroundColor: colors.background }]}
+    >
       <KeyboardAvoidingView
         style={{ flex: 1 }}
         behavior={Platform.OS === "ios" ? "padding" : "height"}
@@ -215,59 +212,69 @@ export default function LoginPage() {
             resizeMode="contain"
           />
 
-          <Text style={styles.title}>Welcome to Bickers Action</Text>
+          <Text style={[styles.title, { color: colors.text }]}>
+            Welcome to Bickers Action
+          </Text>
 
-          {/* Manager Login */}
-          <TextInput
-            style={styles.input}
-            placeholder="Manager Email"
-            placeholderTextColor="#888"
-            value={email}
-            onChangeText={setEmail}
-            autoCapitalize="none"
-            keyboardType="email-address"
-          />
-          <TextInput
-            style={styles.input}
-            placeholder="Password"
-            placeholderTextColor="#888"
-            value={password}
-            onChangeText={setPassword}
-            secureTextEntry
-          />
-          <TouchableOpacity style={styles.button} onPress={handleManagerLogin}>
-            <Text style={styles.buttonText}>Manager Log In / Sign Up</Text>
-          </TouchableOpacity>
+          {/* Employee Login */}
+          <View style={styles.section}>
+            <Text
+              style={[styles.sectionTitle, { color: colors.text }]}
+            >
+              Employee Login
+            </Text>
 
-          {/* Divider */}
-          <View style={styles.divider}>
-            <View className="line" style={styles.line} />
-            <Text style={styles.orText}>OR</Text>
-            <View className="line" style={styles.line} />
+            <TextInput
+              style={[
+                styles.input,
+                {
+                  backgroundColor: colors.inputBackground,
+                  color: colors.text,
+                  borderColor: colors.inputBorder,
+                },
+              ]}
+              placeholder="Employee Code (4 digits)"
+              placeholderTextColor={colors.textMuted}
+              value={employeeCode}
+              onChangeText={setEmployeeCode}
+              keyboardType="number-pad"
+              maxLength={4}
+            />
+            <TextInput
+              style={[
+                styles.input,
+                {
+                  backgroundColor: colors.inputBackground,
+                  color: colors.text,
+                  borderColor: colors.inputBorder,
+                },
+              ]}
+              placeholder="Work Email (must match record)"
+              placeholderTextColor={colors.textMuted}
+              value={employeeEmail}
+              onChangeText={setEmployeeEmail}
+              autoCapitalize="none"
+              keyboardType="email-address"
+            />
+            <TouchableOpacity
+              style={[
+                styles.buttonAlt,
+                { backgroundColor: colors.accent },
+              ]}
+              onPress={handleEmployeeLogin}
+              disabled={loading}
+              activeOpacity={0.85}
+            >
+              <Text
+                style={[
+                  styles.buttonText,
+                  { color: colors.surface },
+                ]}
+              >
+                {loading ? "Please wait…" : "Employee Log In"}
+              </Text>
+            </TouchableOpacity>
           </View>
-
-          {/* Employee Login (code + email must match) */}
-          <TextInput
-            style={styles.input}
-            placeholder="Employee Code (4 digits)"
-            placeholderTextColor="#888"
-            value={employeeCode}
-            onChangeText={setEmployeeCode}
-            keyboardType="number-pad"
-            maxLength={4}
-          />
-          <TextInput
-            style={styles.input}
-            placeholder="Work Email (must match record)"
-            placeholderTextColor="#888"
-            value={employeeEmail}
-            onChangeText={setEmployeeEmail}
-            autoCapitalize="none"
-            keyboardType="email-address"
-          />
-          <TouchableOpacity style={styles.buttonAlt} onPress={handleEmployeeLogin}>
-            <Text style={styles.buttonText}>Employee Log In</Text>
-          </TouchableOpacity>
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -275,56 +282,44 @@ export default function LoginPage() {
 }
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: "#000" },
+  safeArea: { flex: 1 },
   scrollContainer: {
     flexGrow: 1,
-    justifyContent: "center",
+    justifyContent: "flex-start",
     alignItems: "center",
     paddingHorizontal: 30,
     paddingVertical: 40,
   },
   logo: { width: 220, height: 80, marginBottom: 20 },
   title: {
-    color: "#fff",
     fontSize: 22,
     fontWeight: "bold",
     marginBottom: 30,
     textAlign: "center",
   },
+  section: {
+    width: "100%",
+  },
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+    marginBottom: 12,
+  },
   input: {
     width: "100%",
     height: 50,
-    backgroundColor: "#1a1a1a",
     borderRadius: 8,
     paddingHorizontal: 16,
-    color: "#fff",
     marginBottom: 16,
-  },
-  button: {
-    width: "100%",
-    height: 50,
-    backgroundColor: "#C8102E",
-    borderRadius: 8,
-    justifyContent: "center",
-    alignItems: "center",
-    marginTop: 10,
+    borderWidth: 1,
   },
   buttonAlt: {
     width: "100%",
     height: 50,
-    backgroundColor: "#444",
     borderRadius: 8,
     justifyContent: "center",
     alignItems: "center",
     marginTop: 10,
   },
-  buttonText: { color: "#fff", fontWeight: "600", fontSize: 16 },
-  divider: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginVertical: 20,
-    width: "100%",
-  },
-  line: { flex: 1, height: 1, backgroundColor: "#333" },
-  orText: { color: "#888", marginHorizontal: 10, fontSize: 12 },
+  buttonText: { fontWeight: "600", fontSize: 16 },
 });

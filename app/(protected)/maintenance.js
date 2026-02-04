@@ -1,7 +1,13 @@
-// VehicleIssuesPage.js
-import { Picker } from '@react-native-picker/picker';
-import { addDoc, collection, getDocs } from 'firebase/firestore';
-import { useEffect, useMemo, useState } from 'react';
+// app/(protected)/vehicle-issues.js
+import { Picker } from "@react-native-picker/picker";
+import { useRouter } from "expo-router";
+import {
+  addDoc,
+  collection,
+  getDocs,
+  serverTimestamp,
+} from "firebase/firestore";
+import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -15,35 +21,61 @@ import {
   TextInput,
   TouchableOpacity,
   View,
-} from 'react-native';
-import Icon from 'react-native-vector-icons/Feather';
-import { db } from '../../firebaseConfig';
+} from "react-native";
+import Icon from "react-native-vector-icons/Feather";
+
+// 🔑 Firebase + Auth provider (paths for app/(protected)/*)
+import { db } from "../../firebaseConfig";
+import { useAuth } from "../providers/AuthProvider";
+import { useTheme } from "../providers/ThemeProvider";
 
 const MAX_CHARS = 600;
 
 /* ------------------------- Mobile-friendly Select ------------------------- */
-// Android: native <Picker mode="dialog">
-// iOS: tap field -> modal bottom sheet with wheel + Done
-function Select({ value, onChange, items, placeholder = 'Select…', disabled, testID }) {
+function Select({
+  value,
+  onChange,
+  items,
+  placeholder = "Select…",
+  disabled,
+  testID,
+  colors,
+}) {
   const [open, setOpen] = useState(false);
-  const selectedLabel =
-    items.find((i) => i.value === value)?.label || '';
+  const selectedLabel = items.find((i) => i.value === value)?.label || "";
 
-  if (Platform.OS === 'android') {
+  if (Platform.OS === "android") {
     return (
-      <View style={styles.pickerShellAndroid}>
+      <View
+        style={[
+          styles.pickerShellAndroid,
+          {
+            backgroundColor: colors.inputBackground,
+            borderColor: colors.inputBorder,
+          },
+        ]}
+      >
         <Picker
           mode="dialog"
           enabled={!disabled}
           selectedValue={value}
           onValueChange={onChange}
-          dropdownIconColor="#fff"
-          style={{ color: '#fff', height: 44, width: '100%' }}
+          dropdownIconColor={colors.text}
+          style={{ color: colors.text, height: 44, width: "100%" }}
           testID={testID}
         >
-          <Picker.Item label={`-- ${placeholder} --`} value="" />
+          <Picker.Item
+            label={`-- ${placeholder} --`}
+            value=""
+            color={colors.textMuted}
+          />
           {items.map((i) => (
-            <Picker.Item key={i.value} label={i.label} value={i.value} />
+            <Picker.Item
+              key={i.value}
+              label={i.label}
+              value={i.value}
+              color={colors.text}
+            />
           ))}
         </Picker>
       </View>
@@ -55,11 +87,23 @@ function Select({ value, onChange, items, placeholder = 'Select…', disabled, t
     <>
       <Pressable
         onPress={() => !disabled && setOpen(true)}
-        style={[styles.selectField, disabled && { opacity: 0.6 }]}
+        style={[
+          styles.selectField,
+          {
+            backgroundColor: colors.inputBackground,
+            borderColor: colors.inputBorder,
+          },
+          disabled && { opacity: 0.6 },
+        ]}
         accessibilityRole="button"
         testID={testID}
       >
-        <Text style={[styles.selectFieldText, !selectedLabel && { color: '#8b8b8b' }]}>
+        <Text
+          style={[
+            styles.selectFieldText,
+            { color: selectedLabel ? colors.text : colors.textMuted },
+          ]}
+        >
           {selectedLabel || `-- ${placeholder} --`}
         </Text>
       </Pressable>
@@ -70,22 +114,45 @@ function Select({ value, onChange, items, placeholder = 'Select…', disabled, t
         animationType="slide"
         onRequestClose={() => setOpen(false)}
       >
-        <Pressable style={styles.modalBackdrop} onPress={() => setOpen(false)} />
-        <View style={styles.sheet}>
-          <View style={styles.sheetToolbar}>
+        <Pressable
+          style={styles.modalBackdrop}
+          onPress={() => setOpen(false)}
+        />
+        <View style={[styles.sheet, { backgroundColor: colors.surface }]}>
+          <View
+            style={[
+              styles.sheetToolbar,
+              { borderBottomColor: colors.border },
+            ]}
+          >
             <TouchableOpacity onPress={() => setOpen(false)}>
-              <Text style={styles.doneText}>Done</Text>
+              <Text style={[styles.doneText, { color: colors.text }]}>
+                Done
+              </Text>
             </TouchableOpacity>
           </View>
           <Picker
             selectedValue={value}
             onValueChange={(v) => onChange(v)}
-            style={{ width: '100%', height: 216, backgroundColor: '#111' }}
-            itemStyle={{ color: '#fff' }}
+            style={{
+              width: "100%",
+              height: 216,
+              backgroundColor: colors.surface,
+            }}
+            itemStyle={{ color: colors.text }}
           >
-            <Picker.Item label={`-- ${placeholder} --`} value="" />
+            <Picker.Item
+              label={`-- ${placeholder} --`}
+              value=""
+              color={colors.textMuted}
+            />
             {items.map((i) => (
-              <Picker.Item key={i.value} label={i.label} value={i.value} />
+              <Picker.Item
+                key={i.value}
+                label={i.label}
+                value={i.value}
+                color={colors.text}
+              />
             ))}
           </Picker>
         </View>
@@ -95,20 +162,26 @@ function Select({ value, onChange, items, placeholder = 'Select…', disabled, t
 }
 /* ------------------------------------------------------------------------- */
 
-// normalize category
+// normalise category
 const normalizeCategory = (cat) => {
-  if (typeof cat !== 'string') return 'Other';
+  if (typeof cat !== "string") return "Other";
   const c = cat.trim();
-  return c.length ? c : 'Other';
+  return c.length ? c : "Other";
 };
 
 export default function VehicleIssuesPage() {
-  const [vehicles, setVehicles] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const router = useRouter();
 
-  const [selectedCategory, setSelectedCategory] = useState('');
-  const [selectedVehicle, setSelectedVehicle] = useState('');
-  const [issueText, setIssueText] = useState('');
+  // ✅ mirror me.js
+  const { employee, user, isAuthed, loading } = useAuth();
+  const { colors } = useTheme();
+
+  const [vehicles, setVehicles] = useState([]);
+  const [loadingVehicles, setLoadingVehicles] = useState(true);
+
+  const [selectedCategory, setSelectedCategory] = useState("");
+  const [selectedVehicle, setSelectedVehicle] = useState("");
+  const [issueText, setIssueText] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
   const normalizedVehicles = useMemo(
@@ -126,61 +199,100 @@ export default function VehicleIssuesPage() {
     return normalizedVehicles.filter((v) => v.category === selectedCategory);
   }, [normalizedVehicles, selectedCategory]);
 
-  const isValid = selectedCategory && selectedVehicle && issueText.trim().length > 0;
+  const isValid =
+    selectedCategory && selectedVehicle && issueText.trim().length > 0;
   const charCount = issueText.length;
 
   useEffect(() => {
+    // gate like me.js
+    if (loading || !isAuthed) return;
     const fetchVehicles = async () => {
       try {
-        const snapshot = await getDocs(collection(db, 'vehicles'));
-        const list = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+        const snapshot = await getDocs(collection(db, "vehicles"));
+        const list = snapshot.docs.map((doc) => ({
+          id: doc.id,
+          ...doc.data(),
+        }));
         setVehicles(list);
       } catch (e) {
-        console.error('Error fetching vehicles:', e);
+        console.error("Error fetching vehicles:", e);
       } finally {
-        setLoading(false);
+        setLoadingVehicles(false);
       }
     };
     fetchVehicles();
-  }, []);
+  }, [loading, isAuthed]);
 
   // clear vehicle when category changes
   useEffect(() => {
-    setSelectedVehicle('');
+    setSelectedVehicle("");
   }, [selectedCategory]);
 
   const reportIssue = async () => {
     if (!isValid) {
-      Alert.alert('Missing info', 'Please complete all fields before submitting.');
+      Alert.alert(
+        "Missing info",
+        "Please complete all fields before submitting."
+      );
       return;
     }
     try {
       setSubmitting(true);
-      const vehicle = normalizedVehicles.find((v) => v.id === selectedVehicle);
+      const v = normalizedVehicles.find((x) => x.id === selectedVehicle);
+      const reporterName =
+        employee?.name ||
+        employee?.displayName ||
+        user?.displayName ||
+        "Unknown";
+      const reporterCode = employee?.userCode || "N/A";
+      const reporterUid = user?.uid || "N/A";
 
-      await addDoc(collection(db, 'vehicleIssues'), {
-        vehicleId: vehicle.id,
-        vehicleName: vehicle.name || 'Unnamed Vehicle',
-        category: vehicle.category || 'Other',
+      await addDoc(collection(db, "vehicleIssues"), {
+        vehicleId: v.id,
+        vehicleName: v.name || "Unnamed Vehicle",
+        category: v.category || "Other",
         description: issueText.trim(),
-        createdAt: new Date().toISOString(),
+        // reporter meta (matches provider pattern)
+        reporterName,
+        reporterCode,
+        reporterUid,
+        status: "open", // simple workflow
+        createdAt: serverTimestamp(), // server time
       });
 
-      Alert.alert('✅ Issue reported', `Thanks! We logged an issue for ${vehicle.name || 'vehicle'}.`);
-      setIssueText('');
-      setSelectedVehicle('');
-      setSelectedCategory('');
+      Alert.alert(
+        "✅ Issue reported",
+        `Thanks! We logged an issue for ${v.name || "vehicle"}.`,
+        [
+          {
+            text: "OK",
+            onPress: () => {
+              // clear form
+              setIssueText("");
+              setSelectedVehicle("");
+              setSelectedCategory("");
+              // go home
+              router.replace("/(protected)/screens/homescreen");
+            },
+          },
+        ]
+      );
     } catch (err) {
-      console.error('Error reporting issue:', err);
-      Alert.alert('❌ Error', 'Failed to report the issue. Please try again.');
+      console.error("Error reporting issue:", err);
+      Alert.alert("❌ Error", "Failed to report the issue. Please try again.");
     } finally {
       setSubmitting(false);
     }
   };
 
+  // follow me.js: render nothing while resolving or unauthenticated (protected route)
+  if (loading || !isAuthed) return null;
+
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <View style={styles.container}>
+    <SafeAreaView
+      style={[styles.safeArea, { backgroundColor: colors.background }]}
+    >
+      <View style={[styles.container, { backgroundColor: colors.background }]}>
         <ScrollView
           contentContainerStyle={styles.content}
           keyboardShouldPersistTaps="handled"
@@ -188,29 +300,72 @@ export default function VehicleIssuesPage() {
         >
           {/* Header */}
           <View style={styles.headerWrap}>
-            <Text style={styles.title}>Report Vehicle Issues</Text>
-            <Text style={styles.subtitle}>Log problems quickly so the team can action them.</Text>
+            <Text style={[styles.title, { color: colors.text }]}>
+              Report Vehicle Issues
+            </Text>
+            <Text style={[styles.subtitle, { color: colors.textMuted }]}>
+              Log problems quickly so the team can action them.
+            </Text>
           </View>
 
           {/* Loading / Empty */}
-          {loading ? (
-            <View style={styles.loadingCard}>
-              <ActivityIndicator size="large" color="#ffffff" />
-              <Text style={styles.loadingText}>Loading vehicles…</Text>
+          {loadingVehicles ? (
+            <View
+              style={[
+                styles.loadingCard,
+                {
+                  backgroundColor: colors.surface,
+                  borderColor: colors.border,
+                },
+              ]}
+            >
+              <ActivityIndicator size="large" color={colors.accent} />
+              <Text
+                style={[styles.loadingText, { color: colors.textMuted }]}
+              >
+                Loading vehicles…
+              </Text>
             </View>
           ) : vehicles.length === 0 ? (
-            <View style={styles.emptyCard}>
-              <Icon name="truck" size={22} color="#9a9a9a" />
-              <Text style={styles.emptyTitle}>No vehicles found</Text>
-              <Text style={styles.emptyText}>Add vehicles in the admin area, then report issues here.</Text>
+            <View
+              style={[
+                styles.emptyCard,
+                {
+                  backgroundColor: colors.surface,
+                  borderColor: colors.border,
+                },
+              ]}
+            >
+              <Icon name="truck" size={22} color={colors.textMuted} />
+              <Text style={[styles.emptyTitle, { color: colors.text }]}>
+                No vehicles found
+              </Text>
+              <Text style={[styles.emptyText, { color: colors.textMuted }]}>
+                Add vehicles in the admin area, then report issues here.
+              </Text>
             </View>
           ) : (
             <>
               {/* Category */}
-              <View style={styles.card}>
+              <View
+                style={[
+                  styles.card,
+                  {
+                    backgroundColor: colors.surface,
+                    borderColor: colors.border,
+                  },
+                ]}
+              >
                 <View style={styles.cardHeader}>
-                  <Icon name="tag" size={16} color="#cfcfcf" />
-                  <Text style={styles.cardHeaderText}>Category</Text>
+                  <Icon name="tag" size={16} color={colors.textMuted} />
+                  <Text
+                    style={[
+                      styles.cardHeaderText,
+                      { color: colors.text },
+                    ]}
+                  >
+                    Category
+                  </Text>
                 </View>
 
                 <Select
@@ -218,16 +373,35 @@ export default function VehicleIssuesPage() {
                   onChange={setSelectedCategory}
                   placeholder="Select Category"
                   disabled={submitting}
-                  items={categories.map((cat) => ({ label: cat, value: cat }))}
+                  items={categories.map((cat) => ({
+                    label: cat,
+                    value: cat,
+                  }))}
                   testID="category-select"
+                  colors={colors}
                 />
               </View>
 
               {/* Vehicle */}
-              <View style={styles.card}>
+              <View
+                style={[
+                  styles.card,
+                  {
+                    backgroundColor: colors.surface,
+                    borderColor: colors.border,
+                  },
+                ]}
+              >
                 <View style={styles.cardHeader}>
-                  <Icon name="truck" size={16} color="#cfcfcf" />
-                  <Text style={styles.cardHeaderText}>Vehicle</Text>
+                  <Icon name="truck" size={16} color={colors.textMuted} />
+                  <Text
+                    style={[
+                      styles.cardHeaderText,
+                      { color: colors.text },
+                    ]}
+                  >
+                    Vehicle
+                  </Text>
                 </View>
 
                 <Select
@@ -236,52 +410,128 @@ export default function VehicleIssuesPage() {
                   placeholder="Select Vehicle"
                   disabled={!selectedCategory || submitting}
                   items={filteredVehicles.map((v) => ({
-                    label: v.name || 'Unnamed Vehicle',
+                    label: v.name || "Unnamed Vehicle",
                     value: v.id,
                   }))}
                   testID="vehicle-select"
+                  colors={colors}
                 />
 
                 {selectedVehicle ? (
                   <View style={styles.metaRow}>
-                    <Text style={styles.meta}>
-                      ID: <Text style={styles.metaValue}>{selectedVehicle}</Text>
+                    <Text
+                      style={[styles.meta, { color: colors.textMuted }]}
+                    >
+                      ID:{" "}
+                      <Text
+                        style={[
+                          styles.metaValue,
+                          { color: colors.text },
+                        ]}
+                      >
+                        {selectedVehicle}
+                      </Text>
                     </Text>
-                    <Text style={styles.metaDot}>•</Text>
-                    <Text style={styles.meta}>
-                      Cat: <Text style={styles.metaValue}>{selectedCategory || 'Other'}</Text>
+                    <Text
+                      style={[styles.metaDot, { color: colors.textMuted }]}
+                    >
+                      •
+                    </Text>
+                    <Text
+                      style={[styles.meta, { color: colors.textMuted }]}
+                    >
+                      Cat:{" "}
+                      <Text
+                        style={[
+                          styles.metaValue,
+                          { color: colors.text },
+                        ]}
+                      >
+                        {selectedCategory || "Other"}
+                      </Text>
                     </Text>
                   </View>
                 ) : null}
               </View>
 
               {/* Issue description */}
-              <View style={styles.card}>
+              <View
+                style={[
+                  styles.card,
+                  {
+                    backgroundColor: colors.surface,
+                    borderColor: colors.border,
+                  },
+                ]}
+              >
                 <View style={styles.cardHeader}>
-                  <Icon name="alert-triangle" size={16} color="#cfcfcf" />
-                  <Text style={styles.cardHeaderText}>Describe the issue</Text>
+                  <Icon
+                    name="alert-triangle"
+                    size={16}
+                    color={colors.textMuted}
+                  />
+                  <Text
+                    style={[
+                      styles.cardHeaderText,
+                      { color: colors.text },
+                    ]}
+                  >
+                    Describe the issue
+                  </Text>
                 </View>
 
                 <TextInput
                   editable={!!selectedVehicle && !submitting}
-                  style={styles.input}
+                  style={[
+                    styles.input,
+                    {
+                      backgroundColor: colors.inputBackground,
+                      borderColor: colors.inputBorder,
+                      color: colors.text,
+                    },
+                  ]}
                   placeholder="e.g. Brakes squeaking above 40mph, warning light on, tyre low…"
-                  placeholderTextColor="#8b8b8b"
+                  placeholderTextColor={colors.textMuted}
                   multiline
                   value={issueText}
-                  onChangeText={(t) => setIssueText(t.length > MAX_CHARS ? t.slice(0, MAX_CHARS) : t)}
+                  onChangeText={(t) =>
+                    setIssueText(
+                      t.length > MAX_CHARS ? t.slice(0, MAX_CHARS) : t
+                    )
+                  }
                 />
                 <View style={styles.counterRow}>
-                  <Text style={styles.counterText}>{charCount}/{MAX_CHARS}</Text>
+                  <Text
+                    style={[
+                      styles.counterText,
+                      { color: colors.textMuted },
+                    ]}
+                  >
+                    {charCount}/{MAX_CHARS}
+                  </Text>
                 </View>
 
                 <TouchableOpacity
-                  style={[styles.button, !isValid || submitting ? styles.buttonDisabled : null]}
+                  style={[
+                    styles.button,
+                    {
+                      backgroundColor: colors.accent,
+                      borderColor: colors.accent,
+                    },
+                    (!isValid || submitting) && styles.buttonDisabled,
+                  ]}
                   onPress={reportIssue}
                   disabled={!isValid || submitting}
                   activeOpacity={0.9}
                 >
-                  <Text style={styles.buttonText}>{submitting ? 'Submitting…' : 'Report Issue'}</Text>
+                  <Text
+                    style={[
+                      styles.buttonText,
+                      { color: colors.surface },
+                    ]}
+                  >
+                    {submitting ? "Submitting…" : "Report Issue"}
+                  </Text>
                 </TouchableOpacity>
               </View>
             </>
@@ -295,114 +545,116 @@ export default function VehicleIssuesPage() {
 }
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: '#000' },
-  container: { flex: 1, backgroundColor: '#000' },
+  safeArea: { flex: 1 },
+  container: { flex: 1 },
   content: { padding: 16, paddingBottom: 24 },
 
-  headerWrap: { alignItems: 'center', marginBottom: 12 },
-  title: { color: '#fff', fontSize: 22, fontWeight: '800', letterSpacing: 0.2, textAlign: 'center' },
-  subtitle: { color: '#bdbdbd', marginTop: 6, fontSize: 13, textAlign: 'center' },
+  headerWrap: { alignItems: "center", marginBottom: 12 },
+  title: {
+    fontSize: 22,
+    fontWeight: "800",
+    letterSpacing: 0.2,
+    textAlign: "center",
+  },
+  subtitle: { marginTop: 6, fontSize: 13, textAlign: "center" },
 
   card: {
-    backgroundColor: '#0f0f0f',
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#1f1f1f',
     padding: 12,
     marginTop: 12,
   },
-  cardHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 },
-  cardHeaderText: { color: '#eaeaea', fontSize: 14, fontWeight: '700' },
+  cardHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 8,
+  },
+  cardHeaderText: { fontSize: 14, fontWeight: "700" },
 
   // Android inline shell
   pickerShellAndroid: {
-    backgroundColor: '#151515',
     borderWidth: 1,
-    borderColor: '#252525',
     borderRadius: 10,
-    overflow: 'hidden',
+    overflow: "hidden",
   },
 
   // iOS tap field
   selectField: {
-    backgroundColor: '#151515',
     borderWidth: 1,
-    borderColor: '#252525',
     borderRadius: 10,
     paddingHorizontal: 12,
     paddingVertical: 12,
   },
-  selectFieldText: { color: '#fff' },
+  selectFieldText: {},
 
   // iOS modal sheet
-  modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)' },
+  modalBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)" },
   sheet: {
-    backgroundColor: '#0f0f0f',
     borderTopLeftRadius: 14,
     borderTopRightRadius: 14,
     paddingBottom: 24,
   },
   sheetToolbar: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
+    flexDirection: "row",
+    justifyContent: "flex-end",
     paddingHorizontal: 12,
     paddingVertical: 10,
     borderBottomWidth: 1,
-    borderBottomColor: '#222',
   },
-  doneText: { color: '#fff', fontWeight: '700' },
+  doneText: { fontWeight: "700" },
 
-  metaRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10 },
-  meta: { color: '#bdbdbd', fontSize: 12 },
-  metaValue: { color: '#fff', fontWeight: '700' },
-  metaDot: { color: '#4a4a4a' },
+  metaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 10,
+  },
+  meta: { fontSize: 12 },
+  metaValue: { fontWeight: "700" },
+  metaDot: {},
 
   input: {
-    backgroundColor: '#151515',
-    color: '#fff',
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: '#252525',
     minHeight: 100,
     paddingHorizontal: 12,
     paddingVertical: 10,
-    textAlignVertical: 'top',
+    textAlignVertical: "top",
   },
-  counterRow: { flexDirection: 'row', justifyContent: 'flex-end', marginTop: 6 },
-  counterText: { color: '#8b8b8b', fontSize: 12 },
+  counterRow: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    marginTop: 6,
+  },
+  counterText: { fontSize: 12 },
 
   button: {
-    backgroundColor: '#C8102E',
     paddingVertical: 12,
     borderRadius: 10,
-    alignItems: 'center',
+    alignItems: "center",
     marginTop: 12,
     borderWidth: 1,
-    borderColor: '#C8102E',
   },
   buttonDisabled: { opacity: 0.6 },
-  buttonText: { color: '#fff', fontSize: 16, fontWeight: '800' },
+  buttonText: { fontSize: 16, fontWeight: "800" },
 
   loadingCard: {
-    backgroundColor: '#0f0f0f',
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#1f1f1f',
     padding: 20,
-    alignItems: 'center',
+    alignItems: "center",
     marginTop: 16,
   },
-  loadingText: { color: '#cfcfcf', marginTop: 10 },
+  loadingText: { marginTop: 10 },
   emptyCard: {
-    backgroundColor: '#0f0f0f',
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#1f1f1f',
     padding: 20,
-    alignItems: 'center',
+    alignItems: "center",
     marginTop: 16,
     gap: 8,
   },
-  emptyTitle: { color: '#fff', fontWeight: '800' },
-  emptyText: { color: '#bdbdbd', textAlign: 'center' },
+  emptyTitle: { fontWeight: "800" },
+  emptyText: { textAlign: "center" },
 });

@@ -49,3 +49,10 @@ Thumbs.db
 
 # Example app placeholder (remove if not relevant)
 app-example
+
+# ignore junk
+node_modules__OLD/
+.DS_Store
+**/.DS_Store
+app.json.bak
+package-lock 2.json
