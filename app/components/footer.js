@@ -1,41 +1,20 @@
 // app/components/footer.jsx
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import { usePathname, useRouter } from "expo-router";
-import { useEffect, useState } from "react";
 import { Platform, StyleSheet, TouchableOpacity, View } from "react-native";
 import Ionicons from "react-native-vector-icons/Ionicons";
 
+import { resolveWorkspaceAccess } from "../../lib/access";
+import { useAuth } from "../providers/AuthProvider";
 // ✅ Use ThemeProvider hook instead of custom useColorScheme
 import { useTheme } from "../providers/ThemeProvider";
 
 export default function Footer() {
   const router = useRouter();
   const pathname = usePathname();
-  const { colorScheme, colors } = useTheme();
-  const isDark = colorScheme === "dark";
-
-  const [userCode, setUserCode] = useState(null);
-
-  useEffect(() => {
-    let isMounted = true;
-
-    (async () => {
-      try {
-        // read the key we now definitely save
-        const storedCode = await AsyncStorage.getItem("userCode");
-        console.log("FOOTER userCode:", storedCode);
-        if (isMounted) {
-          setUserCode(storedCode);
-        }
-      } catch (e) {
-        console.warn("Failed to load userCode", e);
-      }
-    })();
-
-    return () => {
-      isMounted = false;
-    };
-  }, []);
+  const { colors } = useTheme();
+  const { employee } = useAuth() ?? {};
+  const workspaceAccess = resolveWorkspaceAccess(employee);
+  const isServiceOnlyUser = workspaceAccess.service && !workspaceAccess.user;
 
   const tabs = [
     {
@@ -70,9 +49,9 @@ export default function Footer() {
     },
   ];
 
-  const activeColor = colors.text;
+  const activeColor = colors.accent;
   const inactiveColor = colors.textMuted;
-  const bg = colors.background;
+  const bg = colors.surface;
 
   return (
     <View style={[styles.container, { backgroundColor: bg }]}>
@@ -81,6 +60,7 @@ export default function Footer() {
           styles.footer,
           {
             backgroundColor: bg,
+            borderTopColor: colors.border,
             shadowColor: "#000",
           },
         ]}
@@ -88,10 +68,10 @@ export default function Footer() {
         {tabs.map((t) => {
           const isJobsTab = t.route === "/job";
 
-          // 👉 If Jobs tab + code 1234, treat /protected/service as its page
+          // Service users use service workspace routes.
           let isActive;
-          if (isJobsTab && userCode === "1234") {
-            isActive = pathname?.startsWith("/service-home");
+          if (isJobsTab && isServiceOnlyUser) {
+            isActive = pathname?.startsWith("/service");
           } else {
             isActive =
               pathname === t.route ||
@@ -101,13 +81,12 @@ export default function Footer() {
           const handlePress = () => {
             if (isActive) return;
 
-            if (isJobsTab && userCode === "1234") {
-              console.log("Routing Jobs tab to /protected/service for 1234");
-              router.push("service/service-home"); // 👈 service screen
+            if (isJobsTab && isServiceOnlyUser) {
+              router.navigate("/service/home");
               return;
             }
 
-            router.push(t.route);
+            router.navigate(t.route);
           };
 
           return (
@@ -138,18 +117,18 @@ const styles = StyleSheet.create({
   footer: {
     flexDirection: "row",
     alignItems: "center",
-    borderTopWidth: 0,
+    borderTopWidth: StyleSheet.hairlineWidth,
     marginHorizontal: 0,
     borderRadius: 0,
     paddingVertical: 10,
     paddingHorizontal: 4,
     ...Platform.select({
       ios: {
-        shadowOpacity: 0.2,
-        shadowRadius: 8,
+        shadowOpacity: 0.08,
+        shadowRadius: 10,
         shadowOffset: { width: 0, height: -2 },
       },
-      android: { elevation: 12 },
+      android: { elevation: 8 },
     }),
   },
   tab: {

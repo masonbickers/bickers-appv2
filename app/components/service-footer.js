@@ -8,8 +8,7 @@ import { useTheme } from "../providers/ThemeProvider";
 export default function ServiceFooter() {
   const router = useRouter();
   const pathname = usePathname();
-  const { colorScheme, colors } = useTheme();
-  const isDark = colorScheme === "dark";
+  const { colors } = useTheme();
 
   // 🔧 Tabs dedicated to Service / Workshop area
   // URLs are /service/... (group (protected) is hidden from URL)
@@ -50,9 +49,9 @@ export default function ServiceFooter() {
     },
   ];
 
-  const activeColor = colors.text;
+  const activeColor = colors.accent;
   const inactiveColor = colors.textMuted;
-  const bg = colors.surface || colors.background;
+  const bg = colors.surface;
 
   return (
     <View style={[styles.container, { backgroundColor: bg }]}>
@@ -61,6 +60,7 @@ export default function ServiceFooter() {
           styles.footer,
           {
             backgroundColor: bg,
+            borderTopColor: colors.border,
             shadowColor: "#000",
           },
         ]}
@@ -73,7 +73,7 @@ export default function ServiceFooter() {
 
           const handlePress = () => {
             if (isActive) return;
-            router.push(t.route);
+            router.navigate(t.route);
           };
 
           return (
@@ -104,18 +104,18 @@ const styles = StyleSheet.create({
   footer: {
     flexDirection: "row",
     alignItems: "center",
-    borderTopWidth: 0,
+    borderTopWidth: StyleSheet.hairlineWidth,
     marginHorizontal: 0,
     borderRadius: 0,
     paddingVertical: 10,
     paddingHorizontal: 4,
     ...Platform.select({
       ios: {
-        shadowOpacity: 0.2,
-        shadowRadius: 8,
+        shadowOpacity: 0.08,
+        shadowRadius: 10,
         shadowOffset: { width: 0, height: -2 },
       },
-      android: { elevation: 12 },
+      android: { elevation: 8 },
     }),
   },
   tab: {
