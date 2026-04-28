@@ -23,7 +23,7 @@ const COLORS = {
   textHigh: "#FFFFFF",
   textMid: "#E0E0E0",
   textLow: "#888888",
-  primaryAction: "#FF3B30",
+  primaryAction: "#ED1C25",
   inputBg: "#2a2a2a",
 };
 
@@ -87,25 +87,41 @@ export default function ServiceHistoryScreen() {
   }, []);
 
   const processed = useMemo(() => {
-    return vehicles.map((v) => {
-      const lastMOT = v.lastMOT || v.lastMot || v.lastMotDate;
-      const nextMOT = v.nextMOT || v.nextMot || v.nextMotDate;
-      const lastService = v.lastService || v.lastServiceDate;
-      const nextService = v.nextService || v.nextServiceDate;
+    return vehicles
+      .map((v) => {
+        const lastMOT = v.lastMOT || v.lastMot || v.lastMotDate;
+        const nextMOT = v.nextMOT || v.nextMot || v.nextMotDate;
+        const lastService = v.lastService || v.lastServiceDate;
+        const nextService = v.nextService || v.nextServiceDate;
 
-      const recentMOT = wasRecently(lastMOT, 365); // within last year
-      const recentService = wasRecently(lastService, 365);
+        const recentMOT = wasRecently(lastMOT, 365); // within last year
+        const recentService = wasRecently(lastService, 365);
+        const latestCompletedDate =
+          [lastService, lastMOT]
+            .map((value) => toDateMaybe(value))
+            .filter(Boolean)
+            .sort((a, b) => b.getTime() - a.getTime())[0] || null;
 
-      return {
-        ...v,
-        lastMOT,
-        nextMOT,
-        lastService,
-        nextService,
-        recentMOT,
-        recentService,
-      };
-    });
+        return {
+          ...v,
+          lastMOT,
+          nextMOT,
+          lastService,
+          nextService,
+          recentMOT,
+          recentService,
+          latestCompletedDate,
+        };
+      })
+      .sort((a, b) => {
+        const aTime = a.latestCompletedDate?.getTime() || 0;
+        const bTime = b.latestCompletedDate?.getTime() || 0;
+        if (aTime !== bTime) return bTime - aTime;
+
+        const aName = a.name || a.vehicleName || "";
+        const bName = b.name || b.vehicleName || "";
+        return aName.localeCompare(bName);
+      });
   }, [vehicles]);
 
   const summary = useMemo(() => {
@@ -139,6 +155,7 @@ export default function ServiceHistoryScreen() {
 
   return (
     <SafeAreaView
+      edges={["left", "right"]}
       style={[
         styles.container,
         { backgroundColor: colors.background || COLORS.background },

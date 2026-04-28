@@ -18,6 +18,16 @@ import { useTheme } from "../providers/ThemeProvider";
 /* ─────────────────────────── Helpers ─────────────────────────── */
 const norm = (v) => String(v ?? "").trim().toLowerCase();
 
+function withAlpha(hex, alpha) {
+  const safeAlpha = Math.max(0, Math.min(1, Number(alpha) || 0));
+  const raw = String(hex || "").replace("#", "");
+  if (!/^[0-9a-fA-F]{6}$/.test(raw)) return `rgba(255,255,255,${safeAlpha})`;
+  const r = parseInt(raw.slice(0, 2), 16);
+  const g = parseInt(raw.slice(2, 4), 16);
+  const b = parseInt(raw.slice(4, 6), 16);
+  return `rgba(${r},${g},${b},${safeAlpha})`;
+}
+
 /** Parse "YYYY-MM-DD" safely at local midnight (no TZ shift). */
 const parseYMD = (s) => {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s || ""));
@@ -409,11 +419,6 @@ export default function HolidayPage() {
   const {
     paid,
     unpaid,
-    accruedEarned,
-    accruedTaken,
-    accruedBalance,
-    allowance,
-    carryOver,
     totalAllowance,
     allowanceBalance,
   } = calc();
@@ -458,96 +463,85 @@ export default function HolidayPage() {
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
-      {/* Top Bar */}
-      <View style={styles.topBar}>
-        <TouchableOpacity
-          style={[
-            styles.topBarBtn,
-            { backgroundColor: colors.background, borderColor: colors.background },
-          ]}
-          onPress={() => router.back()}
-        >
-          <Icon name="arrow-left" size={18} color={colors.text} />
-          <Text style={[styles.topBarBtnText, { color: colors.text }]}>Back</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={[styles.topBarBtn, styles.primaryBtn]}
-          onPress={() => router.push("/holiday-request")}
-        >
-          <Icon name="plus" size={18} color="#000" />
-          <Text style={[styles.topBarBtnText, { color: "#000", fontWeight: "800" }]}>
-            Request
-          </Text>
-        </TouchableOpacity>
-      </View>
-
       <ScrollView
         style={{ flex: 1 }}
-        contentContainerStyle={{ paddingHorizontal: 14, paddingBottom: 24 }}
+        contentContainerStyle={styles.scrollContent}
       >
-        {employeeData && (
-          <>
-            {/* Header Card */}
-            <View
-              style={[
-                styles.headerCard,
-                { backgroundColor: colors.surfaceAlt, borderColor: colors.border },
-              ]}
-            >
-              <Text style={[styles.headerName, { color: colors.text }]}>
-                {employeeData.name}
-              </Text>
+        <View style={styles.heroCard}>
+          <View style={styles.heroContent}>
+            <View style={styles.heroTopRow}>
+              <TouchableOpacity
+                style={[
+                  styles.heroBackButton,
+                  {
+                    backgroundColor: withAlpha(colors.surfaceAlt, 0.82),
+                    borderColor: withAlpha(colors.border, 0.82),
+                  },
+                ]}
+                onPress={() => router.back()}
+                activeOpacity={0.85}
+              >
+                <Icon name="arrow-left" size={15} color={colors.text} />
+              </TouchableOpacity>
 
-              <View style={styles.pillsWrap}>
-                <View
-                  style={[
-                    styles.pill,
-                    { backgroundColor: colors.surface, borderColor: colors.border },
-                  ]}
-                >
-                  <Text style={[styles.pillLabel, { color: colors.textMuted }]}>
-                    Allowance ({selectedYear})
-                  </Text>
-                  <Text style={[styles.pillValue, { color: colors.text }]}>{allowance}</Text>
-                </View>
+              <View style={styles.heroTitleWrap}>
+                <Text style={[styles.heroTitle, { color: colors.text }]}>Holiday</Text>
+                <Text style={[styles.heroSubTitle, { color: colors.textMuted }]}>
+                  {employeeData?.name
+                    ? `${employeeData.name} · ${selectedYear}`
+                    : `Track leave and balances for ${selectedYear}.`}
+                </Text>
+              </View>
 
-                <View
-                  style={[
-                    styles.pill,
-                    { backgroundColor: colors.surface, borderColor: colors.border },
-                  ]}
-                >
-                  <Text style={[styles.pillLabel, { color: colors.textMuted }]}>
-                    Carry Over ({selectedYear})
-                  </Text>
-                  <Text style={[styles.pillValue, { color: colors.text }]}>{carryOver}</Text>
-                </View>
+              <View style={styles.heroSpacer} />
+            </View>
 
-                <View
-                  style={[
-                    styles.pill,
-                    {
-                      backgroundColor: colors.surface,
-                      borderColor: allowanceBalance < 0 ? "#ef4444" : "#16a34a",
-                    },
-                  ]}
-                >
-                  <Text style={[styles.pillLabel, { color: colors.textMuted }]}>
-                    Left ({selectedYear})
-                  </Text>
-                  <Text
-                    style={[
-                      styles.pillValue,
-                      { color: allowanceBalance < 0 ? "#ef4444" : "#16a34a" },
-                    ]}
-                  >
-                    {Number(allowanceBalance.toFixed(1))}
-                  </Text>
-                </View>
+            <View style={styles.heroMetaRow}>
+              <View
+                style={[
+                  styles.heroMetaChip,
+                  {
+                    backgroundColor: withAlpha(colors.surfaceAlt, 0.82),
+                    borderColor: withAlpha(colors.border, 0.82),
+                  },
+                ]}
+              >
+                <Icon name="pie-chart" size={12} color={colors.textMuted} />
+                <Text style={[styles.heroMetaText, { color: colors.text }]}>
+                  Allowance: {Number(totalAllowance.toFixed(1))}
+                </Text>
+              </View>
+
+              <View
+                style={[
+                  styles.heroMetaChip,
+                  {
+                    backgroundColor: withAlpha(colors.surfaceAlt, 0.82),
+                    borderColor: withAlpha(colors.border, 0.82),
+                  },
+                ]}
+              >
+                <Icon name="check-circle" size={12} color={colors.textMuted} />
+                <Text style={[styles.heroMetaText, { color: colors.text }]}>
+                  Left: {Number(allowanceBalance.toFixed(1))}
+                </Text>
               </View>
             </View>
 
+            <View style={styles.heroActionsRow}>
+              <TouchableOpacity
+                style={[styles.heroActionBtn, styles.heroPrimaryBtn]}
+                onPress={() => router.push("/holiday-request")}
+              >
+                <Icon name="plus" size={15} color="#000" />
+                <Text style={[styles.heroActionText, { color: "#000" }]}>Request</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+
+        {employeeData && (
+          <>
             {/* Stats Grid */}
             <View style={styles.statsGrid}>
               <Stat
@@ -566,8 +560,8 @@ export default function HolidayPage() {
 
               <View style={[styles.table, { borderColor: colors.border }]}>
                 <View style={[styles.tableHeader, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-                  <Text style={[styles.th, { flex: 1.3, color: colors.text }]}>Date From</Text>
-                  <Text style={[styles.th, { flex: 1.3, color: colors.text }]}>Date To</Text>
+                  <Text style={[styles.th, { flex: 1.3, color: colors.text }]}>From</Text>
+                  <Text style={[styles.th, { flex: 1.3, color: colors.text }]}>To</Text>
                   <Text style={[styles.th, { color: colors.text }]}>Days</Text>
                   <Text style={[styles.th, { color: colors.text }]}>Type</Text>
                   <Text style={[styles.th, { flex: 1.5, color: colors.text }]}>Notes</Text>
@@ -626,8 +620,8 @@ export default function HolidayPage() {
 
               <View style={[styles.table, { borderColor: colors.border }]}>
                 <View style={[styles.tableHeader, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-                  <Text style={[styles.th, { flex: 1.3, color: colors.text }]}>Date From</Text>
-                  <Text style={[styles.th, { flex: 1.3, color: colors.text }]}>Date To</Text>
+                  <Text style={[styles.th, { flex: 1.3, color: colors.text }]}>From</Text>
+                  <Text style={[styles.th, { flex: 1.3, color: colors.text }]}>To</Text>
                   <Text style={[styles.th, { color: colors.text }]}>Days</Text>
                   <Text style={[styles.th, { color: colors.text }]}>Type</Text>
                   <Text style={[styles.th, { flex: 1.5, color: colors.text }]}>Notes</Text>
@@ -738,33 +732,95 @@ function Stat({ label, value, color }) {
 /* ────────────────────────────── Styles ────────────────────────────── */
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#0b0b0b" },
+   scrollContent: { paddingHorizontal: 14, paddingBottom: 24, paddingTop: 24 },
 
-  topBar: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
+  heroCard: {
+    position: "relative",
+    marginBottom: 8,
+  },
+  heroContent: {
     paddingHorizontal: 14,
-    paddingVertical: 10,
+    paddingVertical: 14,
   },
-  topBarBtn: {
+  heroTopRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+  },
+  heroBackButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  heroTitleWrap: {
+    flex: 1,
+    paddingTop: 1,
+    alignItems: "center",
+  },
+  heroSpacer: {
+    width: 34,
+    height: 34,
+  },
+  heroEyebrow: {
+    fontSize: 12,
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+    fontWeight: "800",
+    textAlign: "center",
+  },
+  heroTitle: {
+    marginTop: 2,
+    fontSize: 24,
+    fontWeight: "900",
+    letterSpacing: 0.2,
+    textAlign: "center",
+  },
+  heroSubTitle: {
+    marginTop: 2,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: "600",
+    textAlign: "center",
+  },
+  heroMetaRow: {
+    marginTop: 10,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    justifyContent: "center",
+  },
+  heroMetaChip: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
+    gap: 6,
+    borderRadius: 999,
     borderWidth: 1,
-    borderColor: "#2a2a2a",
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 10,
-    backgroundColor: "#151515",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
   },
-  topBarBtnText: { color: "#fff", fontSize: 14, fontWeight: "700" },
-  primaryBtn: { backgroundColor: "#fde047", borderColor: "#fde047" },
+  heroMetaText: { fontSize: 11, fontWeight: "700" },
+  heroActionsRow: {
+    marginTop: 10,
+    flexDirection: "row",
+    gap: 8,
+    justifyContent: "center",
+  },
+  heroActionBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingVertical: 7,
+    paddingHorizontal: 12,
+  },
+  heroPrimaryBtn: { backgroundColor: "#fde047", borderColor: "#fde047" },
+  heroActionText: { fontSize: 13, fontWeight: "800" },
 
   headerCard: {
-    backgroundColor: "#111111",
-    borderWidth: 1,
-    borderColor: "#222",
-    borderRadius: 14,
     padding: 14,
     marginBottom: 12,
   },

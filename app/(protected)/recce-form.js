@@ -37,7 +37,7 @@ const COLORS = {
   textMid: "#E0E0E0",
   textLow: "#888888",
   primaryAction: "#2176FF",
-  recceAction: "#FF3B30",
+  recceAction: "#ED1C25",
   inputBg: "#2a2a2a",
   lightGray: "#4a4a4a",
 };

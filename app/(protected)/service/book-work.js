@@ -3,7 +3,6 @@ import { useRouter } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
@@ -11,11 +10,14 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
 import { collection, getDocs } from "firebase/firestore";
+import PageHeaderCard from "../../../components/PageHeaderCard";
 import { db } from "../../../firebaseConfig";
 
+import { designTokens as t } from "../../../lib/design/tokens";
 import { useTheme } from "../../providers/ThemeProvider";
 
 const COLORS = {
@@ -25,8 +27,8 @@ const COLORS = {
   textHigh: "#FFFFFF",
   textMid: "#E0E0E0",
   textLow: "#888888",
-  primaryAction: "#FF3B30", // 🔴 align with service home
-  recceAction: "#FF3B30",
+  primaryAction: "#ED1C25", // 🔴 align with service home
+  recceAction: "#ED1C25",
   inputBg: "#2a2a2a",
   lightGray: "#4a4a4a",
 };
@@ -167,6 +169,37 @@ function getBookingDaysWithinWindow(booking, from, to) {
   }
 
   return days;
+}
+
+function normalizeMaintenanceBookingForPrep(docData) {
+  const data = docData || {};
+  const date =
+    data.appointmentDateISO ||
+    data.startDateISO ||
+    data.endDateISO ||
+    data.completedAtISO ||
+    "";
+
+  return {
+    ...data,
+    // Compatibility adapter while the wider app still reads legacy bookings.
+    status: data.status === "Booked" ? "Confirmed" : data.status,
+    date,
+    startDate: data.startDateISO || data.appointmentDateISO || date,
+    endDate: data.endDateISO || data.startDateISO || data.appointmentDateISO || date,
+    bookingDates: [data.startDateISO, data.appointmentDateISO, data.endDateISO]
+      .filter(Boolean)
+      .filter((value, index, arr) => arr.indexOf(value) === index),
+    vehicles: data.vehicleId
+      ? [
+          {
+            id: data.vehicleId,
+            name: data.vehicleLabel || "Vehicle",
+            vehicleName: data.vehicleLabel || "Vehicle",
+          },
+        ]
+      : [],
+  };
 }
 
 // normalise vehicles on booking to attach full DB record where possible
@@ -362,8 +395,16 @@ export default function BookWorkScreen() {
     const fetchBookings = async () => {
       try {
         setPrepLoading(true);
-        const snap = await getDocs(collection(db, "bookings"));
-        const data = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        const [legacySnap, maintenanceSnap] = await Promise.all([
+          getDocs(collection(db, "bookings")),
+          getDocs(collection(db, "maintenanceBookings")),
+        ]);
+        const legacyData = legacySnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        const maintenanceData = maintenanceSnap.docs.map((d) => ({
+          id: d.id,
+          ...normalizeMaintenanceBookingForPrep(d.data()),
+        }));
+        const data = [...legacyData, ...maintenanceData];
         setBookings(data);
       } catch (err) {
         console.error("Failed to load bookings for vehicle prep:", err);
@@ -595,38 +636,18 @@ export default function BookWorkScreen() {
 
   return (
     <SafeAreaView
+      edges={["left", "right"]}
       style={[
         styles.container,
         { backgroundColor: colors.background || COLORS.background },
       ]}
     >
-      {/* HEADER */}
-      <View
-        style={[
-          styles.header,
-          { borderBottomColor: colors.border || COLORS.border },
-        ]}
-      >
-        <View style={{ flex: 1 }}>
-          <Text
-            style={[
-              styles.pageTitle,
-              { color: colors.text || COLORS.textHigh },
-            ]}
-          >
-            Workshop To-Do
-          </Text>
-          <Text
-            style={[
-              styles.pageSubtitle,
-              { color: colors.textMuted || COLORS.textMid },
-            ]}
-          >
-            The system suggests where to start. Tap a row to open the right
-            form.
-          </Text>
-        </View>
-      </View>
+      <PageHeaderCard
+        eyebrow="Workshop"
+        title="Workshop To-Do"
+        subtitle="The system suggests where to start. Tap a row to open the right form."
+        style={styles.headerCard}
+      />
 
       <ScrollView contentContainerStyle={styles.scrollContent}>
         {/* INFO CARD – SMART SUGGESTION */}
@@ -1338,7 +1359,7 @@ function TaskRow({ task, onToggle }) {
 
   let typeColour = colors.textMuted || "#999";
   const typeLower = task.type.toLowerCase();
-  if (typeLower.includes("mot")) typeColour = colors.danger || "#FF3B30";
+  if (typeLower.includes("mot")) typeColour = colors.danger || "#ED1C25";
   else if (typeLower.includes("service"))
     typeColour = colors.success || "#34C759";
   else if (typeLower.includes("defect")) typeColour = "#FF9500";
@@ -1433,13 +1454,16 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: COLORS.background,
   },
+  headerCard: {
+    marginHorizontal: t.spacing.md,
+    marginTop: t.spacing.xs,
+    marginBottom: 0,
+  },
   header: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
+    paddingHorizontal: t.spacing.md,
+    paddingVertical: t.spacing.sm,
   },
   backButton: {
     paddingRight: 10,
@@ -1454,15 +1478,14 @@ const styles = StyleSheet.create({
     color: COLORS.textMid,
   },
   scrollContent: {
-    padding: 16,
+    padding: t.spacing.md,
+    paddingTop: 4,
   },
   infoCard: {
     backgroundColor: COLORS.card,
-    borderRadius: 10,
-    padding: 14,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: COLORS.border,
+    borderRadius: t.radius.sm,
+    padding: t.controls.cardPadding,
+    marginBottom: t.spacing.sm,
   },
   infoTitle: {
     fontSize: 16,
@@ -1483,10 +1506,8 @@ const styles = StyleSheet.create({
   prepCard: {
     backgroundColor: COLORS.card,
     borderRadius: 10,
-    padding: 12,
+    padding: t.controls.cardPadding,
     marginBottom: 16,
-    borderWidth: 1,
-    borderColor: COLORS.border,
   },
   prepDateLabel: {
     fontSize: 12,
@@ -1555,10 +1576,8 @@ const styles = StyleSheet.create({
   serviceCard: {
     backgroundColor: COLORS.card,
     borderRadius: 10,
-    padding: 12,
+    padding: t.controls.cardPadding,
     marginBottom: 16,
-    borderWidth: 1,
-    borderColor: COLORS.border,
   },
   serviceLoadingRow: {
     flexDirection: "row",
@@ -1643,7 +1662,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
     backgroundColor: COLORS.card,
     borderRadius: 10,
-    padding: 12,
+    minHeight: 72,
+    padding: t.controls.cardPadding,
     marginBottom: 14,
     borderWidth: 1,
     borderColor: COLORS.primaryAction,
@@ -1678,6 +1698,7 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   filterChip: {
+    minHeight: t.controls.chipMinHeight,
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 999,
@@ -1706,7 +1727,7 @@ const styles = StyleSheet.create({
   addTaskCard: {
     backgroundColor: COLORS.card,
     borderRadius: 10,
-    padding: 12,
+    padding: t.controls.cardPadding,
     marginBottom: 16,
     borderWidth: 1,
     borderColor: COLORS.border,
@@ -1730,7 +1751,8 @@ const styles = StyleSheet.create({
   addButton: {
     marginTop: 12,
     borderRadius: 999,
-    paddingVertical: 10,
+    minHeight: t.controls.buttonHeight,
+    paddingVertical: 8,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",

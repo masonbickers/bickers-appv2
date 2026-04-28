@@ -20,6 +20,16 @@ import {
 } from "../../lib/notificationInbox";
 import { useTheme } from "../providers/ThemeProvider";
 
+function withAlpha(hex, alpha) {
+  const safeAlpha = Math.max(0, Math.min(1, Number(alpha) || 0));
+  const raw = String(hex || "").replace("#", "");
+  if (!/^[0-9a-fA-F]{6}$/.test(raw)) return `rgba(255,255,255,${safeAlpha})`;
+  const r = parseInt(raw.slice(0, 2), 16);
+  const g = parseInt(raw.slice(2, 4), 16);
+  const b = parseInt(raw.slice(4, 6), 16);
+  return `rgba(${r},${g},${b},${safeAlpha})`;
+}
+
 function formatTime(ts) {
   const d = new Date(ts);
   if (Number.isNaN(d.getTime())) return "";
@@ -88,51 +98,96 @@ export default function NotificationsPage() {
     <SafeAreaView
       style={[styles.safeArea, { backgroundColor: colors.background }]}
     >
-      {/* Header */}
-      <View style={styles.header}>
-        <TouchableOpacity
-          onPress={() => router.back()}
-          style={[
-            styles.backBtn,
-            { borderColor: colors.border, backgroundColor: colors.surfaceAlt },
-          ]}
-          activeOpacity={0.85}
-        >
-          <Icon name="arrow-left" size={18} color={colors.text} />
-          <Text style={[styles.backText, { color: colors.text }]}>Back</Text>
-        </TouchableOpacity>
+      <View
+        style={[
+          styles.heroCard,
+          { backgroundColor: colors.surface, borderColor: colors.border },
+        ]}
+      >
+        <View style={styles.heroTopRow}>
+          <TouchableOpacity
+            onPress={() => router.back()}
+            style={[
+              styles.backBtn,
+              {
+                borderColor: withAlpha(colors.border, 0.8),
+                backgroundColor: withAlpha(colors.surfaceAlt, 0.8),
+              },
+            ]}
+            activeOpacity={0.85}
+          >
+            <Icon name="arrow-left" size={14} color={colors.text} />
+            <Text style={[styles.backText, { color: colors.text }]}>Back</Text>
+          </TouchableOpacity>
 
-        <View style={{ flex: 1 }}>
-          <Text style={[styles.title, { color: colors.text }]}>
-            Notifications
-          </Text>
-          <Text style={[styles.subtitle, { color: colors.textMuted }]}>
-            {unreadCount > 0 ? `${unreadCount} unread` : "All caught up"}
-          </Text>
+          <View style={styles.headerActions}>
+            <TouchableOpacity
+              onPress={handleMarkAllRead}
+              style={[
+                styles.actionBtn,
+                {
+                  borderColor: withAlpha(colors.border, 0.8),
+                  backgroundColor: withAlpha(colors.surfaceAlt, 0.8),
+                },
+              ]}
+              activeOpacity={0.85}
+            >
+              <Icon name="check" size={16} color={colors.text} />
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={handleClearAll}
+              style={[
+                styles.actionBtn,
+                {
+                  borderColor: withAlpha(colors.border, 0.8),
+                  backgroundColor: withAlpha(colors.surfaceAlt, 0.8),
+                },
+              ]}
+              activeOpacity={0.85}
+            >
+              <Icon name="trash-2" size={16} color={colors.text} />
+            </TouchableOpacity>
+          </View>
         </View>
 
-        <View style={styles.headerActions}>
-          <TouchableOpacity
-            onPress={handleMarkAllRead}
-            style={[
-              styles.actionBtn,
-              { borderColor: colors.border, backgroundColor: colors.surfaceAlt },
-            ]}
-            activeOpacity={0.85}
-          >
-            <Icon name="check" size={16} color={colors.text} />
-          </TouchableOpacity>
+        <View style={styles.heroContent}>
+          <Text style={[styles.heroEyebrow, { color: colors.textMuted }]}>Inbox</Text>
+          <Text style={[styles.heroTitle, { color: colors.text }]}>Notifications</Text>
+          <Text style={[styles.heroSubTitle, { color: colors.textMuted }]}>
+            {unreadCount > 0 ? `${unreadCount} unread` : "All caught up"}
+          </Text>
 
-          <TouchableOpacity
-            onPress={handleClearAll}
-            style={[
-              styles.actionBtn,
-              { borderColor: colors.border, backgroundColor: colors.surfaceAlt },
-            ]}
-            activeOpacity={0.85}
-          >
-            <Icon name="trash-2" size={16} color={colors.text} />
-          </TouchableOpacity>
+          <View style={styles.heroMetaRow}>
+            <View
+              style={[
+                styles.heroMetaChip,
+                {
+                  borderColor: withAlpha(colors.border, 0.75),
+                  backgroundColor: withAlpha(colors.surfaceAlt, 0.75),
+                },
+              ]}
+            >
+              <Icon name="bell" size={12} color={colors.textMuted} />
+              <Text style={[styles.heroMetaText, { color: colors.text }]}>
+                {items.length} total
+              </Text>
+            </View>
+            <View
+              style={[
+                styles.heroMetaChip,
+                {
+                  borderColor: withAlpha(colors.border, 0.75),
+                  backgroundColor: withAlpha(colors.surfaceAlt, 0.75),
+                },
+              ]}
+            >
+              <Icon name="refresh-cw" size={12} color={colors.textMuted} />
+              <Text style={[styles.heroMetaText, { color: colors.text }]}>
+                Pull to refresh
+              </Text>
+            </View>
+          </View>
         </View>
       </View>
 
@@ -142,7 +197,7 @@ export default function NotificationsPage() {
           <RefreshControl
             refreshing={refreshing}
             onRefresh={onRefresh}
-            tintColor={colors.text}
+            tintColor={colors.accent}
           />
         }
       >
@@ -192,7 +247,7 @@ export default function NotificationsPage() {
                         {
                           backgroundColor: unread
                             ? colors.accent
-                            : colors.textMuted,
+                            : withAlpha(colors.textMuted, 0.65),
                         },
                       ]}
                     />
@@ -264,27 +319,57 @@ export default function NotificationsPage() {
 const styles = StyleSheet.create({
   safeArea: { flex: 1 },
 
-  header: {
-    paddingHorizontal: 16,
-    paddingTop: 10,
-    paddingBottom: 10,
+  heroCard: {
+    position: "relative",
+    borderRadius: 18,
+    borderWidth: 1,
+    marginHorizontal: 12,
+    marginTop: 24,
+    marginBottom: 10,
+    overflow: "hidden",
+  },
+  heroTopRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
+    justifyContent: "space-between",
+    paddingHorizontal: 12,
+    paddingTop: 16,
   },
   backBtn: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 12,
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 999,
     borderWidth: 1,
   },
-  backText: { fontWeight: "800", fontSize: 14 },
+  backText: { fontWeight: "800", fontSize: 12 },
 
-  title: { fontSize: 22, fontWeight: "900", letterSpacing: 0.2 },
-  subtitle: { marginTop: 2, fontSize: 12, fontWeight: "600" },
+  heroContent: {
+    paddingHorizontal: 14,
+    paddingBottom: 14,
+    paddingTop: 12,
+  },
+  heroEyebrow: {
+    fontSize: 12,
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+    fontWeight: "800",
+  },
+  heroTitle: { marginTop: 3, fontSize: 24, fontWeight: "900", letterSpacing: 0.2 },
+  heroSubTitle: { marginTop: 2, fontSize: 13, fontWeight: "600" },
+  heroMetaRow: { marginTop: 12, flexDirection: "row", gap: 8, flexWrap: "wrap" },
+  heroMetaChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  heroMetaText: { fontSize: 11, fontWeight: "700" },
 
   headerActions: { flexDirection: "row", gap: 8 },
   actionBtn: {
@@ -296,7 +381,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
 
-  content: { paddingHorizontal: 16, paddingTop: 6 },
+  content: { paddingHorizontal: 16, paddingTop: 12 },
 
   emptyCard: {
     marginTop: 20,

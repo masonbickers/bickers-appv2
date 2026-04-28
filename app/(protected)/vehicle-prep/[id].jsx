@@ -22,7 +22,7 @@ const COLORS = {
   textHigh: "#FFFFFF",
   textMid: "#E0E0E0",
   textLow: "#888888",
-  primaryAction: "#FF3B30",
+  primaryAction: "#ED1C25",
   inputBg: "#1A1A1A",
   chipBg: "#1F1F1F",
   chipBorder: "#3A3A3A",

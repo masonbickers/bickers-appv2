@@ -2,16 +2,26 @@
 import { Slot, usePathname, useRouter, useSegments } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
-import React, { useEffect, useRef } from "react";
-import { View } from "react-native";
-import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
+import React, { useCallback, useEffect, useRef } from "react";
+import { Platform, View } from "react-native";
+import {
+  SafeAreaProvider,
+  initialWindowMetrics,
+  useSafeAreaInsets,
+} from "react-native-safe-area-context";
 import Footer from "./components/footer";
 import ServiceFooter from "./components/service-footer"; // 👈 NEW
 
-import * as Notifications from "expo-notifications";
 import { collection, doc, onSnapshot, query, setDoc, where } from "firebase/firestore";
 import { db } from "../firebaseConfig";
-import { addNotificationListeners, registerForPushNotificationsAsync } from "../lib/notifications";
+import { resolveWorkspaceAccess } from "../lib/access";
+import {
+  addNotificationListeners,
+  cancelAllScheduledNotifications,
+  NOTIFICATIONS_ENABLED,
+  registerForPushNotificationsAsync,
+  scheduleLocalNotification,
+} from "../lib/notifications";
 import { AuthProvider, useAuth } from "./providers/AuthProvider";
 
 // 👇 Theme imports
@@ -90,14 +100,56 @@ function ShellInner() {
 
   const firstSeg = Array.isArray(segments) && segments.length ? String(segments[0]) : "";
   const inAuthGroup = firstSeg.startsWith("(auth)");
-  const hideFooter = inAuthGroup;
+  const isWeekRoute = pathname?.startsWith("/week/");
+  const isEditProfileRoute = pathname === "/edit-profile";
+  const isSettingsRoute = pathname === "/settings";
+  const isTimesheetRoute = pathname === "/timesheet";
+  const isSpecSheetsRoute = pathname === "/spec-sheets";
+  const isInsuranceRoute = pathname === "/insurance";
+  const isWorkDiaryRoute = pathname === "/work-diary";
+  const isWorkDiaryBoardRoute = pathname === "/work-diary-board";
+  const isHolidayPageRoute = pathname === "/holidaypage";
+  const isHolidayRequestRoute = pathname === "/holiday-request";
+  const isServiceJobFormRoute = pathname?.startsWith("/service/service-form/");
+  const isServiceDefectDetailRoute = pathname?.startsWith("/service/defects/");
+  const isServiceVehicleOverviewRoute =
+    pathname?.startsWith("/service/vehicles/") &&
+    pathname !== "/service/vehicles";
+  const isServiceHistoryRoute =
+    pathname === "/service/service-history" ||
+    pathname?.startsWith("/service/service-history/");
+  const isServiceSettingsRoute = pathname === "/service/settings";
+  const hideFooter =
+    inAuthGroup ||
+    isWeekRoute ||
+    isEditProfileRoute ||
+    isSettingsRoute ||
+    isTimesheetRoute ||
+    isSpecSheetsRoute ||
+    isInsuranceRoute ||
+    isWorkDiaryRoute ||
+    isWorkDiaryBoardRoute ||
+    isHolidayPageRoute ||
+    isHolidayRequestRoute ||
+    isServiceJobFormRoute ||
+    isServiceDefectDetailRoute ||
+    isServiceVehicleOverviewRoute ||
+    isServiceHistoryRoute ||
+    isServiceSettingsRoute;
 
   const { user, loading: ctxLoading, isAuthed, employee } = useAuth() ?? {};
   const loading = typeof ctxLoading === "boolean" ? ctxLoading : user === undefined;
+  const workspaceAccess = resolveWorkspaceAccess(employee);
+  const isServiceOnlyUser = workspaceAccess.service && !workspaceAccess.user;
 
   // 👇 any route starting with "/service" uses the Service footer
   // e.g. /service, /service/pages/..., /service/whatever
   const isServiceRoute = pathname?.startsWith("/service");
+  const rootTopInset = isServiceRoute
+    ? Platform.OS === "ios"
+      ? Math.max(insets.top, 44)
+      : insets.top
+    : 0;
 
   // Hide splash when ready
   useEffect(() => {
@@ -116,22 +168,23 @@ function ShellInner() {
 
     // Logged in but still on an (auth) screen (e.g. /login)
     if (isAuthed && inAuthGroup) {
-      const code = String(employee?.userCode ?? "").padStart(4, "0");
-      console.log("AUTH GATE userCode =", code);
-
-      // 🔥 Special rule: userCode 1234 -> Service home
-      if (code === "1234") {
+      if (isServiceOnlyUser) {
         router.replace("/(protected)/service/home");
       } else {
         // Default: everyone else -> normal homescreen
         router.replace("/(protected)/screens/homescreen");
       }
     }
-  }, [loading, isAuthed, inAuthGroup, router, employee?.userCode]);
+  }, [loading, isAuthed, inAuthGroup, isServiceOnlyUser, router]);
 
 
   // Push registration + tap handling
   useEffect(() => {
+    if (!NOTIFICATIONS_ENABLED) {
+      cancelAllScheduledNotifications();
+      return;
+    }
+
     let dispose;
     (async () => {
       if (isAuthed && user?.uid) {
@@ -171,7 +224,72 @@ function ShellInner() {
   const assignDedupeRef = useRef({});
   const updateDedupeRef = useRef({});
 
+  const notify = useCallback((title, body, data) => {
+    if (!NOTIFICATIONS_ENABLED) return;
+
+    const safeTitle = String(title ?? "");
+
+    let safeBody = "";
+    if (body == null) {
+      safeBody = "";
+    } else if (typeof body === "string") {
+      safeBody = body;
+    } else {
+      const maybeDateStr = fmtDDMMYY(body);
+      safeBody = maybeDateStr ?? String(body);
+    }
+
+    scheduleLocalNotification({
+      title: safeTitle,
+      body: safeBody,
+      data,
+      seconds: 1,
+      writeToInbox: false,
+    });
+  }, []);
+
+  const commonBody = useCallback((booking) => {
+    const dateStr =
+      Array.isArray(booking?.bookingDates) && booking.bookingDates.length
+        ? fmtDDMMYY(booking.bookingDates[0])
+        : null;
+
+    const vehicles =
+      Array.isArray(booking?.vehicles) && booking.vehicles.length
+        ? booking.vehicles.join(", ")
+        : null;
+
+    const parts = [
+      booking?.jobNumber ? `Job ${booking.jobNumber}` : null,
+      booking?.client || null,
+      booking?.location || null,
+      vehicles,
+      dateStr,
+    ].filter(Boolean);
+
+    return parts.join(" • ");
+  }, []);
+
+  const maybeNotifyAssigned = useCallback((bookingId, booking) => {
+    if (assignDedupeRef.current[bookingId]) return;
+    assignDedupeRef.current[bookingId] = true;
+    notify("New job assigned", commonBody(booking), { bookingId });
+  }, [commonBody, notify]);
+
+  const maybeNotifyUpdated = useCallback((bookingId, before, after) => {
+    const { changed, changedAny } = diffMeaningful(before, after);
+    if (!changedAny) return;
+
+    const sig = JSON.stringify(projection(after));
+    if (updateDedupeRef.current[bookingId] === sig) return;
+    updateDedupeRef.current[bookingId] = sig;
+
+    const body = `${commonBody(after)} • updated: ${changed.join(", ")}`;
+    notify("Job updated", body, { bookingId });
+  }, [commonBody, notify]);
+
   useEffect(() => {
+    if (!NOTIFICATIONS_ENABLED) return;
     if (!isAuthed || !employee?.userCode) return;
 
     const q = query(
@@ -222,71 +340,7 @@ function ShellInner() {
     });
 
     return () => unsub();
-  }, [isAuthed, employee?.userCode]);
-
-  function notify(title, body, data) {
-    const safeTitle = String(title ?? "");
-
-    let safeBody = "";
-    if (body == null) {
-      safeBody = "";
-    } else if (typeof body === "string") {
-      safeBody = body;
-    } else {
-      const maybeDateStr = fmtDDMMYY(body);
-      safeBody = maybeDateStr ?? String(body);
-    }
-
-    Notifications.scheduleNotificationAsync({
-      content: {
-        title: safeTitle,
-        body: safeBody,
-        data,
-        sound: "default",
-      },
-      trigger: null,
-    });
-  }
-
-  function commonBody(booking) {
-    const dateStr =
-      Array.isArray(booking?.bookingDates) && booking.bookingDates.length
-        ? fmtDDMMYY(booking.bookingDates[0])
-        : null;
-
-    const vehicles =
-      Array.isArray(booking?.vehicles) && booking.vehicles.length
-        ? booking.vehicles.join(", ")
-        : null;
-
-    const parts = [
-      booking?.jobNumber ? `Job ${booking.jobNumber}` : null,
-      booking?.client || null,
-      booking?.location || null,
-      vehicles,
-      dateStr,
-    ].filter(Boolean);
-
-    return parts.join(" • ");
-  }
-
-  function maybeNotifyAssigned(bookingId, booking) {
-    if (assignDedupeRef.current[bookingId]) return;
-    assignDedupeRef.current[bookingId] = true;
-    notify("New job assigned", commonBody(booking), { bookingId });
-  }
-
-  function maybeNotifyUpdated(bookingId, before, after) {
-    const { changed, changedAny } = diffMeaningful(before, after);
-    if (!changedAny) return;
-
-    const sig = JSON.stringify(projection(after));
-    if (updateDedupeRef.current[bookingId] === sig) return;
-    updateDedupeRef.current[bookingId] = sig;
-
-    const body = `${commonBody(after)} • updated: ${changed.join(", ")}`;
-    notify("Job updated", body, { bookingId });
-  }
+  }, [isAuthed, employee?.userCode, maybeNotifyAssigned, maybeNotifyUpdated]);
 
   // ─────────────────────────────────────────────
   // LAYOUT
@@ -297,6 +351,7 @@ function ShellInner() {
       style={{
         flex: 1,
         backgroundColor: colors.background,
+        paddingTop: rootTopInset,
         // 👇 only reserve space for the footer itself; bottom inset handled in footer wrapper
         paddingBottom: hideFooter ? 0 : FOOTER_HEIGHT,
       }}
@@ -335,7 +390,7 @@ function ShellInner() {
 
 export default function RootLayout() {
   return (
-    <SafeAreaProvider>
+    <SafeAreaProvider initialMetrics={initialWindowMetrics}>
       <AuthProvider>
         <ThemeProvider>
           <ShellInner />

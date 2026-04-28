@@ -5,13 +5,13 @@ import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
 import { db } from "../../../../firebaseConfig";
@@ -20,14 +20,14 @@ import { useTheme } from "../../../providers/ThemeProvider";
 /* ---------- CONSTANTS ---------- */
 
 const COLORS = {
-  background: "#0D0D0D",
-  card: "#1A1A1A",
-  border: "#333333",
-  textHigh: "#FFFFFF",
-  textMid: "#E0E0E0",
-  textLow: "#888888",
-  chipBg: "#262626",
-  primaryAction: "#FF3B30",
+  background: "#000000",
+  card: "#151517",
+  border: "#2B2B31",
+  textHigh: "#F5F5F5",
+  textMid: "#D4D4D8",
+  textLow: "#A1A1AA",
+  chipBg: "#1D1D21",
+  primaryAction: "#D94B52",
 };
 
 const SERVICE_DRAFTS_KEY = "serviceFormDrafts_v1";
@@ -157,8 +157,8 @@ export default function VehicleDetailScreen() {
   const serviceHistory = useMemo(() => {
     if (Array.isArray(vehicle?.serviceHistory)) {
       return [...vehicle.serviceHistory].sort((a, b) => {
-        const da = toDateMaybe(a?.date)?.getTime() || 0;
-        const db = toDateMaybe(b?.date)?.getTime() || 0;
+        const da = toDateMaybe(a?.completedDate || a?.date || a?.recordedAt)?.getTime() || 0;
+        const db = toDateMaybe(b?.completedDate || b?.date || b?.recordedAt)?.getTime() || 0;
         return db - da;
       });
     }
@@ -170,6 +170,17 @@ export default function VehicleDetailScreen() {
     typeof vehicle?.serviceHistory === "string"
       ? vehicle.serviceHistory
       : null;
+
+  const defectHistory = useMemo(() => {
+    if (!Array.isArray(vehicle?.defectHistory)) return [];
+    return [...vehicle.defectHistory].sort((a, b) => {
+      const da =
+        toDateMaybe(a?.completedAt || a?.resolvedAt || a?.recordedAt)?.getTime() || 0;
+      const db =
+        toDateMaybe(b?.completedAt || b?.resolvedAt || b?.recordedAt)?.getTime() || 0;
+      return db - da;
+    });
+  }, [vehicle]);
 
   /* ---------- ACTION HANDLERS ---------- */
 
@@ -308,6 +319,7 @@ export default function VehicleDetailScreen() {
 
   return (
     <SafeAreaView
+      edges={["left", "right"]}
       style={[
         styles.container,
         { backgroundColor: colors.background || COLORS.background },
@@ -605,13 +617,16 @@ export default function VehicleDetailScreen() {
                   </Text>
                 )}
                 {serviceHistory.map((item, index) => {
-                  const dateLabel = item?.date
-                    ? formatDateShort(item.date)
+                  const dateValue =
+                    item?.completedDate || item?.date || item?.recordedAt;
+                  const dateLabel = dateValue
+                    ? formatDateShort(dateValue)
                     : "No date";
                   const odoLabel =
                     typeof item?.odometer === "number"
                       ? `${item.odometer.toLocaleString("en-GB")} mi`
                       : item?.odometer || null;
+                  const summaryText = item?.summary || item?.notes;
 
                   return (
                     <View key={index} style={styles.historyItem}>
@@ -634,14 +649,14 @@ export default function VehicleDetailScreen() {
                           {odoLabel ? ` · ${odoLabel}` : ""}
                         </Text>
                       </View>
-                      {!!item?.summary && (
+                      {!!summaryText && (
                         <Text
                           style={[
                             styles.historySummary,
                             { color: colors.textMuted || COLORS.textMid },
                           ]}
                         >
-                          {item.summary}
+                          {summaryText}
                         </Text>
                       )}
                     </View>
@@ -655,6 +670,77 @@ export default function VehicleDetailScreen() {
               files={vehicle.serviceHistoryFiles}
               colors={colors}
             />
+          </View>
+
+          {/* DEFECT HISTORY */}
+          <SectionHeader label="Defect history" colors={colors} />
+          <View
+            style={[
+              styles.card,
+              {
+                backgroundColor: colors.surfaceAlt || COLORS.card,
+                borderColor: colors.border || COLORS.border,
+              },
+            ]}
+          >
+            {defectHistory.length > 0 ? (
+              defectHistory.slice(0, 5).map((item, index) => {
+                const dateValue =
+                  item?.completedAt || item?.resolvedAt || item?.recordedAt;
+                const dateLabel = dateValue
+                  ? formatDateShort(dateValue)
+                  : "No date";
+                const category =
+                  item?.category === "immediate" ? "Immediate" : "General";
+                const summaryText =
+                  item?.description ||
+                  item?.notes ||
+                  item?.sourceLabel ||
+                  "";
+
+                return (
+                  <View key={`${item?.sourceDocId || index}-${index}`} style={styles.historyItem}>
+                    <View style={styles.historyHeaderRow}>
+                      <Text
+                        style={[
+                          styles.historyTitle,
+                          { color: colors.text || COLORS.textHigh },
+                        ]}
+                      >
+                        {item?.title || "Resolved defect"}
+                      </Text>
+                      <Text
+                        style={[
+                          styles.historyMeta,
+                          { color: colors.textMuted || COLORS.textLow },
+                        ]}
+                      >
+                        {category} · {dateLabel}
+                      </Text>
+                    </View>
+                    {!!summaryText && (
+                      <Text
+                        style={[
+                          styles.historySummary,
+                          { color: colors.textMuted || COLORS.textMid },
+                        ]}
+                      >
+                        {summaryText}
+                      </Text>
+                    )}
+                  </View>
+                );
+              })
+            ) : (
+              <Text
+                style={[
+                  styles.notesText,
+                  { color: colors.textMuted || COLORS.textMid },
+                ]}
+              >
+                No completed defects recorded for this vehicle.
+              </Text>
+            )}
           </View>
 
           {/* PRE-CHECKS / DAILY INSPECTIONS */}
@@ -959,7 +1045,7 @@ function StatusPill({ label, status }) {
 
   if (code === "overdue") {
     bg = "rgba(255,59,48,0.22)";
-    fg = "#FF3B30";
+    fg = "#ED1C25";
   } else if (code === "due-soon") {
     bg = "rgba(255,149,0,0.22)";
     fg = "#FF9500";

@@ -3,7 +3,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useRouter } from "expo-router";
 import { useState } from "react";
 import {
-  SafeAreaView,
+  Alert,
   ScrollView,
   StyleSheet,
   Switch,
@@ -11,6 +11,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
 import { signOut } from "firebase/auth";
@@ -22,15 +23,22 @@ import { useTheme } from "../../providers/ThemeProvider";
 /* --------- SERVICE STYLE COLOURS --------- */
 
 const COLORS = {
-  background: "#0D0D0D",
-  card: "#1A1A1A",
-  border: "#333333",
-  textHigh: "#FFFFFF",
-  textMid: "#E0E0E0",
-  textLow: "#888888",
-  primaryAction: "#FF3B30", // 🔴 red accent
-  inputBg: "#2a2a2a",
-  lightGray: "#4a4a4a",
+  background: "#000000",
+  card: "#151517",
+  border: "#2B2B31",
+  textHigh: "#F5F5F5",
+  textMid: "#D4D4D8",
+  textLow: "#A1A1AA",
+  primaryAction: "#D94B52",
+  inputBg: "#111114",
+  lightGray: "#3F3F46",
+};
+
+const showUnavailableSetting = () => {
+  Alert.alert(
+    "Coming soon",
+    "This settings page is planned for a future update."
+  );
 };
 
 export default function ServiceSettingsPage() {
@@ -38,8 +46,7 @@ export default function ServiceSettingsPage() {
   const { reloadSession } = useAuth();
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
 
-  const { theme, colorScheme, colors, setTheme } = useTheme();
-  const isDarkScheme = colorScheme === "dark";
+  const { theme, colors, setTheme } = useTheme();
 
   const settings = [
     {
@@ -53,7 +60,7 @@ export default function ServiceSettingsPage() {
         {
           label: "Change Password",
           icon: "lock",
-          onPress: () => router.push("/(protected)/change-password"),
+          onPress: showUnavailableSetting,
         },
       ],
     },
@@ -68,7 +75,7 @@ export default function ServiceSettingsPage() {
         {
           label: "MOT / Service Reminders",
           icon: "clock",
-          onPress: () => router.push("/(protected)/service/notification-rules"),
+          onPress: showUnavailableSetting,
         },
       ],
     },
@@ -105,10 +112,18 @@ export default function ServiceSettingsPage() {
       // clear role + employee session
       await AsyncStorage.multiRemove([
         "sessionRole",
+        "sessionIsService",
+        "sessionUserAccess",
+        "sessionServiceAccess",
         "displayName",
         "employeeId",
         "employeeEmail",
         "employeeUserCode",
+        "timesheetYardStart",
+        "timesheetYardEnd",
+        "timesheetOfficeStart",
+        "timesheetOfficeEnd",
+        "timesheetDefaultType",
       ]);
 
       // tell AuthProvider to re-check session
@@ -125,6 +140,7 @@ export default function ServiceSettingsPage() {
 
   return (
     <SafeAreaView
+      edges={["left", "right"]}
       style={[
         styles.safeArea,
         {

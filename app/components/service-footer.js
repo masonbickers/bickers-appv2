@@ -1,14 +1,94 @@
 // app/components/service-footer.jsx
 import { usePathname, useRouter } from "expo-router";
-import { Platform, StyleSheet, TouchableOpacity, View } from "react-native";
+import { collection, onSnapshot } from "firebase/firestore";
+import { useEffect, useMemo, useState } from "react";
+import { Platform, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import Ionicons from "react-native-vector-icons/Ionicons";
 
+import { db } from "../../firebaseConfig";
 import { useTheme } from "../providers/ThemeProvider";
+
+function normaliseKey(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase();
+}
+
+function isApprovedDefect(review) {
+  const status = normaliseKey(review?.status);
+  const category = normaliseKey(review?.category);
+  return (
+    status === "approved" &&
+    (category === "general" || category === "immediate")
+  );
+}
+
+function isOpenMaintenance(status) {
+  const value = normaliseKey(status);
+  return value !== "resolved" && value !== "complete" && value !== "completed";
+}
+
+function countOpenCheckDefects(checks) {
+  return checks.reduce((sum, check) => {
+    const items = Array.isArray(check.items) ? check.items : [];
+    const openItems = items.filter(
+      (item) =>
+        isApprovedDefect(item?.review) &&
+        isOpenMaintenance(item?.maintenance?.status)
+    );
+    return sum + openItems.length;
+  }, 0);
+}
+
+function countOpenIssueDefects(issues) {
+  return issues.filter(
+    (issue) =>
+      isApprovedDefect(issue?.review) &&
+      isOpenMaintenance(issue?.maintenance?.status)
+  ).length;
+}
 
 export default function ServiceFooter() {
   const router = useRouter();
   const pathname = usePathname();
   const { colors } = useTheme();
+  const [vehicleChecks, setVehicleChecks] = useState([]);
+  const [vehicleIssues, setVehicleIssues] = useState([]);
+
+  useEffect(() => {
+    const unsub = onSnapshot(
+      collection(db, "vehicleChecks"),
+      (snap) => {
+        setVehicleChecks(snap.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
+      },
+      (err) => {
+        console.error("Failed to load footer defect checks:", err);
+      }
+    );
+
+    return () => unsub();
+  }, []);
+
+  useEffect(() => {
+    const unsub = onSnapshot(
+      collection(db, "vehicleIssues"),
+      (snap) => {
+        setVehicleIssues(snap.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
+      },
+      (err) => {
+        console.error("Failed to load footer defect issues:", err);
+      }
+    );
+
+    return () => unsub();
+  }, []);
+
+  const openDefectCount = useMemo(
+    () =>
+      countOpenCheckDefects(vehicleChecks) +
+      countOpenIssueDefects(vehicleIssues),
+    [vehicleChecks, vehicleIssues]
+  );
 
   // 🔧 Tabs dedicated to Service / Workshop area
   // URLs are /service/... (group (protected) is hidden from URL)
@@ -84,13 +164,26 @@ export default function ServiceFooter() {
               onPress={handlePress}
               accessibilityRole="button"
               accessibilityState={{ selected: isActive }}
-              accessibilityLabel={t.label}
+              accessibilityLabel={
+                t.route === "/service/defects" && openDefectCount > 0
+                  ? `${t.label}, ${openDefectCount} open`
+                  : t.label
+              }
             >
-              <Ionicons
-                name={isActive ? t.iconActive : t.iconInactive}
-                size={26}
-                color={isActive ? activeColor : inactiveColor}
-              />
+              <View style={styles.iconWrap}>
+                <Ionicons
+                  name={isActive ? t.iconActive : t.iconInactive}
+                  size={26}
+                  color={isActive ? activeColor : inactiveColor}
+                />
+                {t.route === "/service/defects" && openDefectCount > 0 && (
+                  <View style={styles.badge}>
+                    <Text style={styles.badgeText}>
+                      {openDefectCount > 99 ? "99+" : openDefectCount}
+                    </Text>
+                  </View>
+                )}
+              </View>
             </TouchableOpacity>
           );
         })}
@@ -107,7 +200,7 @@ const styles = StyleSheet.create({
     borderTopWidth: StyleSheet.hairlineWidth,
     marginHorizontal: 0,
     borderRadius: 0,
-    paddingVertical: 10,
+    paddingVertical: 7,
     paddingHorizontal: 4,
     ...Platform.select({
       ios: {
@@ -122,6 +215,32 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 4,
+    paddingVertical: 0,
+  },
+  iconWrap: {
+    width: 38,
+    height: 34,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  badge: {
+    position: "absolute",
+    top: -4,
+    right: -2,
+    minWidth: 17,
+    height: 17,
+    borderRadius: 9,
+    paddingHorizontal: 4,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#ED1C25",
+    borderWidth: 1,
+    borderColor: "#FFFFFF",
+  },
+  badgeText: {
+    color: "#FFFFFF",
+    fontSize: 10,
+    lineHeight: 12,
+    fontWeight: "800",
   },
 });

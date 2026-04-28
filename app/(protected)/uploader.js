@@ -22,11 +22,7 @@ import {
 } from 'firebase/storage';
 import { auth, storage } from '../../firebaseConfig';
 
-// Cross-SDK ImagePicker constant (new + old)
-const IMAGES_ONLY =
-  (ImagePicker.MediaType && ImagePicker.MediaType.Images) ||
-  (ImagePicker.MediaTypeOptions && ImagePicker.MediaTypeOptions.Images) ||
-  undefined;
+const IMAGES_ONLY = ImagePicker.MediaTypeOptions.Images;
 
 const THUMB = 92;
 

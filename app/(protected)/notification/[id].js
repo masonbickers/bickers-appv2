@@ -18,6 +18,16 @@ import { db } from "../../../firebaseConfig";
 import { getInbox, markRead } from "../../../lib/notificationInbox";
 import { useTheme } from "../../providers/ThemeProvider";
 
+function withAlpha(hex, alpha) {
+  const safeAlpha = Math.max(0, Math.min(1, Number(alpha) || 0));
+  const raw = String(hex || "").replace("#", "");
+  if (!/^[0-9a-fA-F]{6}$/.test(raw)) return `rgba(255,255,255,${safeAlpha})`;
+  const r = parseInt(raw.slice(0, 2), 16);
+  const g = parseInt(raw.slice(2, 4), 16);
+  const b = parseInt(raw.slice(4, 6), 16);
+  return `rgba(${r},${g},${b},${safeAlpha})`;
+}
+
 function formatTime(ts) {
   const d = new Date(ts);
   if (Number.isNaN(d.getTime())) return "";
@@ -149,19 +159,33 @@ export default function NotificationDetailPage() {
   if (!item) {
     return (
       <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>
-        <View style={styles.header}>
-          <TouchableOpacity
-            onPress={() => router.back()}
-            style={[
-              styles.backBtn,
-              { borderColor: colors.border, backgroundColor: colors.surfaceAlt },
-            ]}
-            activeOpacity={0.85}
-          >
-            <Icon name="arrow-left" size={18} color={colors.text} />
-            <Text style={[styles.backText, { color: colors.text }]}>Back</Text>
-          </TouchableOpacity>
-          <Text style={[styles.title, { color: colors.text }]}>Notification</Text>
+        <View
+          style={[
+            styles.heroCard,
+            { backgroundColor: colors.surface, borderColor: colors.border },
+          ]}
+        >
+          <View style={styles.heroTopRow}>
+            <TouchableOpacity
+              onPress={() => router.back()}
+              style={[
+                styles.backBtn,
+                {
+                  borderColor: withAlpha(colors.border, 0.8),
+                  backgroundColor: withAlpha(colors.surfaceAlt, 0.8),
+                },
+              ]}
+              activeOpacity={0.85}
+            >
+              <Icon name="arrow-left" size={14} color={colors.text} />
+              <Text style={[styles.backText, { color: colors.text }]}>Back</Text>
+            </TouchableOpacity>
+          </View>
+          <View style={styles.heroContent}>
+            <Text style={[styles.heroEyebrow, { color: colors.textMuted }]}>Inbox</Text>
+            <Text style={[styles.heroTitle, { color: colors.text }]}>Notification</Text>
+            <Text style={[styles.heroSubTitle, { color: colors.textMuted }]}>Details</Text>
+          </View>
         </View>
 
         <View style={[styles.empty, { borderColor: colors.border, backgroundColor: colors.surface }]}>
@@ -176,25 +200,50 @@ export default function NotificationDetailPage() {
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>
-      {/* Header */}
-      <View style={styles.header}>
-        <TouchableOpacity
-          onPress={() => router.back()}
-          style={[
-            styles.backBtn,
-            { borderColor: colors.border, backgroundColor: colors.surfaceAlt },
-          ]}
-          activeOpacity={0.85}
-        >
-          <Icon name="arrow-left" size={18} color={colors.text} />
-          <Text style={[styles.backText, { color: colors.text }]}>Back</Text>
-        </TouchableOpacity>
+      <View
+        style={[
+          styles.heroCard,
+          { backgroundColor: colors.surface, borderColor: colors.border },
+        ]}
+      >
+        <View style={styles.heroTopRow}>
+          <TouchableOpacity
+            onPress={() => router.back()}
+            style={[
+              styles.backBtn,
+              {
+                borderColor: withAlpha(colors.border, 0.8),
+                backgroundColor: withAlpha(colors.surfaceAlt, 0.8),
+              },
+            ]}
+            activeOpacity={0.85}
+          >
+            <Icon name="arrow-left" size={14} color={colors.text} />
+            <Text style={[styles.backText, { color: colors.text }]}>Back</Text>
+          </TouchableOpacity>
+        </View>
 
-        <View style={{ flex: 1 }}>
-          <Text style={[styles.title, { color: colors.text }]}>Notification</Text>
-          <Text style={[styles.subtitle, { color: colors.textMuted }]}>
+        <View style={styles.heroContent}>
+          <Text style={[styles.heroEyebrow, { color: colors.textMuted }]}>Inbox</Text>
+          <Text style={[styles.heroTitle, { color: colors.text }]}>Notification</Text>
+          <Text style={[styles.heroSubTitle, { color: colors.textMuted }]}>
             {formatTime(item.createdAt)}
           </Text>
+
+          <View style={styles.heroMetaRow}>
+            <View
+              style={[
+                styles.heroMetaChip,
+                {
+                  backgroundColor: withAlpha(colors.surfaceAlt, 0.75),
+                  borderColor: withAlpha(colors.border, 0.75),
+                },
+              ]}
+            >
+              <Icon name={iconName} size={12} color={colors.textMuted} />
+              <Text style={[styles.heroMetaText, { color: colors.text }]}>{typeLabel}</Text>
+            </View>
+          </View>
         </View>
       </View>
 
@@ -253,12 +302,12 @@ export default function NotificationDetailPage() {
               ]}
             >
               <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-                {navBusy ? <ActivityIndicator size="small" color="#fff" /> : null}
-                <Text style={styles.ctaText}>
+                {navBusy ? <ActivityIndicator size="small" color={colors.surface} /> : null}
+                <Text style={[styles.ctaText, { color: colors.surface }]}>
                   {item.data?.bookingId ? "View job" : "View holiday"}
                 </Text>
               </View>
-              <Icon name="chevron-right" size={18} color="#fff" />
+              <Icon name="chevron-right" size={18} color={colors.surface} />
             </TouchableOpacity>
           )}
         </View>
@@ -272,29 +321,59 @@ export default function NotificationDetailPage() {
 const styles = StyleSheet.create({
   safeArea: { flex: 1 },
 
-  header: {
-    paddingHorizontal: 16,
-    paddingTop: 10,
-    paddingBottom: 10,
+  heroCard: {
+    position: "relative",
+    borderRadius: 18,
+    borderWidth: 1,
+    marginHorizontal: 12,
+    marginTop: 24,
+    marginBottom: 10,
+    overflow: "hidden",
+  },
+  heroTopRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
+    justifyContent: "flex-start",
+    paddingHorizontal: 12,
+    paddingTop: 16,
   },
   backBtn: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 12,
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 999,
     borderWidth: 1,
   },
-  backText: { fontWeight: "800", fontSize: 14 },
+  backText: { fontWeight: "800", fontSize: 12 },
 
-  title: { fontSize: 20, fontWeight: "900" },
-  subtitle: { marginTop: 2, fontSize: 12, fontWeight: "600" },
+  heroContent: {
+    paddingHorizontal: 14,
+    paddingBottom: 14,
+    paddingTop: 12,
+  },
+  heroEyebrow: {
+    fontSize: 12,
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+    fontWeight: "800",
+  },
+  heroTitle: { marginTop: 3, fontSize: 24, fontWeight: "900", letterSpacing: 0.2 },
+  heroSubTitle: { marginTop: 2, fontSize: 13, fontWeight: "600" },
+  heroMetaRow: { marginTop: 12, flexDirection: "row", gap: 8, flexWrap: "wrap" },
+  heroMetaChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  heroMetaText: { fontSize: 11, fontWeight: "700" },
 
-  content: { paddingHorizontal: 16, paddingTop: 6 },
+  content: { paddingHorizontal: 16, paddingTop: 12 },
 
   empty: {
     margin: 16,
@@ -353,5 +432,5 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
   },
-  ctaText: { color: "#fff", fontWeight: "900", fontSize: 14 },
+  ctaText: { fontWeight: "900", fontSize: 14 },
 });

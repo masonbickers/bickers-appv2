@@ -1,15 +1,12 @@
-// app/(auth)/login.jsx
+//app/(auth)/login.jsx
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useRouter } from "expo-router";
 import { signInAnonymously } from "firebase/auth";
 import {
   collection,
-  doc,
-  getDoc,
   getDocs,
   limit,
   query,
-  setDoc,
   where,
 } from "firebase/firestore";
 import { useState } from "react";
@@ -28,55 +25,40 @@ import {
 } from "react-native";
 
 import { auth, db } from "../../firebaseConfig";
+import { inferServiceAccess, normaliseSessionRole } from "../../lib/access";
 import { useAuth } from "../providers/AuthProvider";
 import { useTheme } from "../providers/ThemeProvider";
 
 export default function LoginPage() {
-  // Manager fields (future)
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-
-  // Employee fields
   const [employeeEmail, setEmployeeEmail] = useState("");
   const [employeeCode, setEmployeeCode] = useState("");
-
   const [loading, setLoading] = useState(false);
 
   const router = useRouter();
   const { reloadSession } = useAuth();
   const { colors } = useTheme();
 
-  // ───────────────────────────────── helpers ─────────────────────────────────
   const setSession = async (data) => {
     await AsyncStorage.multiSet([
       ["sessionRole", data.role || ""],
+      ["sessionIsService", data.isService ? "1" : "0"],
       ["displayName", data.displayName || ""],
       ["employeeId", data.employeeId || ""],
       ["employeeEmail", data.email || ""],
-      ["employeeUserCode", data.userCode || ""], // used by AuthProvider
-      ["userCode", data.userCode || ""],         // used by Footer / routing rules
+      ["employeeUserCode", data.userCode || ""],
+      ["userCode", data.userCode || ""],
+      ["timesheetYardStart", data.timesheetYardStart || ""],
+      ["timesheetYardEnd", data.timesheetYardEnd || ""],
+      ["timesheetOfficeStart", data.timesheetOfficeStart || ""],
+      ["timesheetOfficeEnd", data.timesheetOfficeEnd || ""],
+      ["timesheetDefaultType", data.timesheetDefaultType || ""],
     ]);
   };
 
-  const ensureUserInFirestore = async (user) => {
-    const userRef = doc(db, "users", user.uid);
-    const snap = await getDoc(userRef);
-    if (!snap.exists()) {
-      await setDoc(userRef, {
-        uid: user.uid,
-        email: user.email,
-        name: user.displayName || "",
-        createdAt: new Date().toISOString(),
-      });
-    }
-  };
-
-  // ───────────────────────────── Employee Login ─────────────────────────────
   const handleEmployeeLogin = async () => {
     if (loading) return;
     setLoading(true);
 
-    // 🔑 canonical 4-digit code from the input
     const codeStr = String(employeeCode).replace(/\D/g, "").padStart(4, "0");
     const emailStr = String(employeeEmail).trim().toLowerCase();
 
@@ -92,10 +74,8 @@ export default function LoginPage() {
     }
 
     try {
-      // Anonymous auth so Firestore rules allow the query
       if (!auth.currentUser) await signInAnonymously(auth);
 
-      // Find employee by userCode (string, then number)
       let snap = await getDocs(
         query(
           collection(db, "employees"),
@@ -128,7 +108,6 @@ export default function LoginPage() {
         return;
       }
 
-      // Email must match employee record (case insensitive)
       const empEmail = String(employee.email || "").trim().toLowerCase();
       const empEmails = Array.isArray(employee.emails)
         ? employee.emails.map((e) => String(e || "").trim().toLowerCase())
@@ -154,16 +133,47 @@ export default function LoginPage() {
         return;
       }
 
-      // Legacy global
       global.employee = employee;
 
-      // 🔐 SESSION DATA — store exactly what they typed (normalised)
+      const sessionRole = normaliseSessionRole(employee);
+      const isServiceUser = inferServiceAccess(employee);
       const sessionData = {
-        role: "employee",
+        role: sessionRole,
+        isService: isServiceUser,
         displayName: employee.name || "Employee",
         email: employee.email || employeeEmail,
         employeeId: employee.id,
         userCode: codeStr,
+        timesheetYardStart:
+          employee?.timesheetDefaults?.yardStart ||
+          employee?.yardStartTime ||
+          employee?.yardStart ||
+          "",
+        timesheetYardEnd:
+          employee?.timesheetDefaults?.yardEnd ||
+          employee?.yardEndTime ||
+          employee?.yardEnd ||
+          "",
+        timesheetOfficeStart:
+          employee?.timesheetDefaults?.officeStart ||
+          employee?.officeStartTime ||
+          employee?.officeStart ||
+          "",
+        timesheetOfficeEnd:
+          employee?.timesheetDefaults?.officeEnd ||
+          employee?.officeEndTime ||
+          employee?.officeEnd ||
+          "",
+        timesheetDefaultType:
+          String(
+            employee?.timesheetDefaults?.defaultType ||
+              employee?.timesheetDefaultType ||
+              ""
+          )
+            .trim()
+            .toLowerCase() === "office"
+            ? "office"
+            : "yard",
       };
 
       await setSession(sessionData);
@@ -174,16 +184,7 @@ export default function LoginPage() {
 
       Alert.alert("Welcome", `Hello ${employee.name || employeeEmail}`);
 
-      console.log("LOGIN codeStr =", codeStr);
-
-      // 🔥 ROUTING:
-      // app/(protected)/service.js      -> "/service"
-      // app/(protected)/screens/homescreen.js -> "/screens/homescreen"
-      if (codeStr === "1234") {
-        router.replace("service/home");
-      } else {
-        router.replace("/screens/homescreen");
-      }
+      router.replace(sessionData.isService ? "/service/home" : "/screens/homescreen");
 
       setLoading(false);
     } catch (err) {
@@ -192,7 +193,6 @@ export default function LoginPage() {
     }
   };
 
-  // ─────────────────────────────── UI ───────────────────────────────
   return (
     <SafeAreaView
       style={[styles.safeArea, { backgroundColor: colors.background }]}
@@ -205,7 +205,6 @@ export default function LoginPage() {
           contentContainerStyle={styles.scrollContainer}
           keyboardShouldPersistTaps="handled"
         >
-          {/* Logo */}
           <Image
             source={require("../../assets/images/bickers-action-logo.png")}
             style={styles.logo}
@@ -216,11 +215,8 @@ export default function LoginPage() {
             Welcome to Bickers Action
           </Text>
 
-          {/* Employee Login */}
           <View style={styles.section}>
-            <Text
-              style={[styles.sectionTitle, { color: colors.text }]}
-            >
+            <Text style={[styles.sectionTitle, { color: colors.text }]}>
               Employee Login
             </Text>
 
@@ -285,25 +281,27 @@ const styles = StyleSheet.create({
   safeArea: { flex: 1 },
   scrollContainer: {
     flexGrow: 1,
-    justifyContent: "flex-start",
+    justifyContent: "center",
     alignItems: "center",
     paddingHorizontal: 30,
-    paddingVertical: 40,
+    paddingVertical: 32,
   },
-  logo: { width: 220, height: 80, marginBottom: 20 },
+  logo: { width: 220, height: 80, marginBottom: 24 },
   title: {
     fontSize: 22,
     fontWeight: "bold",
-    marginBottom: 30,
+    marginBottom: 28,
     textAlign: "center",
   },
   section: {
     width: "100%",
+    maxWidth: 420,
   },
   sectionTitle: {
     fontSize: 18,
     fontWeight: "700",
-    marginBottom: 12,
+    marginBottom: 14,
+    textAlign: "center",
   },
   input: {
     width: "100%",

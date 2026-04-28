@@ -6,7 +6,6 @@ import {
     ActivityIndicator,
     Alert,
     Image,
-    SafeAreaView,
     ScrollView,
     StyleSheet,
     Switch,
@@ -15,6 +14,7 @@ import {
     TouchableOpacity,
     View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
 import {
@@ -39,9 +39,13 @@ const COLORS = {
   textMid: "#E0E0E0",
   textLow: "#888888",
   inputBg: "#1F1F1F",
-  primaryAction: "#FF3B30",
+  primaryAction: "#ED1C25",
   pillBg: "#262626",
 };
+
+function isDownloadUrl(uri) {
+  return typeof uri === "string" && /^https?:\/\//i.test(uri);
+}
 
 export default function DefectFormScreen() {
   const router = useRouter();
@@ -219,6 +223,7 @@ export default function DefectFormScreen() {
         notes: notes.trim(),
         status: "open",
         photoURIs: photos,
+        photoURLs: photos.filter(isDownloadUrl),
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       };
@@ -238,7 +243,11 @@ export default function DefectFormScreen() {
           reportedBy: reportedBy.trim() || null,
           notes: notes.trim() || null,
           status: "open",
+          location: location.trim() || null,
+          photoURIs: photos,
+          photoURLs: photos.filter(isDownloadUrl),
           createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
         };
 
         await updateDoc(vehicleRef, {
@@ -265,8 +274,20 @@ export default function DefectFormScreen() {
 
   /* ---------------- UI ---------------- */
 
+  const themedCard = {
+    backgroundColor: colors.surfaceAlt || COLORS.card,
+    borderColor: colors.border || COLORS.border,
+  };
+  const themedInput = {
+    backgroundColor: colors.inputBackground || COLORS.inputBg,
+    borderColor: colors.inputBorder || colors.border || COLORS.border,
+    color: colors.text || COLORS.textHigh,
+  };
+  const themedLabel = { color: colors.textMuted || COLORS.textMid };
+
   return (
     <SafeAreaView
+      edges={["left", "right"]}
       style={[
         styles.container,
         { backgroundColor: colors.background || COLORS.background },
@@ -348,46 +369,61 @@ export default function DefectFormScreen() {
           ) : null}
         </View>
 
-        <View style={styles.card}>
+        <View style={[styles.card, themedCard]}>
           {vehicleCollapsed && selectedVehicle ? (
             <>
-              <Text style={styles.labelSmall}>Selected vehicle</Text>
+              <Text style={[styles.labelSmall, themedLabel]}>
+                Selected vehicle
+              </Text>
               <View style={styles.selectedVehicleRow}>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.vehicleName}>
+                  <Text
+                    style={[
+                      styles.vehicleName,
+                      { color: colors.text || COLORS.textHigh },
+                    ]}
+                  >
                     {selectedVehicle.name || "Unnamed vehicle"}
                   </Text>
-                  <Text style={styles.vehicleReg}>
+                  <Text
+                    style={[
+                      styles.vehicleReg,
+                      { color: colors.textMuted || COLORS.textMid },
+                    ]}
+                  >
                     {selectedVehicle.reg || "—"}
                   </Text>
                 </View>
               </View>
               <View style={styles.vehicleMetaRow}>
-                <Text style={styles.vehicleMeta}>
+                <Text style={[styles.vehicleMeta, themedLabel]}>
                   Current mileage:{" "}
                   {typeof selectedVehicle.mileage === "number"
                     ? `${selectedVehicle.mileage.toLocaleString("en-GB")} mi`
                     : "—"}
                 </Text>
-                <Text style={styles.vehicleMeta}>
+                <Text style={[styles.vehicleMeta, themedLabel]}>
                   Last service: {selectedVehicle.lastService || "—"}
                 </Text>
               </View>
             </>
           ) : (
             <>
-              <Text style={styles.label}>Search vehicle</Text>
-              <View style={styles.searchBox}>
+              <Text style={[styles.label, themedLabel]}>Search vehicle</Text>
+              <View style={[styles.searchBox, themedInput]}>
                 <Icon
                   name="search"
                   size={16}
-                  color={COLORS.textMid}
+                  color={colors.textMuted || COLORS.textMid}
                   style={{ marginRight: 6 }}
                 />
                 <TextInput
-                  style={styles.searchInput}
+                  style={[
+                    styles.searchInput,
+                    { color: colors.text || COLORS.textHigh },
+                  ]}
                   placeholder="Name, reg, manufacturer or model…"
-                  placeholderTextColor={COLORS.textLow}
+                  placeholderTextColor={colors.textMuted || COLORS.textLow}
                   value={vehicleSearch}
                   onChangeText={setVehicleSearch}
                 />
@@ -399,7 +435,7 @@ export default function DefectFormScreen() {
                 </View>
               ) : filteredVehicles.length === 0 ? (
                 <View style={styles.centerRow}>
-                  <Text style={styles.emptyText}>
+                  <Text style={[styles.emptyText, themedLabel]}>
                     No vehicles match this search.
                   </Text>
                 </View>
@@ -427,12 +463,13 @@ export default function DefectFormScreen() {
                           <Text
                             style={[
                               styles.vehicleName,
+                              { color: colors.text || COLORS.textHigh },
                               isActive && { color: COLORS.primaryAction },
                             ]}
                           >
                             {name}
                           </Text>
-                          <Text style={styles.vehicleReg}>
+                          <Text style={[styles.vehicleReg, themedLabel]}>
                             {reg}
                             {v.manufacturer || v.model
                               ? ` · ${v.manufacturer || ""}${
@@ -457,49 +494,58 @@ export default function DefectFormScreen() {
           )}
 
           {/* Manual fields still available / prefilled */}
-          <Text style={[styles.label, { marginTop: 12 }]}>Vehicle name</Text>
+          <Text style={[styles.label, themedLabel, { marginTop: 12 }]}>
+            Vehicle name
+          </Text>
           <TextInput
-            style={styles.input}
+            style={[styles.input, themedInput]}
             placeholder="e.g. Amarok, Silverado…"
-            placeholderTextColor={COLORS.textLow}
+            placeholderTextColor={colors.textMuted || COLORS.textLow}
             value={vehicleName}
             onChangeText={setVehicleName}
           />
 
-          <Text style={styles.label}>Registration</Text>
+          <Text style={[styles.label, themedLabel]}>Registration</Text>
           <TextInput
-            style={styles.input}
+            style={[styles.input, themedInput]}
             placeholder="e.g. AB12 CDE"
-            placeholderTextColor={COLORS.textLow}
+            placeholderTextColor={colors.textMuted || COLORS.textLow}
             value={registration}
             onChangeText={setRegistration}
           />
 
-          <Text style={styles.label}>Location on vehicle</Text>
+          <Text style={[styles.label, themedLabel]}>Location on vehicle</Text>
           <TextInput
-            style={styles.input}
+            style={[styles.input, themedInput]}
             placeholder="e.g. OSR wheel, front bumper, dash…"
-            placeholderTextColor={COLORS.textLow}
+            placeholderTextColor={colors.textMuted || COLORS.textLow}
             value={location}
             onChangeText={setLocation}
           />
         </View>
 
         {/* DEFECT DETAILS */}
-        <View style={styles.card}>
-          <Text style={styles.sectionTitleAlt}>Defect details</Text>
+        <View style={[styles.card, themedCard]}>
+          <Text
+            style={[
+              styles.sectionTitleAlt,
+              { color: colors.text || COLORS.textHigh },
+            ]}
+          >
+            Defect details
+          </Text>
 
-          <Text style={styles.label}>Description</Text>
+          <Text style={[styles.label, themedLabel]}>Description</Text>
           <TextInput
-            style={[styles.input, styles.multiline]}
+            style={[styles.input, themedInput, styles.multiline]}
             placeholder="Short summary of the issue…"
-            placeholderTextColor={COLORS.textLow}
+            placeholderTextColor={colors.textMuted || COLORS.textLow}
             value={description}
             onChangeText={setDescription}
             multiline
           />
 
-          <Text style={styles.label}>Severity</Text>
+          <Text style={[styles.label, themedLabel]}>Severity</Text>
           <View style={styles.pillRow}>
             <SeverityPill
               label="Immediate"
@@ -515,8 +561,15 @@ export default function DefectFormScreen() {
 
           <View style={styles.switchRow}>
             <View style={{ flex: 1 }}>
-              <Text style={styles.label}>Vehicle off road?</Text>
-              <Text style={styles.switchHint}>
+              <Text style={[styles.label, themedLabel]}>
+                Vehicle off road?
+              </Text>
+              <Text
+                style={[
+                  styles.switchHint,
+                  { color: colors.textMuted || COLORS.textLow },
+                ]}
+              >
                 If yes, treat as “do not drive / do not use” until cleared.
               </Text>
             </View>
@@ -528,20 +581,20 @@ export default function DefectFormScreen() {
             />
           </View>
 
-          <Text style={styles.label}>Reported by</Text>
+          <Text style={[styles.label, themedLabel]}>Reported by</Text>
           <TextInput
-            style={styles.input}
+            style={[styles.input, themedInput]}
             placeholder="Driver / crew name"
-            placeholderTextColor={COLORS.textLow}
+            placeholderTextColor={colors.textMuted || COLORS.textLow}
             value={reportedBy}
             onChangeText={setReportedBy}
           />
 
-          <Text style={styles.label}>Additional notes</Text>
+          <Text style={[styles.label, themedLabel]}>Additional notes</Text>
           <TextInput
-            style={[styles.input, styles.multiline]}
+            style={[styles.input, themedInput, styles.multiline]}
             placeholder="Any extra context, sounds, when it happens, etc."
-            placeholderTextColor={COLORS.textLow}
+            placeholderTextColor={colors.textMuted || COLORS.textLow}
             value={notes}
             onChangeText={setNotes}
             multiline
@@ -549,20 +602,44 @@ export default function DefectFormScreen() {
         </View>
 
         {/* PHOTOS */}
-        <View style={styles.card}>
-          <Text style={styles.sectionTitleAlt}>Photos</Text>
-          <Text style={styles.photosHint}>
+        <View style={[styles.card, themedCard]}>
+          <Text
+            style={[
+              styles.sectionTitleAlt,
+              { color: colors.text || COLORS.textHigh },
+            ]}
+          >
+            Photos
+          </Text>
+          <Text style={[styles.photosHint, themedLabel]}>
             Add clear photos of the defect, damage or warning lights.
           </Text>
 
           <View style={styles.photoRow}>
             <TouchableOpacity
-              style={styles.addPhotoButton}
+              style={[
+                styles.addPhotoButton,
+                {
+                  backgroundColor: colors.surfaceElevated || COLORS.pillBg,
+                  borderColor: colors.border || COLORS.border,
+                },
+              ]}
               onPress={handlePickPhoto}
               activeOpacity={0.9}
             >
-              <Icon name="camera" size={18} color={COLORS.textHigh} />
-              <Text style={styles.addPhotoText}>Add photo</Text>
+              <Icon
+                name="camera"
+                size={18}
+                color={colors.text || COLORS.textHigh}
+              />
+              <Text
+                style={[
+                  styles.addPhotoText,
+                  { color: colors.text || COLORS.textHigh },
+                ]}
+              >
+                Add photo
+              </Text>
             </TouchableOpacity>
           </View>
 
@@ -623,19 +700,31 @@ export default function DefectFormScreen() {
 /* ---------- SMALL COMPONENTS ---------- */
 
 function SeverityPill({ label, active, onPress }) {
+  const { colors } = useTheme();
+
   return (
     <TouchableOpacity
       onPress={onPress}
       activeOpacity={0.9}
       style={[
         styles.severityPill,
-        active && styles.severityPillActive,
+        {
+          backgroundColor: colors.surfaceElevated || COLORS.pillBg,
+          borderColor: colors.border || COLORS.border,
+        },
+        active && {
+          backgroundColor: colors.accentSoft || "rgba(255,59,48,0.18)",
+          borderColor: colors.accent || COLORS.primaryAction,
+        },
       ]}
     >
       <Text
         style={[
           styles.severityPillText,
-          active && styles.severityPillTextActive,
+          { color: colors.textMuted || COLORS.textMid },
+          active && {
+            color: colors.accent || COLORS.primaryAction,
+          },
         ]}
       >
         {label}

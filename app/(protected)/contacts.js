@@ -1,5 +1,4 @@
 // app/(protected)/contacts.js
-import { useRouter } from "expo-router";
 import { collection, getDocs } from "firebase/firestore";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -7,7 +6,6 @@ import {
   Linking,
   Platform,
   RefreshControl,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
@@ -15,19 +13,28 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
+import PageHeaderCard from "../../components/PageHeaderCard";
 import { db } from "../../firebaseConfig";
-import {
-  registerForPushNotificationsAsync,
-  scheduleLocalNotification,
-} from "../../lib/notifications";
+import { designTokens as t } from "../../lib/design/tokens";
 
 import { useTheme } from "../providers/ThemeProvider";
 
+function withAlpha(hex, alpha) {
+  const safeAlpha = Math.max(0, Math.min(1, Number(alpha) || 0));
+  const raw = String(hex || "").replace("#", "");
+  if (!/^[0-9a-fA-F]{6}$/.test(raw)) return `rgba(255,255,255,${safeAlpha})`;
+  const r = parseInt(raw.slice(0, 2), 16);
+  const g = parseInt(raw.slice(2, 4), 16);
+  const b = parseInt(raw.slice(4, 6), 16);
+  return `rgba(${r},${g},${b},${safeAlpha})`;
+}
+
 export default function ContactsPage() {
-  const router = useRouter();
-  const { colors, isDark } = useTheme();
+  const { colors, colorScheme } = useTheme();
+  const isDark = colorScheme === "dark";
 
   const [employees, setEmployees] = useState([]);
   const [q, setQ] = useState("");
@@ -145,41 +152,26 @@ export default function ContactsPage() {
     }
   };
 
-  /* ---------- TEMP: Test notification button ---------- */
-  const sendTestNotification = async () => {
-    try {
-      await registerForPushNotificationsAsync();
-      await scheduleLocalNotification({
-        title: "Test notification",
-        body: "If you see this, notifications work ✅",
-      });
-      Alert.alert("Sent", "Check your notification tray.");
-    } catch (e) {
-      console.error("Test notify error:", e);
-      Alert.alert("Error", "Unable to schedule test notification.");
-    }
-  };
-
   const totalCount = employees.length;
   const showingCount = filtered.length;
 
   // 🔹 All colours from theme
   const bg = colors.background;
-  const cardBg = colors.card;
+  const cardBg = colors.surfaceAlt ?? colors.surface;
   const borderColor = colors.border;
   const textPrimary = colors.text;
-  const textMuted = colors.subtleText ?? colors.muted ?? "#7a7a7a";
-  const inputBg = colors.inputBackground ?? colors.card;
+  const textMuted = colors.textMuted ?? "#7a7a7a";
+  const inputBg = colors.inputBackground ?? colors.surface;
   const inputBorder = colors.inputBorder ?? colors.border;
   const placeholder = colors.placeholder ?? textMuted;
   const iconMuted = colors.iconMuted ?? textMuted;
-  const emptyBg = colors.surface ?? colors.card;
-  const avatarBg = colors.avatarBg ?? colors.card;
+  const emptyBg = colors.surface ?? colors.surfaceAlt;
+  const avatarBg = colors.avatarBg ?? colors.surface;
   const avatarBorder = colors.avatarBorder ?? colors.border;
   const metaText = colors.metaText ?? textMuted;
   const clearBg = colors.chipBg ?? (isDark ? "#252525" : "#e5e5ea");
-  const callColor = colors.textMuted ?? "#C8102E";
-  const msgColor = colors.success ?? "#25D366";
+  const callColor = colors.accent ?? "#C8102E";
+  const msgColor = "#23C063";
   const disabledBg = colors.disabled ?? (isDark ? "#2a2a2a" : "#d1d1d6");
 
   return (
@@ -192,23 +184,51 @@ export default function ContactsPage() {
             <RefreshControl
               refreshing={loading}
               onRefresh={loadEmployees}
-              tintColor={colors.primary}
+              tintColor={colors.accent}
             />
           }
         >
-          {/* Header row */}
-          <View style={styles.headerRow}>
-            <View style={{ flex: 1 }}>
-              <Text style={[styles.header, { color: textPrimary }]}>
-                Contacts
-              </Text>
-              <Text style={[styles.headerSubtitle, { color: textMuted }]}>
-                {showingCount === totalCount
-                  ? `${totalCount} employees`
-                  : `${showingCount} of ${totalCount} employees`}
-              </Text>
+          <PageHeaderCard
+            eyebrow="Team"
+            title="Contacts"
+            subtitle="Reach crew quickly by phone or WhatsApp."
+            style={styles.heroCard}
+            contentStyle={styles.heroContent}
+            titleStyle={{ color: textPrimary }}
+            eyebrowStyle={{ color: textMuted }}
+            subtitleStyle={{ color: textMuted }}
+          >
+            <View style={styles.heroMetaRow}>
+                <View
+                  style={[
+                    styles.heroMetaChip,
+                    {
+                      backgroundColor: withAlpha(colors.surfaceAlt, 0.8),
+                      borderColor: withAlpha(colors.border, 0.8),
+                    },
+                  ]}
+                >
+                  <Icon name="users" size={12} color={textMuted} />
+                  <Text style={[styles.heroMetaText, { color: textPrimary }]}>
+                    Total: {totalCount}
+                  </Text>
+                </View>
+                <View
+                  style={[
+                    styles.heroMetaChip,
+                    {
+                      backgroundColor: withAlpha(colors.surfaceAlt, 0.8),
+                      borderColor: withAlpha(colors.border, 0.8),
+                    },
+                  ]}
+                >
+                  <Icon name="filter" size={12} color={textMuted} />
+                  <Text style={[styles.heroMetaText, { color: textPrimary }]}>
+                    Showing: {showingCount}
+                  </Text>
+                </View>
             </View>
-          </View>
+          </PageHeaderCard>
 
           {/* Search bar */}
           <View style={styles.searchRow}>
@@ -369,10 +389,10 @@ export default function ContactsPage() {
                       <Icon
                         name="message-circle"
                         size={14}
-                        color="#fff"
+                        color="#000"
                         style={{ marginRight: 6 }}
                       />
-                      <Text style={styles.btnText}>Message</Text>
+                      <Text style={[styles.btnText, { color: "#000" }]}>Message</Text>
                     </TouchableOpacity>
 
                     <TouchableOpacity
@@ -409,22 +429,55 @@ export default function ContactsPage() {
 const styles = StyleSheet.create({
   // 🔹 No colours here – layout only
   container: { flex: 1 },
-  content: { paddingHorizontal: 18, paddingTop: 12, paddingBottom: 20 },
-
-  /* Header */
-  headerRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginBottom: 14,
+  content: {
+    paddingHorizontal: t.spacing.md,
+    paddingTop: 10,
+    paddingBottom: t.spacing.lg,
   },
-  header: {
-    fontSize: 26,
-    fontWeight: "900",
+
+  /* Hero */
+  heroCard: {
+    position: "relative",
+    borderRadius: t.radius.xl,
+    marginBottom: t.spacing.lg,
+    overflow: "hidden",
+  },
+  heroContent: {
+    paddingHorizontal: 0,
+    paddingVertical: t.spacing.md,
+  },
+  heroEyebrow: {
+    ...t.typography.label,
+    letterSpacing: 0.6,
+  },
+  heroTitle: {
+    ...t.typography.pageTitle,
+    marginTop: 3,
     letterSpacing: 0.4,
   },
-  headerSubtitle: {
+  heroSubTitle: {
     fontSize: 13,
-    marginTop: 2,
+    marginTop: 3,
+    lineHeight: 18,
+    fontWeight: "600",
+  },
+  heroMetaRow: {
+    marginTop: 12,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  heroMetaChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  heroMetaText: {
+    fontSize: 11,
+    fontWeight: "700",
   },
 
   /* Search */
@@ -435,7 +488,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     borderWidth: 1,
     paddingHorizontal: 12,
-    height: 40,
+    height: t.controls.buttonHeight,
   },
   searchInput: {
     flex: 1,
@@ -460,7 +513,6 @@ const styles = StyleSheet.create({
     paddingVertical: 22,
     paddingHorizontal: 20,
     alignItems: "center",
-    borderWidth: 1,
   },
   emptyTitle: {
     fontSize: 16,
@@ -477,10 +529,10 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     borderRadius: 18,
+    minHeight: 68,
     paddingVertical: 12,
-    paddingHorizontal: 12,
+    paddingHorizontal: t.controls.cardPadding,
     marginBottom: 10,
-    borderWidth: 1,
   },
   avatar: {
     width: 42,
@@ -489,7 +541,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     marginRight: 10,
-    borderWidth: 1,
   },
   avatarText: {
     fontWeight: "800",
@@ -520,6 +571,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
+    minHeight: t.controls.buttonHeight,
     paddingVertical: 7,
     paddingHorizontal: 12,
     borderRadius: 999,

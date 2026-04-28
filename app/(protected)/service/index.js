@@ -9,13 +9,13 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import {
     ActivityIndicator,
-    SafeAreaView,
     ScrollView,
     StyleSheet,
     Text,
     TouchableOpacity,
     View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
 import { db } from "../../../firebaseConfig";
@@ -29,7 +29,7 @@ const COLORS = {
   textMid: "#E0E0E0",
   textLow: "#888888",
   primaryAction: "#2176FF",
-  recceAction: "#FF3B30",
+  recceAction: "#ED1C25",
   inputBg: "#2a2a2a",
   lightGray: "#4a4a4a",
 };
@@ -105,9 +105,15 @@ export default function ServiceOverviewScreen() {
 
   const processed = useMemo(() => {
     return vehicles.map((v) => {
-      const motStatus = classifyStatus(v.nextMotDate || v.motDueDate);
+      const motStatus = classifyStatus(
+        v.nextMOT ||
+          v.nextMot ||
+          v.nextMotDate ||
+          v.motDueDate ||
+          v.motExpiryDate
+      );
       const serviceStatus = classifyStatus(
-        v.nextServiceDate || v.serviceDueDate
+        v.nextService || v.nextServiceDate || v.serviceDueDate || v.nextSvc
       );
       const defects = Array.isArray(v.defects) ? v.defects : [];
       const hasDefects = defects.length > 0;
@@ -153,6 +159,7 @@ export default function ServiceOverviewScreen() {
 
   return (
     <SafeAreaView
+      edges={["left", "right"]}
       style={[
         styles.container,
         { backgroundColor: colors.background || COLORS.background },
@@ -227,7 +234,7 @@ export default function ServiceOverviewScreen() {
                 value={summary.overdue}
                 color={
                   summary.overdue > 0
-                    ? "#FF3B30"
+                    ? "#ED1C25"
                     : colors.textMuted || COLORS.textMid
                 }
               />
@@ -248,7 +255,7 @@ export default function ServiceOverviewScreen() {
                 value={summary.defects}
                 color={
                   summary.defects > 0
-                    ? "#FF3B30"
+                    ? "#ED1C25"
                     : colors.textMuted || COLORS.textMid
                 }
               />
@@ -334,7 +341,7 @@ export default function ServiceOverviewScreen() {
               const worstCode = v.worstCode;
 
               let borderAccent = COLORS.border;
-              if (worstCode === "overdue") borderAccent = "#FF3B30";
+              if (worstCode === "overdue") borderAccent = "#ED1C25";
               else if (worstCode === "due-soon") borderAccent = "#FF9500";
 
               return (
@@ -348,7 +355,7 @@ export default function ServiceOverviewScreen() {
                     },
                   ]}
                   activeOpacity={0.85}
-                  onPress={() => router.push(`/vehicles/${v.id}`)}
+                  onPress={() => router.push(`/service/vehicles/${v.id}`)}
                 >
                   <View style={styles.vehicleHeaderRow}>
                     <View style={{ flex: 1 }}>
@@ -438,7 +445,7 @@ function StatusPill({ label, status }) {
 
   if (code === "overdue") {
     bg = "rgba(255,59,48,0.22)";
-    fg = "#FF3B30";
+    fg = "#ED1C25";
   } else if (code === "due-soon") {
     bg = "rgba(255,149,0,0.22)";
     fg = "#FF9500";
@@ -540,12 +547,13 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     padding: 16,
+    paddingTop: 8,
   },
   infoCard: {
     backgroundColor: COLORS.card,
-    padding: 15,
+    padding: 12,
     borderRadius: 10,
-    marginBottom: 20,
+    marginBottom: 12,
     borderLeftWidth: 4,
     borderLeftColor: COLORS.primaryAction,
   },
@@ -553,7 +561,7 @@ const styles = StyleSheet.create({
     color: COLORS.textHigh,
     fontSize: 18,
     fontWeight: "700",
-    marginBottom: 10,
+    marginBottom: 8,
   },
   summaryRow: {
     flexDirection: "row",
@@ -561,7 +569,8 @@ const styles = StyleSheet.create({
   sectionDivider: {
     flexDirection: "row",
     alignItems: "center",
-    marginVertical: 15,
+    marginTop: 12,
+    marginBottom: 8,
   },
   sectionTitle: {
     color: COLORS.textHigh,
@@ -576,7 +585,7 @@ const styles = StyleSheet.create({
   emptyState: {
     alignItems: "center",
     justifyContent: "center",
-    marginTop: 10,
+    marginTop: 4,
     paddingHorizontal: 24,
   },
   emptyTitle: {
@@ -591,7 +600,7 @@ const styles = StyleSheet.create({
   },
   vehicleCard: {
     backgroundColor: COLORS.card,
-    padding: 15,
+    padding: 12,
     borderRadius: 10,
     marginBottom: 12,
     borderLeftWidth: 4,

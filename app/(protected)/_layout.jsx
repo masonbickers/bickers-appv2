@@ -4,10 +4,12 @@ import { collection, getDocs, onSnapshot, query, where } from "firebase/firestor
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { db } from "../../firebaseConfig";
+import { useSyncManager } from "../../hooks/useSyncManager";
 import { useAuth } from "../providers/AuthProvider";
 
 import {
   addNotificationListeners,
+  NOTIFICATIONS_ENABLED,
   registerForPushNotificationsAsync,
   scheduleLocalNotification,
 } from "../../lib/notifications";
@@ -85,7 +87,20 @@ function formatDateShort(d) {
 
 export default function ProtectedLayout() {
   const router = useRouter();
-  const { employee, isAuthed, loading } = useAuth();
+  const { user, employee, isAuthed, loading, setJobsUpdatedAt } = useAuth();
+
+  useSyncManager({
+    enabled: isAuthed && !loading,
+    getAuthToken: async () => {
+      if (!user || user.isAnonymous) return null;
+      return user.getIdToken();
+    },
+    onRemoteChangesApplied: (applied) => {
+      if (applied > 0) {
+        setJobsUpdatedAt(Date.now());
+      }
+    },
+  });
 
   // ============================================================
   // GLOBAL NOTIFICATION HANDLER
@@ -133,6 +148,7 @@ export default function ProtectedLayout() {
   );
 
   useEffect(() => {
+    if (!NOTIFICATIONS_ENABLED) return;
     if (loading || !isAuthed) return;
 
     let removeNotifListeners = () => {};
@@ -159,6 +175,10 @@ export default function ProtectedLayout() {
   const [vehicleMap, setVehicleMap] = useState({});
 
   useEffect(() => {
+    if (!NOTIFICATIONS_ENABLED) {
+      setVehicleMap({});
+      return;
+    }
     if (loading || !isAuthed) {
       setVehicleMap({});
       return;
@@ -193,7 +213,7 @@ export default function ProtectedLayout() {
     };
   }, [loading, isAuthed]);
 
-  function formatVehiclesForNotif(booking) {
+  const formatVehiclesForNotif = useCallback((booking) => {
     const raw = booking?.vehicles;
 
     if (!Array.isArray(raw) || raw.length === 0) return "";
@@ -228,9 +248,9 @@ export default function ProtectedLayout() {
     // Keep notifications short: show up to 2 vehicles then +N
     if (readable.length <= 2) return readable.join(", ");
     return `${readable.slice(0, 2).join(", ")} +${readable.length - 2}`;
-  }
+  }, [vehicleMap]);
 
-  function formatJobDatesForNotif(booking) {
+  const formatJobDatesForNotif = useCallback((booking) => {
     // Prefer bookingDates array (string / Date / Firestore Timestamp)
     const raw = booking?.bookingDates;
 
@@ -262,12 +282,12 @@ export default function ProtectedLayout() {
     if (s) return formatDateShort(s);
 
     return "";
-  }
+  }, []);
 
   // ============================================================
   // PROJECTOR (unchanged)
   // ============================================================
-  function projectJob(job) {
+  const projectJob = useCallback((job) => {
     if (!job) return {};
 
     return {
@@ -293,11 +313,11 @@ export default function ProtectedLayout() {
 
       bookingDates: JSON.stringify(job.bookingDates || []),
     };
-  }
+  }, []);
 
-  function jobChanged(before, after) {
+  const jobChanged = useCallback((before, after) => {
     return JSON.stringify(projectJob(before)) !== JSON.stringify(projectJob(after));
-  }
+  }, [projectJob]);
 
   // ============================================================
   // JOB NOTIFICATIONS
@@ -307,7 +327,63 @@ export default function ProtectedLayout() {
   const assignmentDedupe = useRef(new Set());
   const updateDedupe = useRef(new Map());
 
+  // ---------- Notification Helpers ----------
+  const notifyBookingAssigned = useCallback((docId, booking) => {
+    const key = `${docId}:assigned`;
+    if (assignmentDedupe.current.has(key)) return;
+    assignmentDedupe.current.add(key);
+
+    const vehiclesText = formatVehiclesForNotif(booking);
+    const datesText = formatJobDatesForNotif(booking);
+
+    // ✅ include the FIRST date ISO for schedule routing
+    const dateISO = firstISOFromBooking(booking) || toISODate(new Date());
+
+    scheduleLocalNotification({
+      title: "New job assigned",
+      body: [
+        booking.jobNumber && `Job ${booking.jobNumber}`,
+        datesText ? `${datesText}` : null,
+        booking.client,
+        booking.location,
+        vehiclesText ? `Vehicles: ${vehiclesText}` : null,
+      ]
+        .filter(Boolean)
+        .join(" • "),
+      data: {
+        bookingId: docId,
+        bookingDates: booking?.bookingDates || null,
+        dateISO, // ✅ NEW
+      },
+    });
+  }, [formatJobDatesForNotif, formatVehiclesForNotif]);
+
+  const notifyJobUpdated = useCallback((docId, booking) => {
+    const vehiclesText = formatVehiclesForNotif(booking);
+    const datesText = formatJobDatesForNotif(booking);
+
+    const dateISO = firstISOFromBooking(booking) || toISODate(new Date());
+
+    scheduleLocalNotification({
+      title: "Job updated",
+      body: [
+        booking.jobNumber && `Job ${booking.jobNumber}`,
+        datesText ? `${datesText}` : null,
+        "Details changed",
+        vehiclesText ? `Vehicles: ${vehiclesText}` : null,
+      ]
+        .filter(Boolean)
+        .join(" • "),
+      data: {
+        bookingId: docId,
+        bookingDates: booking?.bookingDates || null,
+        dateISO, // ✅ NEW
+      },
+    });
+  }, [formatJobDatesForNotif, formatVehiclesForNotif]);
+
   useEffect(() => {
+    if (!NOTIFICATIONS_ENABLED) return;
     if (loading || !isAuthed || !employee?.userCode) return;
 
     const me = employee.userCode;
@@ -374,62 +450,7 @@ export default function ProtectedLayout() {
     });
 
     return () => unsub();
-  }, [loading, isAuthed, employee?.userCode, vehicleMap]);
-
-  // ---------- Notification Helpers ----------
-  function notifyBookingAssigned(docId, booking) {
-    const key = `${docId}:assigned`;
-    if (assignmentDedupe.current.has(key)) return;
-    assignmentDedupe.current.add(key);
-
-    const vehiclesText = formatVehiclesForNotif(booking);
-    const datesText = formatJobDatesForNotif(booking);
-
-    // ✅ include the FIRST date ISO for schedule routing
-    const dateISO = firstISOFromBooking(booking) || toISODate(new Date());
-
-    scheduleLocalNotification({
-      title: "New job assigned",
-      body: [
-        booking.jobNumber && `Job ${booking.jobNumber}`,
-        datesText ? `${datesText}` : null,
-        booking.client,
-        booking.location,
-        vehiclesText ? `Vehicles: ${vehiclesText}` : null,
-      ]
-        .filter(Boolean)
-        .join(" • "),
-      data: {
-        bookingId: docId,
-        bookingDates: booking?.bookingDates || null,
-        dateISO, // ✅ NEW
-      },
-    });
-  }
-
-  function notifyJobUpdated(docId, booking) {
-    const vehiclesText = formatVehiclesForNotif(booking);
-    const datesText = formatJobDatesForNotif(booking);
-
-    const dateISO = firstISOFromBooking(booking) || toISODate(new Date());
-
-    scheduleLocalNotification({
-      title: "Job updated",
-      body: [
-        booking.jobNumber && `Job ${booking.jobNumber}`,
-        datesText ? `${datesText}` : null,
-        "Details changed",
-        vehiclesText ? `Vehicles: ${vehiclesText}` : null,
-      ]
-        .filter(Boolean)
-        .join(" • "),
-      data: {
-        bookingId: docId,
-        bookingDates: booking?.bookingDates || null,
-        dateISO, // ✅ NEW
-      },
-    });
-  }
+  }, [loading, isAuthed, employee?.userCode, jobChanged, notifyBookingAssigned, notifyJobUpdated, projectJob]);
 
   function notifyJobDeleted(docId, booking) {
     scheduleLocalNotification({
@@ -449,6 +470,7 @@ export default function ProtectedLayout() {
   const holidayDedupe = useRef(new Set());
 
   useEffect(() => {
+    if (!NOTIFICATIONS_ENABLED) return;
     if (loading || !isAuthed || !employee?.userCode) return;
 
     const qH = query(

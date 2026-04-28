@@ -1,6 +1,7 @@
 "use client";
 
 import { useLocalSearchParams, useRouter } from "expo-router";
+import { useNavigation } from "@react-navigation/native";
 import {
   collection,
   doc,
@@ -11,12 +12,12 @@ import {
   setDoc,
   where,
 } from "firebase/firestore";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   FlatList,
+  LayoutAnimation,
   Modal,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Switch,
@@ -25,9 +26,11 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
 import { db } from "../../../../firebaseConfig";
+import { runOrQueueFirestoreMutation } from "../../../../lib/sync/firestoreQueue";
 import { useAuth } from "../../../providers/AuthProvider";
 import { useTheme } from "../../../providers/ThemeProvider";
 
@@ -37,6 +40,10 @@ import { useTheme } from "../../../providers/ThemeProvider";
    - Region options: "england-and-wales" | "scotland" | "northern-ireland"
 ──────────────────────────────── */
 const BANK_HOLIDAY_REGION = "england-and-wales";
+
+// Turnaround lookback window (was 2 weeks / 14 days)
+const TURNAROUND_LOOKBACK_DAYS = 21; // 3 weeks
+const TURNAROUND_MAX_USES_PER_WEEK = 1;
 
 async function fetchUKBankHolidays(region = BANK_HOLIDAY_REGION) {
   try {
@@ -70,6 +77,8 @@ const WEEKEND_SET = new Set(["Saturday", "Sunday"]);
 
 const DEFAULT_YARD_START = "08:00";
 const DEFAULT_YARD_END = "16:30";
+const DEFAULT_OFFICE_START = "09:00";
+const DEFAULT_OFFICE_END = "17:00";
 
 // 15-min increments for time of day
 const TIME_OPTIONS = (() => {
@@ -82,19 +91,6 @@ const TIME_OPTIONS = (() => {
   return out;
 })();
 
-// Pre-Call durations: 15min → 4hrs (in minutes)
-const PRECALL_OPTIONS = Array.from({ length: 240 / 15 }, (_, i) => (i + 1) * 15).map(
-  (min) => ({
-    value: min,
-    label:
-      min < 60
-        ? `${min} min`
-        : min % 60 === 0
-        ? `${min / 60} hr`
-        : `${Math.floor(min / 60)} hr ${min % 60} min`,
-  })
-);
-
 /* ───────────────────────── Time helpers (MIDNIGHT SAFE) ───────────────────────── */
 function timeToMinutes(t) {
   if (!t) return null;
@@ -106,6 +102,39 @@ function timeToMinutes(t) {
   if (Number.isNaN(hh) || Number.isNaN(mm)) return null;
   if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return null;
   return hh * 60 + mm;
+}
+
+function minutesToHHMM(mins) {
+  if (mins == null || Number.isNaN(mins)) return null;
+  const hours = Math.floor(mins / 60);
+  const minutes = mins % 60;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+}
+
+function normaliseTimeValue(v) {
+  const mins = timeToMinutes(v);
+  return minutesToHHMM(mins);
+}
+
+function firstValidTime(...values) {
+  for (const value of values) {
+    const t = normaliseTimeValue(value);
+    if (t) return t;
+  }
+  return null;
+}
+
+function normaliseAutofillType(v) {
+  return String(v || "").trim().toLowerCase() === "office" ? "office" : "yard";
+}
+
+function formatDisplayDate(value) {
+  const parsed = toDateSafe(value);
+  if (!parsed) return String(value || "");
+  const dd = String(parsed.getDate()).padStart(2, "0");
+  const mm = String(parsed.getMonth() + 1).padStart(2, "0");
+  const yyyy = parsed.getFullYear();
+  return `${dd}/${mm}/${yyyy}`;
 }
 
 function segmentMeta(seg) {
@@ -148,27 +177,51 @@ function annotateTimesheetMidnight(ts) {
 
     if (mode === "yard" && Array.isArray(e.yardSegments)) {
       const segs = e.yardSegments.map((seg) => ({ ...seg, ...segmentMeta(seg) }));
+      const yardTravelArriveOffset =
+        boolish(e.yardTravelEnabled) && e.yardTravelLeaveTime && e.yardTravelArriveTime
+          ? timeFieldOffset(e.yardTravelLeaveTime, e.yardTravelArriveTime)
+          : null;
       next.days[dayName] = {
         ...e,
         yardSegments: segs,
-        crossesMidnight: segs.some((s) => s.crossesMidnight),
+        crossesMidnight: segs.some((s) => s.crossesMidnight) || (yardTravelArriveOffset?.dayOffset ?? 0) === 1,
+        timeMeta: {
+          yardTravelLeaveTime: e.yardTravelLeaveTime || null,
+          yardTravelArriveTime: yardTravelArriveOffset,
+        },
       };
       continue;
     }
 
-    if (mode === "travel" || mode === "onset") {
+    if (mode === "travel") {
+      const base = e.leaveTime || null;
+      const arriveTimeOffset = timeFieldOffset(base, e.arriveTime || null);
+      const crossesMidnight = (arriveTimeOffset?.dayOffset ?? 0) === 1;
+
+      next.days[dayName] = {
+        ...e,
+        overnight: boolish(e.overnight),
+        crossesMidnight,
+        timeMeta: {
+          baseTime: base,
+          arriveTime: e.arriveTime ? arriveTimeOffset : null,
+        },
+      };
+      continue;
+    }
+
+    if (mode === "onset") {
       const base = e.leaveTime || e.arriveTime || e.callTime || null;
 
       const arriveBackOffset = timeFieldOffset(base, e.arriveBack || null);
       const wrapOffset = timeFieldOffset(base, e.wrapTime || null);
-
-      const impliedOvernight =
+      const crossesMidnight =
         (arriveBackOffset?.dayOffset ?? 0) === 1 || (wrapOffset?.dayOffset ?? 0) === 1;
 
       next.days[dayName] = {
         ...e,
-        overnight: e.overnight === true ? true : impliedOvernight,
-        crossesMidnight: e.overnight === true ? true : impliedOvernight,
+        overnight: boolish(e.overnight),
+        crossesMidnight,
         timeMeta: {
           baseTime: base,
           arriveBack: e.arriveBack ? arriveBackOffset : null,
@@ -186,6 +239,13 @@ function annotateTimesheetMidnight(ts) {
 
 function toDateSafe(val) {
   if (!val) return null;
+  if (typeof val === "string") {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(val);
+    if (m) {
+      const [, y, mo, d] = m;
+      return new Date(Number(y), Number(mo) - 1, Number(d), 0, 0, 0, 0);
+    }
+  }
   if (val?.toDate && typeof val.toDate === "function") return val.toDate();
   const d = new Date(val);
   return Number.isNaN(d.getTime()) ? null : d;
@@ -256,8 +316,17 @@ function halfLabelForUI(h, isHalfForThisDay, isSingle, isStartDay, isEndDay) {
 
 function ensureYardSegments(entry) {
   const e = { ...(entry || {}) };
+  const defaultStart = normaliseTimeValue(e.leaveTime) || DEFAULT_YARD_START;
+  const defaultEnd = normaliseTimeValue(e.arriveBack) || DEFAULT_YARD_END;
   if (!Array.isArray(e.yardSegments) || e.yardSegments.length === 0) {
-    e.yardSegments = [{ start: DEFAULT_YARD_START, end: DEFAULT_YARD_END }];
+    e.yardSegments = [{ start: defaultStart, end: defaultEnd, note: "" }];
+  } else {
+    e.yardSegments = e.yardSegments.map((seg) => ({
+      ...seg,
+      start: normaliseTimeValue(seg?.start) || defaultStart,
+      end: normaliseTimeValue(seg?.end) || defaultEnd,
+      note: typeof seg?.note === "string" ? seg.note : "",
+    }));
   }
   return e;
 }
@@ -272,12 +341,29 @@ function ensureYardLunch(entry) {
   return e;
 }
 
+function ensureYardTravel(entry) {
+  const e = { ...(entry || {}) };
+  const mode = String(e.mode || "yard").toLowerCase();
+
+  if (mode === "yard") {
+    e.yardTravelEnabled = typeof e.yardTravelEnabled === "boolean" ? e.yardTravelEnabled : false;
+    e.yardTravelLeaveTime = e.yardTravelEnabled ? normaliseTimeValue(e.yardTravelLeaveTime) || null : null;
+    e.yardTravelArriveTime = e.yardTravelEnabled ? normaliseTimeValue(e.yardTravelArriveTime) || null : null;
+  } else {
+    e.yardTravelEnabled = false;
+    e.yardTravelLeaveTime = null;
+    e.yardTravelArriveTime = null;
+  }
+
+  return e;
+}
+
 function ensureTravelExtras(entry) {
   const e = { ...(entry || {}) };
   const mode = String(e.mode || "yard").toLowerCase();
 
   if (mode === "travel") {
-    if (typeof e.travelLunchSup !== "boolean") e.travelLunchSup = true;
+    e.travelLunchSup = false;
     if (typeof e.travelPD !== "boolean") e.travelPD = false;
   } else {
     if (typeof e.travelLunchSup !== "boolean") e.travelLunchSup = false;
@@ -292,7 +378,7 @@ function ensureOnsetExtras(entry) {
   // existing
   if (typeof e.nightShoot !== "boolean") e.nightShoot = false;
 
-  // ✅ on-set meal supplement toggle
+  // on-set meal supplement toggle
   if (typeof e.mealSup !== "boolean") e.mealSup = true;
 
   return e;
@@ -313,14 +399,17 @@ function ensureModeDefaults(entry) {
   }
 
   if (mode === "yard") {
+    e.leaveTime = normaliseTimeValue(e.leaveTime) || DEFAULT_YARD_START;
+    e.arriveBack = normaliseTimeValue(e.arriveBack) || DEFAULT_YARD_END;
+
     // IMPORTANT: when Turnaround Day is ON, do NOT auto-add time blocks
     if (!e.isTurnaround) e = ensureYardSegments(e);
     e = ensureYardLunch(e);
-    e.leaveTime = e.leaveTime || DEFAULT_YARD_START;
-    e.arriveBack = e.arriveBack || DEFAULT_YARD_END;
+    e = ensureYardTravel(e);
     e.precallDuration = e.precallDuration ?? null;
   } else {
     e = ensureYardLunch(e);
+    e = ensureYardTravel(e);
   }
 
   e = ensureTravelExtras(e);
@@ -338,9 +427,110 @@ function ensureModeDefaults(entry) {
   return e;
 }
 
+function isUnpaidDayEntry(entry) {
+  return String(entry?.mode || "").trim().toLowerCase() === "unpaid";
+}
+
+function stripUnpaidRestore(entry) {
+  if (!entry || typeof entry !== "object") return null;
+  const next = { ...entry };
+  delete next.unpaidRestore;
+  return next;
+}
+
+function buildNonWorkingDayEntry(entry, mode, extra = {}) {
+  const existing = entry || {};
+
+  return {
+    ...existing,
+    mode,
+    dayNotes: existing.dayNotes || "",
+    leaveTime: null,
+    arriveTime: null,
+    callTime: null,
+    wrapTime: null,
+    arriveBack: null,
+    yardSegments: [],
+    precallDuration: null,
+    overnight: false,
+    nightShoot: false,
+    mealSup: false,
+    lunchSup: false,
+    yardTravelEnabled: false,
+    yardTravelLeaveTime: null,
+    yardTravelArriveTime: null,
+    travelLunchSup: false,
+    travelPD: false,
+    isTurnaround: false,
+    turnaroundJob: null,
+    crossesMidnight: false,
+    ...extra,
+  };
+}
+
+function hasMeaningfulYardSegments(entry, defaultStart, defaultEnd) {
+  const segs = Array.isArray(entry?.yardSegments) ? entry.yardSegments : [];
+  if (segs.length === 0) return false;
+  if (segs.length > 1) return true;
+
+  const seg = segs[0] || {};
+  const start = normaliseTimeValue(seg.start);
+  const end = normaliseTimeValue(seg.end);
+  const note = String(seg.note || "").trim();
+
+  return !!note || start !== defaultStart || end !== defaultEnd;
+}
+
+function shouldPreserveWorkedBankHoliday(entry, defaultStart, defaultEnd) {
+  const current = entry || {};
+  const mode = String(current.mode || "").toLowerCase();
+
+  if (boolish(current.bankHolidayWorked)) return true;
+  if (current.isTurnaround === true || current.turnaroundJob?.bookingId) return true;
+  if (mode === "travel" || mode === "onset") return true;
+  if (mode !== "yard") return false;
+  if (current.bookingId || current.jobNumber || current.hasJob) return true;
+
+  return hasMeaningfulYardSegments(current, defaultStart, defaultEnd);
+}
+
 function getDayName(dateStr) {
-  const i = new Date(dateStr).getDay();
+  const parsed = toDateSafe(dateStr);
+  if (!parsed) return "";
+  const i = parsed.getDay();
   return ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][i];
+}
+
+function sanitiseEntryForCompare(entry) {
+  const e = ensureModeDefaults(entry || {});
+  const next = {
+    ...e,
+    dayNotes: String(e.dayNotes || ""),
+    unpaidDay: isUnpaidDayEntry(e),
+  };
+
+  delete next.unpaidRestore;
+  return next;
+}
+
+function serialiseTimesheetForCompare(timesheet) {
+  if (!timesheet || typeof timesheet !== "object") return "";
+
+  const safeDays = DAYS.reduce((acc, day) => {
+    acc[day] = sanitiseEntryForCompare(
+      timesheet?.days?.[day] || { mode: WEEKEND_SET.has(day) ? "off" : "yard" }
+    );
+    return acc;
+  }, {});
+
+  return JSON.stringify({
+    employeeCode: String(timesheet.employeeCode || ""),
+    weekStart: String(timesheet.weekStart || ""),
+    notes: String(timesheet.notes || ""),
+    submitted: !!timesheet.submitted,
+    status: timesheet.status ?? null,
+    days: safeDays,
+  });
 }
 
 function startOfDay(d) {
@@ -350,10 +540,21 @@ function startOfDay(d) {
 }
 
 function addDaysISO(isoStr, deltaDays) {
-  const d = new Date(`${isoStr}T00:00:00`);
+  const d = toDateSafe(isoStr);
+  if (!d) return "";
   d.setDate(d.getDate() + deltaDays);
   d.setHours(0, 0, 0, 0);
-  return d.toISOString().slice(0, 10);
+  return iso(d);
+}
+
+function mondayISO(value) {
+  const d = toDateSafe(value);
+  if (!d) return "";
+  const day = d.getDay();
+  const diff = d.getDate() - day + (day === 0 ? -6 : 1);
+  d.setDate(diff);
+  d.setHours(0, 0, 0, 0);
+  return iso(d);
 }
 
 function buildLastNDatesISO(n) {
@@ -362,7 +563,7 @@ function buildLastNDatesISO(n) {
   for (let i = 0; i < n; i++) {
     const d = new Date(today);
     d.setDate(today.getDate() - i);
-    out.push(d.toISOString().slice(0, 10));
+    out.push(iso(d));
   }
   return out;
 }
@@ -377,11 +578,192 @@ function chunkArray(arr, size) {
 function hasNightShootInNotes(dayNotes) {
   const dn = String(dayNotes || "").toLowerCase();
   // keep it forgiving (nightshoot / night shoot / night-shoot)
-  return (
-    dn.includes("nightshoot") ||
-    dn.includes("night shoot") ||
-    dn.includes("night-shoot")
+  return dn.includes("nightshoot") || dn.includes("night shoot") || dn.includes("night-shoot");
+}
+
+function canonicalEmployeeCode(value) {
+  if (value === null || value === undefined) return "";
+  const raw = String(value).trim();
+  if (!raw) return "";
+  const digits = raw.replace(/\D/g, "");
+  if (digits) return digits.padStart(4, "0");
+  return raw.toLowerCase();
+}
+
+function codesEqual(a, b) {
+  const aa = canonicalEmployeeCode(a);
+  const bb = canonicalEmployeeCode(b);
+  return !!aa && !!bb && aa === bb;
+}
+
+function deriveCodesFromAssignmentList(list = [], nameToCode = {}) {
+  const codes = [];
+  for (const emp of Array.isArray(list) ? list : []) {
+    if (typeof emp === "string") {
+      const raw = String(emp || "").trim();
+      if (!raw) continue;
+      const byName = canonicalEmployeeCode(nameToCode[String(raw).toLowerCase()]);
+      if (byName) codes.push(byName);
+      else {
+        const byCode = canonicalEmployeeCode(raw);
+        if (byCode) codes.push(byCode);
+      }
+      continue;
+    }
+
+    if (emp && typeof emp === "object") {
+      const directCode = canonicalEmployeeCode(emp.userCode || emp.employeeCode || emp.code);
+      if (directCode) {
+        codes.push(directCode);
+        continue;
+      }
+      const nm = String(emp.name || emp.displayName || "").trim().toLowerCase();
+      const mapped = canonicalEmployeeCode(nameToCode[nm]);
+      if (mapped) codes.push(mapped);
+    }
+  }
+  return codes.filter(Boolean);
+}
+
+function getBookingDates(job) {
+  if (Array.isArray(job?.bookingDates)) {
+    return job.bookingDates
+      .map((d) => {
+        if (typeof d === "string" && /^\d{4}-\d{2}-\d{2}/.test(d)) return d.slice(0, 10);
+        const dt = toDateSafe(d);
+        return dt ? iso(dt) : "";
+      })
+      .filter(Boolean);
+  }
+  return [];
+}
+
+function isEmployeeAssignedToBookingDate(job, dateISO, myCode, nameToCode) {
+  if (!job || !dateISO || !myCode) return false;
+
+  const byDate =
+    job.employeesByDate ||
+    job.employeeAssignmentsByDate ||
+    null;
+  const byCodeDate =
+    job.employeeCodesByDate ||
+    job.assignedEmployeeCodesByDate ||
+    null;
+
+  const listForDate = Array.isArray(byDate?.[dateISO]) ? byDate[dateISO] : [];
+  const codeListForDate = Array.isArray(byCodeDate?.[dateISO]) ? byCodeDate[dateISO] : [];
+
+  if (listForDate.length || codeListForDate.length) {
+    const allDateCodes = [
+      ...deriveCodesFromAssignmentList(listForDate, nameToCode),
+      ...deriveCodesFromAssignmentList(codeListForDate, nameToCode),
+    ];
+    return allDateCodes.some((c) => codesEqual(c, myCode));
+  }
+
+  const globalList = Array.isArray(job.employees) ? job.employees : [];
+  const globalCodeList = Array.isArray(job.employeeCodes) ? job.employeeCodes : [];
+  const allGlobalCodes = [
+    ...deriveCodesFromAssignmentList(globalList, nameToCode),
+    ...deriveCodesFromAssignmentList(globalCodeList, nameToCode),
+  ];
+  return allGlobalCodes.some((c) => codesEqual(c, myCode));
+}
+
+function hasNightShootInBookingNotes(job, dateISO) {
+  const notesByDate = job?.notesByDate || {};
+  const raw = notesByDate?.[dateISO];
+  const rawStr =
+    typeof raw === "string"
+      ? raw
+      : typeof raw === "object" && raw
+      ? String(raw.label || raw.value || raw.note || "")
+      : "";
+
+  if (hasNightShootInNotes(rawStr)) return true;
+
+  if (String(rawStr).trim().toLowerCase() === "other") {
+    const otherVal = notesByDate?.[`${dateISO}-other`];
+    if (hasNightShootInNotes(otherVal)) return true;
+  }
+
+  return false;
+}
+
+function collapseConsecutiveDatesToCredits(dateList = []) {
+  const sortedAsc = Array.from(new Set(dateList.filter(Boolean))).sort((a, b) =>
+    String(a).localeCompare(String(b))
   );
+  if (sortedAsc.length === 0) return [];
+
+  const creditRoots = [];
+  let prev = null;
+  for (const d of sortedAsc) {
+    if (!prev) {
+      creditRoots.push(d);
+      prev = d;
+      continue;
+    }
+    const expectedNext = addDaysISO(prev, 1);
+    if (d !== expectedNext) creditRoots.push(d);
+    prev = d;
+  }
+  return creditRoots;
+}
+
+function getDateISOForDayName(weekStartISO, dayName, fallbackDateISO = "") {
+  const idx = DAYS.indexOf(dayName);
+  if (idx >= 0 && weekStartISO) return addDaysISO(weekStartISO, idx);
+  if (typeof fallbackDateISO === "string" && /^\d{4}-\d{2}-\d{2}$/.test(fallbackDateISO)) {
+    return fallbackDateISO;
+  }
+  return "";
+}
+
+function doesOnsetEntryEarnTurnaroundCredit(entry) {
+  const e = ensureModeDefaults(entry || {});
+  if (String(e.mode || "").toLowerCase() !== "onset") return false;
+
+  const baseTime = firstValidTime(e.leaveTime, e.arriveTime, e.callTime);
+  const wrapOffset = timeFieldOffset(baseTime, e.wrapTime || null);
+
+  if ((wrapOffset?.dayOffset ?? 0) === 1) return true;
+
+  // Fallback for older rows where wrap time may be missing but the day was already marked as crossing midnight.
+  return !e.wrapTime && boolish(e.crossesMidnight);
+}
+
+function collectOnsetTurnaroundCreditDates(timesheetDoc, allowedDates = null, weekStartOverride = "") {
+  const days = timesheetDoc?.days || {};
+  const weekStartISO = weekStartOverride || timesheetDoc?.weekStart || timesheetDoc?.weekISO || "";
+  const out = [];
+
+  for (const dayName of DAYS) {
+    const entry = days?.[dayName];
+    if (!doesOnsetEntryEarnTurnaroundCredit(entry)) continue;
+
+    const dateISO = getDateISOForDayName(weekStartISO, dayName, entry?.dateISO || "");
+    if (!dateISO) continue;
+    if (allowedDates && !allowedDates.has(dateISO)) continue;
+
+    out.push(dateISO);
+  }
+
+  return out;
+}
+
+function countTurnaroundUses(timesheetDoc) {
+  const days = timesheetDoc?.days || {};
+  let used = 0;
+
+  for (const dayName of DAYS) {
+    const entry = ensureModeDefaults(days?.[dayName] || {});
+    if (String(entry.mode || "").toLowerCase() === "yard" && entry.isTurnaround === true) {
+      used += 1;
+    }
+  }
+
+  return used;
 }
 
 /* -------------------------- Time dropdown -------------------------- */
@@ -406,33 +788,18 @@ function TimeDropdown({ label, value, onSelect, options, disabled }) {
         }}
         disabled={disabled}
       >
-        <Text style={{ color: value ? colors.text : colors.textMuted }}>
-          {value || "Select"}
-        </Text>
+        <Text style={{ color: value ? colors.text : colors.textMuted }}>{value || "Select"}</Text>
       </TouchableOpacity>
 
-      <Modal
-        visible={open}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setOpen(false)}
-      >
+      <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
         <View style={styles.modalOverlay}>
-          <View
-            style={[
-              styles.modalBox,
-              { backgroundColor: colors.surface, borderColor: colors.border },
-            ]}
-          >
+          <View style={[styles.modalBox, { backgroundColor: colors.surface, borderColor: colors.border }]}>
             <FlatList
               data={options}
               keyExtractor={(item) => item}
               renderItem={({ item }) => (
                 <TouchableOpacity
-                  style={[
-                    styles.modalItem,
-                    { borderBottomColor: colors.border },
-                  ]}
+                  style={[styles.modalItem, { borderBottomColor: colors.border }]}
                   onPress={() => {
                     onSelect(item);
                     setOpen(false);
@@ -450,13 +817,10 @@ function TimeDropdown({ label, value, onSelect, options, disabled }) {
                 setOpen(false);
               }}
             >
-              <Text style={{ color: "#fff" }}>Clear time</Text>
+              <Text style={{ color: colors.textOnAccent }}>Clear time</Text>
             </TouchableOpacity>
 
-            <TouchableOpacity
-              style={[styles.closeBtn, { backgroundColor: colors.surfaceAlt }]}
-              onPress={() => setOpen(false)}
-            >
+            <TouchableOpacity style={[styles.closeBtn, { backgroundColor: colors.surfaceAlt }]} onPress={() => setOpen(false)}>
               <Text style={{ color: colors.text }}>Close</Text>
             </TouchableOpacity>
           </View>
@@ -472,9 +836,7 @@ function PrecallDropdown({ value, onSelect, disabled }) {
 
   return (
     <View style={{ marginBottom: 8 }}>
-      <Text style={[styles.label, { color: colors.textMuted }]}>
-        Pre-Call Duration
-      </Text>
+      <Text style={[styles.label, { color: colors.textMuted }]}>Pre-Call Time</Text>
 
       <TouchableOpacity
         style={[
@@ -491,40 +853,25 @@ function PrecallDropdown({ value, onSelect, disabled }) {
         disabled={disabled}
       >
         <Text style={{ color: value ? colors.text : colors.textMuted }}>
-          {value
-            ? PRECALL_OPTIONS.find((o) => o.value === value)?.label
-            : "Select Pre-Call Duration"}
+          {value || "Select Pre-Call Time"}
         </Text>
       </TouchableOpacity>
 
-      <Modal
-        visible={open}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setOpen(false)}
-      >
+      <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
         <View style={styles.modalOverlay}>
-          <View
-            style={[
-              styles.modalBox,
-              { backgroundColor: colors.surface, borderColor: colors.border },
-            ]}
-          >
+          <View style={[styles.modalBox, { backgroundColor: colors.surface, borderColor: colors.border }]}>
             <FlatList
-              data={PRECALL_OPTIONS}
-              keyExtractor={(item) => String(item.value)}
+              data={TIME_OPTIONS}
+              keyExtractor={(item) => item}
               renderItem={({ item }) => (
                 <TouchableOpacity
-                  style={[
-                    styles.modalItem,
-                    { borderBottomColor: colors.border },
-                  ]}
+                  style={[styles.modalItem, { borderBottomColor: colors.border }]}
                   onPress={() => {
-                    onSelect(item.value);
+                    onSelect(item);
                     setOpen(false);
                   }}
                 >
-                  <Text style={{ color: colors.text }}>{item.label}</Text>
+                  <Text style={{ color: colors.text }}>{item}</Text>
                 </TouchableOpacity>
               )}
             />
@@ -536,13 +883,10 @@ function PrecallDropdown({ value, onSelect, disabled }) {
                 setOpen(false);
               }}
             >
-              <Text style={{ color: "#fff" }}>Clear pre-call</Text>
+              <Text style={{ color: colors.textOnAccent }}>Clear pre-call</Text>
             </TouchableOpacity>
 
-            <TouchableOpacity
-              style={[styles.closeBtn, { backgroundColor: colors.surfaceAlt }]}
-              onPress={() => setOpen(false)}
-            >
+            <TouchableOpacity style={[styles.closeBtn, { backgroundColor: colors.surfaceAlt }]} onPress={() => setOpen(false)}>
               <Text style={{ color: colors.text }}>Close</Text>
             </TouchableOpacity>
           </View>
@@ -563,9 +907,7 @@ function InfoToggleRow({ label, value, onChange, disabled, infoTitle, infoText }
   return (
     <View style={styles.toggleRow}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-        <Text style={[styles.label, { color: colors.text, marginBottom: 0 }]}>
-          {label}
-        </Text>
+        <Text style={[styles.label, { color: colors.text, marginBottom: 0 }]}>{label}</Text>
         <TouchableOpacity
           onPress={showInfo}
           style={[
@@ -607,7 +949,7 @@ function TurnaroundJobPicker({ visible, onClose, jobs, onPick }) {
           {!jobs || jobs.length === 0 ? (
             <View style={{ paddingVertical: 10 }}>
               <Text style={{ color: colors.textMuted }}>
-                No eligible jobs found in the last 2 weeks.
+                No eligible jobs found in the last 3 weeks.
               </Text>
             </View>
           ) : (
@@ -619,7 +961,6 @@ function TurnaroundJobPicker({ visible, onClose, jobs, onPick }) {
                   style={[styles.modalItem, { borderBottomColor: colors.border }]}
                   onPress={() => {
                     onPick(item);
-                    onClose();
                   }}
                 >
                   <Text style={{ color: colors.text, fontWeight: "800" }}>
@@ -637,10 +978,7 @@ function TurnaroundJobPicker({ visible, onClose, jobs, onPick }) {
             />
           )}
 
-          <TouchableOpacity
-            style={[styles.closeBtn, { backgroundColor: colors.surfaceAlt }]}
-            onPress={onClose}
-          >
+          <TouchableOpacity style={[styles.closeBtn, { backgroundColor: colors.surfaceAlt }]} onPress={onClose}>
             <Text style={{ color: colors.text }}>Close</Text>
           </TouchableOpacity>
         </View>
@@ -671,12 +1009,14 @@ function computeDayMinutes(entry) {
   const e = ensureModeDefaults(entry || { mode: "off" });
   const mode = String(e.mode || "off").toLowerCase();
 
-  if (mode === "off" || mode === "holiday" || mode === "bankholiday") return 0;
+  if (mode === "off" || mode === "holiday" || mode === "bankholiday" || mode === "unpaid") return 0;
 
   if (mode === "yard") {
     const segs = Array.isArray(e.yardSegments) ? e.yardSegments : [];
     let total = 0;
     for (const seg of segs) total += durationMinutes(seg?.start, seg?.end);
+    if (boolish(e.yardTravelEnabled)) total += durationMinutes(e.yardTravelLeaveTime, e.yardTravelArriveTime);
+    if (!boolish(e.lunchSup) && total > 0) total = Math.max(0, total - 30);
     return total;
   }
 
@@ -703,9 +1043,9 @@ function computeDayMinutes(entry) {
 
     let mins = durationMinutes(baseStart, baseEnd);
 
-    // Add precallDuration as extra time before call (only meaningful if callTime exists)
-    if (e.callTime && typeof e.precallDuration === "number" && Number.isFinite(e.precallDuration)) {
-      mins += Math.max(0, e.precallDuration);
+    // Add pre-call window when both pre-call and unit call are set.
+    if (e.callTime && e.precallDuration) {
+      mins += Math.max(0, durationMinutes(e.precallDuration, e.callTime));
     }
 
     return mins;
@@ -717,6 +1057,7 @@ function computeDayMinutes(entry) {
 /* -------------------------- Summary panel -------------------------- */
 function HoursSummary({ timesheet, holidaysByDay, bankHolidaysByDay }) {
   const { colors } = useTheme();
+  const [open, setOpen] = useState(false);
 
   const summary = useMemo(() => {
     const byDayMinutes = {};
@@ -731,12 +1072,13 @@ function HoursSummary({ timesheet, holidaysByDay, bankHolidaysByDay }) {
     let onsetDays = 0;
 
     let offDays = 0;
-    let holidayDays = 0;
+    let unpaidDays = 0;
+    let paidHolidayDays = 0;
+    let unpaidHolidayDays = 0;
     let bankHolidayDays = 0;
     let halfHolidayDays = 0;
 
     let lunchCount = 0;
-    let travelLunchCount = 0;
     let mealSupCount = 0;
     let pdCount = 0;
     let nightShootCount = 0;
@@ -752,34 +1094,37 @@ function HoursSummary({ timesheet, holidaysByDay, bankHolidaysByDay }) {
       const isFullHoliday = isHoliday && !isHalfHoliday;
       const isBankHolidayOff = !!bh && bh.notWorking === true;
 
-      if (isFullHoliday) holidayDays += 1;
+      if (isFullHoliday) {
+        if (hol?.isUnpaid || hol?.leaveType === "Unpaid") unpaidHolidayDays += 1;
+        else paidHolidayDays += 1;
+      }
       if (isHalfHoliday) halfHolidayDays += 1;
       if (!isHoliday && isBankHolidayOff) bankHolidayDays += 1;
 
-      const raw =
-        timesheet?.days?.[day] || { mode: WEEKEND_SET.has(day) ? "off" : "yard" };
+      const raw = timesheet?.days?.[day] || { mode: WEEKEND_SET.has(day) ? "off" : "yard" };
       const e = ensureModeDefaults(raw);
 
       const mode = String(e.mode || "off").toLowerCase();
 
       // count "off" only when it is actually off (and not a holiday/bank holiday lock)
       if (mode === "off") offDays += 1;
+      if (mode === "unpaid") unpaidDays += 1;
 
       if (mode === "yard") {
         yardDays += 1;
-        if (!!e.lunchSup) lunchCount += 1;
+        if (!boolish(e.lunchSup)) lunchCount += 1;
         if (e.isTurnaround === true) turnaroundCount += 1;
       }
       if (mode === "travel") {
         travelDays += 1;
-        if (!!e.travelLunchSup) travelLunchCount += 1;
         if (!!e.travelPD) pdCount += 1;
+        if (boolish(e.overnight)) overnightCount += 1;
       }
       if (mode === "onset") {
         onsetDays += 1;
         if (!!e.mealSup) mealSupCount += 1;
         if (!!e.nightShoot) nightShootCount += 1;
-        if (!!e.overnight) overnightCount += 1;
+        if (boolish(e.overnight)) overnightCount += 1;
       }
 
       const mins = computeDayMinutes(e);
@@ -802,11 +1147,12 @@ function HoursSummary({ timesheet, holidaysByDay, bankHolidaysByDay }) {
       travelDays,
       onsetDays,
       offDays,
-      holidayDays,
+      unpaidDays,
+      paidHolidayDays,
+      unpaidHolidayDays,
       bankHolidayDays,
       halfHolidayDays,
       lunchCount,
-      travelLunchCount,
       mealSupCount,
       pdCount,
       nightShootCount,
@@ -817,100 +1163,115 @@ function HoursSummary({ timesheet, holidaysByDay, bankHolidaysByDay }) {
 
   return (
     <View style={[styles.summaryBox, { backgroundColor: colors.surfaceAlt, borderColor: colors.border }]}>
-      <Text style={{ color: colors.text, fontWeight: "900", marginBottom: 6 }}>
-        📊 Week Summary
-      </Text>
-
-      <View style={styles.summaryRow}>
-        <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Total hours</Text>
-        <Text style={[styles.summaryValue, { color: colors.text }]}>{formatHoursMins(summary.total)}</Text>
-      </View>
-
-      <View style={styles.summaryDivider} />
-
-      <View style={styles.summaryRow}>
-        <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Yard</Text>
-        <Text style={[styles.summaryValue, { color: colors.text }]}>
-          {formatHoursMins(summary.yardMins)} ({summary.yardDays} day{summary.yardDays === 1 ? "" : "s"})
-        </Text>
-      </View>
-
-      <View style={styles.summaryRow}>
-        <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Travel</Text>
-        <Text style={[styles.summaryValue, { color: colors.text }]}>
-          {formatHoursMins(summary.travelMins)} ({summary.travelDays} day{summary.travelDays === 1 ? "" : "s"})
-        </Text>
-      </View>
-
-      <View style={styles.summaryRow}>
-        <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>On set</Text>
-        <Text style={[styles.summaryValue, { color: colors.text }]}>
-          {formatHoursMins(summary.onsetMins)} ({summary.onsetDays} day{summary.onsetDays === 1 ? "" : "s"})
-        </Text>
-      </View>
-
-      <View style={styles.summaryDivider} />
-
-      <Text style={{ color: colors.textMuted, fontWeight: "800", fontSize: 12, marginTop: 2, marginBottom: 6 }}>
-        Per-day hours
-      </Text>
-
-      {DAYS.map((d) => (
-        <View key={d} style={styles.summaryRow}>
-          <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>{d}</Text>
-          <Text style={[styles.summaryValue, { color: colors.text }]}>{formatHoursMins(summary.byDayMinutes[d])}</Text>
+      <TouchableOpacity
+        style={styles.summaryHeader}
+        onPress={() => {
+          LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+          setOpen((v) => !v);
+        }}
+        accessibilityRole="button"
+        accessibilityLabel="Toggle week summary details"
+      >
+        <View>
+          <Text style={{ color: colors.text, fontWeight: "900", marginBottom: 2 }}>Week Summary</Text>
+          <Text style={{ color: colors.textMuted, fontSize: 12 }}>Total {formatHoursMins(summary.total)}</Text>
         </View>
-      ))}
+        <Icon name={open ? "chevron-up" : "chevron-down"} size={18} color={colors.textMuted} />
+      </TouchableOpacity>
 
-      <View style={styles.summaryDivider} />
+      {open && (
+        <>
+          <View style={styles.summaryDivider} />
 
-      <Text style={{ color: colors.textMuted, fontWeight: "800", fontSize: 12, marginTop: 2, marginBottom: 6 }}>
-        Flags
-      </Text>
+          <View style={styles.summaryRow}>
+            <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Yard</Text>
+            <Text style={[styles.summaryValue, { color: colors.text }]}>
+              {formatHoursMins(summary.yardMins)} ({summary.yardDays} day{summary.yardDays === 1 ? "" : "s"})
+            </Text>
+          </View>
 
-      <View style={styles.summaryRow}>
-        <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Lunch (yard)</Text>
-        <Text style={[styles.summaryValue, { color: colors.text }]}>{summary.lunchCount}</Text>
-      </View>
-      <View style={styles.summaryRow}>
-        <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Lunch (travel)</Text>
-        <Text style={[styles.summaryValue, { color: colors.text }]}>{summary.travelLunchCount}</Text>
-      </View>
-      <View style={styles.summaryRow}>
-        <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Meal supp (on set)</Text>
-        <Text style={[styles.summaryValue, { color: colors.text }]}>{summary.mealSupCount}</Text>
-      </View>
-      <View style={styles.summaryRow}>
-        <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>PD (travel)</Text>
-        <Text style={[styles.summaryValue, { color: colors.text }]}>{summary.pdCount}</Text>
-      </View>
-      <View style={styles.summaryRow}>
-        <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Night shoots</Text>
-        <Text style={[styles.summaryValue, { color: colors.text }]}>{summary.nightShootCount}</Text>
-      </View>
-      <View style={styles.summaryRow}>
-        <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Overnights</Text>
-        <Text style={[styles.summaryValue, { color: colors.text }]}>{summary.overnightCount}</Text>
-      </View>
-      <View style={styles.summaryRow}>
-        <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Turnarounds</Text>
-        <Text style={[styles.summaryValue, { color: colors.text }]}>{summary.turnaroundCount}</Text>
-      </View>
+          <View style={styles.summaryRow}>
+            <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Travel</Text>
+            <Text style={[styles.summaryValue, { color: colors.text }]}>
+              {formatHoursMins(summary.travelMins)} ({summary.travelDays} day{summary.travelDays === 1 ? "" : "s"})
+            </Text>
+          </View>
 
-      <View style={styles.summaryDivider} />
+          <View style={styles.summaryRow}>
+            <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>On set</Text>
+            <Text style={[styles.summaryValue, { color: colors.text }]}>
+              {formatHoursMins(summary.onsetMins)} ({summary.onsetDays} day{summary.onsetDays === 1 ? "" : "s"})
+            </Text>
+          </View>
 
-      <View style={styles.summaryRow}>
-        <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Full holidays</Text>
-        <Text style={[styles.summaryValue, { color: colors.text }]}>{summary.holidayDays}</Text>
-      </View>
-      <View style={styles.summaryRow}>
-        <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Half-holiday days</Text>
-        <Text style={[styles.summaryValue, { color: colors.text }]}>{summary.halfHolidayDays}</Text>
-      </View>
-      <View style={styles.summaryRow}>
-        <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Bank holidays</Text>
-        <Text style={[styles.summaryValue, { color: colors.text }]}>{summary.bankHolidayDays}</Text>
-      </View>
+          <View style={styles.summaryDivider} />
+
+          <Text style={{ color: colors.textMuted, fontWeight: "800", fontSize: 12, marginTop: 2, marginBottom: 6 }}>
+            Per-day hours
+          </Text>
+
+          {DAYS.map((d) => (
+            <View key={d} style={styles.summaryRow}>
+              <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>{d}</Text>
+              <Text style={[styles.summaryValue, { color: colors.text }]}>{formatHoursMins(summary.byDayMinutes[d])}</Text>
+            </View>
+          ))}
+
+          <View style={styles.summaryDivider} />
+
+          <Text style={{ color: colors.textMuted, fontWeight: "800", fontSize: 12, marginTop: 2, marginBottom: 6 }}>
+            Flags
+          </Text>
+
+          <View style={styles.summaryRow}>
+            <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Lunch (yard)</Text>
+            <Text style={[styles.summaryValue, { color: colors.text }]}>{summary.lunchCount}</Text>
+          </View>
+          <View style={styles.summaryRow}>
+            <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Meal supp (on set)</Text>
+            <Text style={[styles.summaryValue, { color: colors.text }]}>{summary.mealSupCount}</Text>
+          </View>
+          <View style={styles.summaryRow}>
+            <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Travel meal</Text>
+            <Text style={[styles.summaryValue, { color: colors.text }]}>{summary.pdCount}</Text>
+          </View>
+          <View style={styles.summaryRow}>
+            <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Night shoots</Text>
+            <Text style={[styles.summaryValue, { color: colors.text }]}>{summary.nightShootCount}</Text>
+          </View>
+          <View style={styles.summaryRow}>
+            <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Overnights</Text>
+            <Text style={[styles.summaryValue, { color: colors.text }]}>{summary.overnightCount}</Text>
+          </View>
+          <View style={styles.summaryRow}>
+            <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Turnarounds</Text>
+            <Text style={[styles.summaryValue, { color: colors.text }]}>{summary.turnaroundCount}</Text>
+          </View>
+
+          <View style={styles.summaryDivider} />
+
+          <View style={styles.summaryRow}>
+            <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Paid holidays</Text>
+            <Text style={[styles.summaryValue, { color: colors.text }]}>{summary.paidHolidayDays}</Text>
+          </View>
+          <View style={styles.summaryRow}>
+            <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Unpaid holidays</Text>
+            <Text style={[styles.summaryValue, { color: colors.text }]}>{summary.unpaidHolidayDays}</Text>
+          </View>
+          <View style={styles.summaryRow}>
+            <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Unpaid days</Text>
+            <Text style={[styles.summaryValue, { color: colors.text }]}>{summary.unpaidDays}</Text>
+          </View>
+          <View style={styles.summaryRow}>
+            <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Half-holiday days</Text>
+            <Text style={[styles.summaryValue, { color: colors.text }]}>{summary.halfHolidayDays}</Text>
+          </View>
+          <View style={styles.summaryRow}>
+            <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Bank holidays</Text>
+            <Text style={[styles.summaryValue, { color: colors.text }]}>{summary.bankHolidayDays}</Text>
+          </View>
+        </>
+      )}
     </View>
   );
 }
@@ -918,8 +1279,57 @@ function HoursSummary({ timesheet, holidaysByDay, bankHolidaysByDay }) {
 export default function WeekTimesheet() {
   const { id } = useLocalSearchParams(); // weekStart ISO (YYYY-MM-DD)
   const router = useRouter();
+  const navigation = useNavigation();
   const { employee, isAuthed, loading } = useAuth();
-  const { colors } = useTheme();
+  const { colors, colorScheme } = useTheme();
+  const insets = useSafeAreaInsets();
+  const allowNavigationRef = useRef(false);
+  const pendingNavigationActionRef = useRef(null);
+  const softSuccess = colorScheme === "dark" ? "#7ED8A7" : "#188A52";
+  const softSuccessBg = colorScheme === "dark" ? "#163126" : "#E9F6EE";
+  const softAmber = colorScheme === "dark" ? "#E0B15B" : "#B87716";
+  const softAmberBg = colorScheme === "dark" ? "#2D2414" : "#FBF1DE";
+  const subtleChipBg = colorScheme === "dark" ? "#17181D" : colors.surface;
+  const addBlockButtonColors =
+    colorScheme === "dark"
+      ? { backgroundColor: colors.surface, borderColor: colors.border, color: colors.textMuted }
+      : { backgroundColor: colors.surface, borderColor: colors.border, color: colors.textMuted };
+
+  const officePresetStart = firstValidTime(
+    employee?.officeStartTime,
+    employee?.officeStart,
+    employee?.timesheetDefaults?.officeStart,
+    DEFAULT_OFFICE_START
+  );
+  const officePresetEnd = firstValidTime(
+    employee?.officeEndTime,
+    employee?.officeEnd,
+    employee?.timesheetDefaults?.officeEnd,
+    DEFAULT_OFFICE_END
+  );
+  const yardPresetStart = firstValidTime(
+    employee?.yardStartTime,
+    employee?.yardStart,
+    employee?.timesheetDefaults?.yardStart,
+    DEFAULT_YARD_START
+  );
+  const yardPresetEnd = firstValidTime(
+    employee?.yardEndTime,
+    employee?.yardEnd,
+    employee?.timesheetDefaults?.yardEnd,
+    DEFAULT_YARD_END
+  );
+  const autofillType = normaliseAutofillType(
+    employee?.timesheetDefaults?.defaultType || employee?.timesheetDefaultType || "yard"
+  );
+  const yardDefaultStart =
+    autofillType === "office"
+      ? officePresetStart || DEFAULT_OFFICE_START
+      : yardPresetStart || DEFAULT_YARD_START;
+  const yardDefaultEnd =
+    autofillType === "office"
+      ? officePresetEnd || DEFAULT_OFFICE_END
+      : yardPresetEnd || DEFAULT_YARD_END;
 
   const [timesheet, setTimesheet] = useState(() => ({
     employeeCode: "",
@@ -930,12 +1340,15 @@ export default function WeekTimesheet() {
         ? { mode: "off", dayNotes: "", isTurnaround: false, turnaroundJob: null }
         : {
             mode: "yard",
-            leaveTime: DEFAULT_YARD_START,
-            arriveBack: DEFAULT_YARD_END,
+            leaveTime: yardDefaultStart,
+            arriveBack: yardDefaultEnd,
             dayNotes: "",
             precallDuration: null,
-            yardSegments: [{ start: DEFAULT_YARD_START, end: DEFAULT_YARD_END }],
+            yardSegments: [{ start: yardDefaultStart, end: yardDefaultEnd }],
             lunchSup: true,
+            yardTravelEnabled: false,
+            yardTravelLeaveTime: null,
+            yardTravelArriveTime: null,
             isTurnaround: false,
             turnaroundJob: null,
           };
@@ -946,39 +1359,107 @@ export default function WeekTimesheet() {
     status: null,
   }));
 
-  const [jobsByDay, setJobsByDay] = useState(() =>
-    Object.fromEntries(DAYS.map((d) => [d, []]))
-  );
-  const [holidaysByDay, setHolidaysByDay] = useState(() =>
-    Object.fromEntries(DAYS.map((d) => [d, null]))
-  );
+  const [jobsByDay, setJobsByDay] = useState(() => Object.fromEntries(DAYS.map((d) => [d, []])));
+  const [holidaysByDay, setHolidaysByDay] = useState(() => Object.fromEntries(DAYS.map((d) => [d, null])));
   const [bankHolidayMap, setBankHolidayMap] = useState({});
-  const [bankHolidaysByDay, setBankHolidaysByDay] = useState(() =>
-    Object.fromEntries(DAYS.map((d) => [d, null]))
-  );
+  const [bankHolidaysByDay, setBankHolidaysByDay] = useState(() => Object.fromEntries(DAYS.map((d) => [d, null])));
 
-  // Turnaround: eligibility + last-2-weeks job list
-  const [turnaroundEligible, setTurnaroundEligible] = useState(false);
+  // Turnaround: eligibility + lookback job list
+  const [, setTurnaroundEligible] = useState(false);
   const [turnaroundJobs, setTurnaroundJobs] = useState([]);
   const [turnaroundPickerOpen, setTurnaroundPickerOpen] = useState(false);
   const [turnaroundPickerDay, setTurnaroundPickerDay] = useState(null);
+  const [togglePanelByDay, setTogglePanelByDay] = useState(() =>
+    Object.fromEntries(DAYS.map((d) => [d, false]))
+  );
 
-  // ✅ NEW: Turnaround credits based ONLY on Night Shoot present in DAY NOTES (past 14 days)
+  // Turnaround credits come from Night Shoot booking notes and on-set days that wrap past midnight.
   const [turnaroundCreditsTotal, setTurnaroundCreditsTotal] = useState(0);
   const [turnaroundCreditDates, setTurnaroundCreditDates] = useState([]); // ISO dates list for audit / display if you want
+  const [turnaroundCreditsConsumed, setTurnaroundCreditsConsumed] = useState(0);
+  const [turnaroundBookingCreditDates, setTurnaroundBookingCreditDates] = useState([]);
+  const [turnaroundOnsetCreditDates, setTurnaroundOnsetCreditDates] = useState([]);
+  const [baselineSignature, setBaselineSignature] = useState(null);
 
   const weekDates = useMemo(() => {
     if (!id) return [];
-    const start = new Date(id);
+    const start = toDateSafe(id);
+    if (!start) return [];
     const arr = [];
     for (let i = 0; i < 7; i++) {
       const d = new Date(start);
       d.setDate(start.getDate() + i);
       d.setHours(0, 0, 0, 0);
-      arr.push(d.toISOString().slice(0, 10));
+      arr.push(iso(d));
     }
     return arr;
   }, [id]);
+
+  const currentSignature = useMemo(() => serialiseTimesheetForCompare(timesheet), [timesheet]);
+  const hasUnsavedChanges = baselineSignature !== null && currentSignature !== baselineSignature;
+  const formattedWeekStart = useMemo(() => formatDisplayDate(id), [id]);
+
+  const confirmDiscardChanges = useCallback(
+    (onLeave, onSave) => {
+      if (!hasUnsavedChanges) {
+        onLeave?.();
+        return;
+      }
+
+      Alert.alert(
+        "Save changes?",
+        "You have unsaved changes on this timesheet.",
+        [
+          { text: "Stay", style: "cancel" },
+          {
+            text: "Save",
+            onPress: () => {
+              onSave?.();
+            },
+          },
+          {
+            text: "Leave",
+            style: "destructive",
+            onPress: () => {
+              allowNavigationRef.current = true;
+              onLeave?.();
+            },
+          },
+        ]
+      );
+    },
+    [hasUnsavedChanges]
+  );
+
+  useEffect(() => {
+    const unsubscribe = navigation.addListener("beforeRemove", (event) => {
+      if (allowNavigationRef.current || !hasUnsavedChanges) return;
+
+      event.preventDefault();
+      pendingNavigationActionRef.current = event.data.action;
+
+      confirmDiscardChanges(
+        () => {
+          const pendingAction = pendingNavigationActionRef.current;
+          pendingNavigationActionRef.current = null;
+          if (pendingAction) navigation.dispatch(pendingAction);
+        },
+        () => {
+          void saveTimesheet({
+            exitAfterSave: false,
+            onAfterSave: () => {
+              const pendingAction = pendingNavigationActionRef.current;
+              pendingNavigationActionRef.current = null;
+              allowNavigationRef.current = true;
+              if (pendingAction) navigation.dispatch(pendingAction);
+            },
+          });
+        }
+      );
+    });
+
+    return unsubscribe;
+  }, [confirmDiscardChanges, hasUnsavedChanges, navigation, saveTimesheet]);
 
   useEffect(() => {
     let alive = true;
@@ -1020,24 +1501,84 @@ export default function WeekTimesheet() {
           const patched = { ...data, days: { ...(data.days || {}) } };
 
           for (const d of DAYS) {
-            patched.days[d] = ensureModeDefaults(
-              patched.days[d] || { mode: WEEKEND_SET.has(d) ? "off" : "yard" }
-            );
-            patched.days[d].precallDuration = patched.days[d].precallDuration ?? null;
+            const fallbackEntry = WEEKEND_SET.has(d)
+              ? { mode: "off" }
+              : {
+                  mode: "yard",
+                  leaveTime: yardDefaultStart,
+                  arriveBack: yardDefaultEnd,
+                  yardSegments: [{ start: yardDefaultStart, end: yardDefaultEnd }],
+                };
+            const ensured = ensureModeDefaults(patched.days[d] || fallbackEntry);
+            if (String(ensured.mode || "yard").toLowerCase() === "yard") {
+              if (!ensured.leaveTime) ensured.leaveTime = yardDefaultStart;
+              if (!ensured.arriveBack && !ensured.arriveTime) ensured.arriveBack = yardDefaultEnd;
+              if (
+                !ensured.isTurnaround &&
+                (!Array.isArray(ensured.yardSegments) || ensured.yardSegments.length === 0)
+              ) {
+                ensured.yardSegments = [{ start: yardDefaultStart, end: yardDefaultEnd }];
+              }
+            }
+            ensured.precallDuration = ensured.precallDuration ?? null;
+            patched.days[d] = ensured;
           }
 
+          setBaselineSignature(serialiseTimesheetForCompare(patched));
           setTimesheet(patched);
         } else {
-          setTimesheet((prev) => ({
-            ...prev,
-            employeeCode: employee.userCode || "",
-          }));
+          setTimesheet((prev) => {
+            if (prev.employeeCode) {
+              return { ...prev, employeeCode: employee.userCode || prev.employeeCode };
+            }
+
+            const defaults = DAYS.reduce((acc, d) => {
+              const isWeekend = WEEKEND_SET.has(d);
+              acc[d] = isWeekend
+                ? { mode: "off", dayNotes: "", isTurnaround: false, turnaroundJob: null }
+                : {
+                    mode: "yard",
+                    leaveTime: yardDefaultStart,
+                    arriveBack: yardDefaultEnd,
+                    dayNotes: "",
+                    precallDuration: null,
+                    yardSegments: [{ start: yardDefaultStart, end: yardDefaultEnd }],
+                    lunchSup: true,
+                    isTurnaround: false,
+                    turnaroundJob: null,
+                  };
+              return acc;
+            }, {});
+
+            const next = {
+              ...prev,
+              employeeCode: employee.userCode || "",
+              weekStart: id,
+              days: defaults,
+            };
+            setBaselineSignature(serialiseTimesheetForCompare(next));
+            return next;
+          });
         }
       } catch (err) {
         console.error("Firestore load error:", err);
       }
     })();
-  }, [loading, isAuthed, employee, id]);
+  }, [loading, isAuthed, employee, id, yardDefaultStart, yardDefaultEnd]);
+
+  useEffect(() => {
+    const unsubscribe = navigation.addListener("beforeRemove", (event) => {
+      if (allowNavigationRef.current || !hasUnsavedChanges) {
+        allowNavigationRef.current = false;
+        return;
+      }
+
+      event.preventDefault();
+      confirmDiscardChanges(() => navigation.dispatch(event.data.action));
+    });
+
+    return unsubscribe;
+  }, [confirmDiscardChanges, hasUnsavedChanges, navigation]);
 
   const applyDayLocks = useCallback((prev, holMap, bhByDay) => {
     if (!prev?.days) return prev;
@@ -1053,63 +1594,70 @@ export default function WeekTimesheet() {
 
       if (isHoliday && !isHalfHoliday) {
         const existing = next.days[dayName] || {};
-        next.days[dayName] = {
-          ...existing,
-          mode: "holiday",
-          dayNotes: existing.dayNotes || "",
-          leaveTime: null,
-          arriveTime: null,
-          callTime: null,
-          wrapTime: null,
-          arriveBack: null,
-          yardSegments: [],
-          precallDuration: null,
-          overnight: false,
-          nightShoot: false,
-          mealSup: false,
-          lunchSup: false,
-          travelLunchSup: false,
-          travelPD: false,
-          isTurnaround: false,
-          turnaroundJob: null,
-        };
+        next.days[dayName] = buildNonWorkingDayEntry(existing, "holiday", {
+          bankHolidayWorked: false,
+        });
         return;
       }
 
       if (!isHoliday && isBankHolidayOff) {
         const existing = next.days[dayName] || {};
-        next.days[dayName] = {
-          ...existing,
-          mode: "bankholiday",
-          dayNotes: existing.dayNotes || "",
-          leaveTime: null,
-          arriveTime: null,
-          callTime: null,
-          wrapTime: null,
-          arriveBack: null,
-          yardSegments: [],
-          precallDuration: null,
-          overnight: false,
-          nightShoot: false,
-          mealSup: false,
-          lunchSup: false,
-          travelLunchSup: false,
-          travelPD: false,
-          isTurnaround: false,
-          turnaroundJob: null,
-        };
+        if (shouldPreserveWorkedBankHoliday(existing, yardDefaultStart, yardDefaultEnd)) {
+          const currentMode = String(existing.mode || "yard").toLowerCase();
+          const preservedMode =
+            currentMode === "holiday" || currentMode === "bankholiday" || currentMode === "off"
+              ? "yard"
+              : currentMode || "yard";
+
+          const ensured = ensureModeDefaults({
+            ...existing,
+            mode: preservedMode,
+            bankHolidayWorked: true,
+            leaveTime: preservedMode === "yard" ? existing.leaveTime || yardDefaultStart : existing.leaveTime,
+            arriveBack:
+              preservedMode === "yard"
+                ? existing.arriveBack || existing.arriveTime || yardDefaultEnd
+                : existing.arriveBack,
+          });
+
+          if (String(ensured.mode || "yard").toLowerCase() === "yard") {
+            if (!ensured.leaveTime) ensured.leaveTime = yardDefaultStart;
+            if (!ensured.arriveBack && !ensured.arriveTime) ensured.arriveBack = yardDefaultEnd;
+            if (
+              !ensured.isTurnaround &&
+              (!Array.isArray(ensured.yardSegments) || ensured.yardSegments.length === 0)
+            ) {
+              ensured.yardSegments = [{ start: yardDefaultStart, end: yardDefaultEnd }];
+            }
+          }
+
+          next.days[dayName] = ensured;
+          return;
+        }
+
+        next.days[dayName] = buildNonWorkingDayEntry(existing, "bankholiday", {
+          bankHolidayWorked: false,
+        });
         return;
       }
 
       if (isHoliday && isHalfHoliday) {
         const existing = next.days[dayName] || {};
         const currentMode = String(existing.mode || "yard").toLowerCase();
-        const base =
-          currentMode === "holiday" || currentMode === "bankholiday"
-            ? { ...existing, mode: "yard" }
-            : { ...existing };
+        const base = currentMode === "holiday" || currentMode === "bankholiday" ? { ...existing, mode: "yard" } : { ...existing };
 
-        const ensured = ensureModeDefaults({ ...base, mode: "yard" });
+        const ensured = ensureModeDefaults({
+          ...base,
+          mode: "yard",
+          leaveTime: base.leaveTime || yardDefaultStart,
+          arriveBack: base.arriveBack || yardDefaultEnd,
+          lunchSup: true,
+        });
+        if (!ensured.leaveTime) ensured.leaveTime = yardDefaultStart;
+        if (!ensured.arriveBack && !ensured.arriveTime) ensured.arriveBack = yardDefaultEnd;
+        if (!ensured.isTurnaround && (!Array.isArray(ensured.yardSegments) || ensured.yardSegments.length === 0)) {
+          ensured.yardSegments = [{ start: yardDefaultStart, end: yardDefaultEnd }];
+        }
 
         next.days[dayName] = {
           ...ensured,
@@ -1119,13 +1667,27 @@ export default function WeekTimesheet() {
         return;
       }
 
-      next.days[dayName] = ensureModeDefaults(
-        next.days[dayName] || { mode: WEEKEND_SET.has(dayName) ? "off" : "yard" }
-      );
+      const fallback = WEEKEND_SET.has(dayName)
+        ? { mode: "off" }
+        : {
+            mode: "yard",
+            leaveTime: yardDefaultStart,
+            arriveBack: yardDefaultEnd,
+            yardSegments: [{ start: yardDefaultStart, end: yardDefaultEnd }],
+          };
+      const ensured = ensureModeDefaults(next.days[dayName] || fallback);
+      if (String(ensured.mode || "yard").toLowerCase() === "yard") {
+        if (!ensured.leaveTime) ensured.leaveTime = yardDefaultStart;
+        if (!ensured.arriveBack && !ensured.arriveTime) ensured.arriveBack = yardDefaultEnd;
+        if (!ensured.isTurnaround && (!Array.isArray(ensured.yardSegments) || ensured.yardSegments.length === 0)) {
+          ensured.yardSegments = [{ start: yardDefaultStart, end: yardDefaultEnd }];
+        }
+      }
+      next.days[dayName] = ensured;
     });
 
     return next;
-  }, []);
+  }, [yardDefaultStart, yardDefaultEnd]);
 
   useEffect(() => {
     if (loading || !isAuthed || !employee?.userCode || !id) return;
@@ -1142,29 +1704,26 @@ export default function WeekTimesheet() {
           if (nm && code) nameToCode[nm] = code;
         });
 
-        const jobsQ = query(
-          collection(db, "bookings"),
-          where("bookingDates", "array-contains-any", weekDates)
-        );
+        const jobsQ = query(collection(db, "bookings"), where("bookingDates", "array-contains-any", weekDates));
         const jobsSnap = await getDocs(jobsQ);
         const allJobs = jobsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
 
         const holSnap = await getDocs(collection(db, "holidays"));
         const allHolsRaw = holSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
 
-        const myCode = String(employee.userCode || "").trim();
+        const myCodeRaw = String(employee.userCode || "").trim();
         const myName = String(employee.displayName || employee.name || "").trim().toLowerCase();
 
         const allHols = allHolsRaw
           .filter((h) => {
             const status = String(h.status || h.Status || "").toLowerCase();
             if (h.deleted === true || h.isDeleted === true || status === "deleted") return false;
-            if (status && status !== "approved" && status !== "accept" && status !== "approved ✅") return false;
+            if (status && !status.startsWith("approved") && !status.startsWith("accept")) return false;
 
             const hCode = String(h.employeeCode || h.userCode || "").trim();
             const hName = String(h.employee || h.name || "").trim().toLowerCase();
 
-            return (hCode && myCode && hCode === myCode) || (hName && myName && hName === myName);
+            return (hCode && myCodeRaw && hCode === myCodeRaw) || (hName && myName && hName === myName);
           })
           .filter((h) => {
             const s = toDateSafe(h.startDate || h.from);
@@ -1178,41 +1737,20 @@ export default function WeekTimesheet() {
         const jobMap = Object.fromEntries(DAYS.map((d) => [d, []]));
         const holMap = Object.fromEntries(DAYS.map((d) => [d, null]));
 
-        const deriveCodesFromList = (list = []) =>
-          list
-            .map((emp) => {
-              if (emp?.userCode) return emp.userCode;
-              const nm = String(emp?.name || "").trim().toLowerCase();
-              if (!nm) return null;
-              return nameToCode[nm] || null;
-            })
-            .filter(Boolean);
+        const myCode = canonicalEmployeeCode(employee.userCode);
 
         allJobs.forEach((job) => {
-          const bookingDates = Array.isArray(job.bookingDates) ? job.bookingDates : [];
-          const employeesByDate = job.employeesByDate || {};
-
-          const globalCodes = (job.employees || [])
-            .map((emp) => {
-              if (emp?.userCode) return emp.userCode;
-              const nm = String(emp?.name || "").trim().toLowerCase();
-              if (!nm) return null;
-              return nameToCode[nm] || null;
-            })
-            .filter(Boolean);
+          const bookingDates = getBookingDates(job);
 
           bookingDates.forEach((date) => {
             if (!weekDates.includes(date)) return;
 
-            let isAssignedForThisDate = false;
-
-            if (employeesByDate && Object.keys(employeesByDate).length > 0) {
-              const listForDate = Array.isArray(employeesByDate[date]) ? employeesByDate[date] : [];
-              const codesForDate = deriveCodesFromList(listForDate);
-              isAssignedForThisDate = codesForDate.includes(employee.userCode);
-            } else {
-              isAssignedForThisDate = globalCodes.includes(employee.userCode);
-            }
+            const isAssignedForThisDate = isEmployeeAssignedToBookingDate(
+              job,
+              date,
+              myCode,
+              nameToCode
+            );
 
             if (!isAssignedForThisDate) return;
 
@@ -1229,10 +1767,8 @@ export default function WeekTimesheet() {
           const paidStatus = hol.paidStatus || hol.leaveType || "Paid";
           const leaveType = hol.leaveType || hol.paidStatus || "Paid";
 
-          const isUnpaid =
-            hol.isUnpaid ?? (String(paidStatus) === "Unpaid" || String(leaveType) === "Unpaid");
-          const isAccrued =
-            hol.isAccrued ?? (String(paidStatus) === "Accrued" || String(leaveType) === "Accrued");
+          const isUnpaid = hol.isUnpaid ?? (String(paidStatus) === "Unpaid" || String(leaveType) === "Unpaid");
+          const isAccrued = hol.isAccrued ?? (String(paidStatus) === "Accrued" || String(leaveType) === "Accrued");
 
           const half = getHalfMeta(hol);
 
@@ -1243,7 +1779,7 @@ export default function WeekTimesheet() {
           e.setHours(0, 0, 0, 0);
 
           while (s <= e) {
-            const dateStr = s.toISOString().slice(0, 10);
+            const dateStr = iso(s);
             if (weekDates.includes(dateStr)) {
               const dayName = getDayName(dateStr);
 
@@ -1274,7 +1810,11 @@ export default function WeekTimesheet() {
         setJobsByDay(jobMap);
         setHolidaysByDay(holMap);
 
-        setTimesheet((prev) => applyDayLocks(prev, holMap, bankHolidaysByDay));
+        setTimesheet((prev) => {
+          const next = applyDayLocks(prev, holMap, bankHolidaysByDay);
+          if (!hasUnsavedChanges) setBaselineSignature(serialiseTimesheetForCompare(next));
+          return next;
+        });
       } catch (err) {
         console.error("Error fetching jobs/holidays:", err);
       }
@@ -1288,87 +1828,30 @@ export default function WeekTimesheet() {
     id,
     weekDates,
     bankHolidaysByDay,
+    hasUnsavedChanges,
     applyDayLocks,
   ]);
 
-  // ───────────────────────── Turnaround eligibility + last 2 weeks job list ─────────────────────────
-  // ✅ UPDATED:
-  // - Turnaround credits ONLY from "night shoot" appearing in DAY NOTES (past 14 days)
-  // - Total credits = number of unique dates with night shoot in notes
-  // - Can only select Turnaround up to that credit count in the current timesheet
+  // ───────────────────────── Turnaround eligibility + lookback job list ─────────────────────────
+  // Credits are earned from:
+  // 1) booking day-notes that contain "Night Shoot"
+  // 2) on-set days that wrap past midnight
+  // Consecutive eligible dates collapse into a single credit streak.
   useEffect(() => {
     if (loading || !isAuthed || !employee?.userCode) return;
 
     (async () => {
       try {
-        const myCode = String(employee.userCode || "").trim();
+        const myCode = canonicalEmployeeCode(employee.userCode);
         if (!myCode) return;
 
-        const last14Dates = buildLastNDatesISO(14); // includes today
-        const last14Set = new Set(last14Dates);
-
-        // Eligibility + credits: scan YOUR timesheets in the last ~3 weekStarts (covers 14 days)
-        const today = startOfDay(new Date());
-        const weekStartToday = (() => {
-          // Week start is Monday
-          const d = new Date(today);
-          const day = d.getDay(); // 0..6 (Sun..Sat)
-          const diffToMon = (day === 0 ? -6 : 1) - day; // move to Monday
-          d.setDate(d.getDate() + diffToMon);
-          d.setHours(0, 0, 0, 0);
-          return d.toISOString().slice(0, 10);
-        })();
-
-        const weekStartsToCheck = [
-          weekStartToday,
-          addDaysISO(weekStartToday, -7),
-          addDaysISO(weekStartToday, -14),
-        ];
-
-        const nightShootDateSet = new Set();
-
-        for (const ws of weekStartsToCheck) {
-          const ref = doc(db, "timesheets", `${myCode}_${ws}`);
-          const snap = await getDoc(ref);
-          if (!snap.exists()) continue;
-
-          const data = snap.data() || {};
-          const daysObj = data.days || {};
-
-          for (const dayName of DAYS) {
-            const e = daysObj[dayName];
-            if (!e) continue;
-
-            // date for this day within that weekStart
-            const dayIdx = DAYS.indexOf(dayName);
-            const dateISO = addDaysISO(ws, dayIdx);
-
-            // Only within last 14 days
-            if (!last14Set.has(dateISO)) continue;
-
-            // ✅ ONLY dayNotes determine night shoot credit
-            if (hasNightShootInNotes(e.dayNotes)) {
-              nightShootDateSet.add(dateISO);
-            }
-          }
-        }
-
-        const creditDates = Array.from(nightShootDateSet).sort((a, b) => String(b).localeCompare(String(a)));
-        const creditsTotal = creditDates.length;
-
-        setTurnaroundCreditDates(creditDates);
-        setTurnaroundCreditsTotal(creditsTotal);
-        setTurnaroundEligible(creditsTotal > 0);
-
-        // Job list (last 2 weeks jobs you worked on) - unchanged
-        const chunks = chunkArray(last14Dates, 10);
+        const lastDates = buildLastNDatesISO(TURNAROUND_LOOKBACK_DAYS); // includes today
+        const lastSet = new Set(lastDates);
+        const chunks = chunkArray(lastDates, 10);
         const allJobs = [];
 
         for (const chunk of chunks) {
-          const qJobs = query(
-            collection(db, "bookings"),
-            where("bookingDates", "array-contains-any", chunk)
-          );
+          const qJobs = query(collection(db, "bookings"), where("bookingDates", "array-contains-any", chunk));
           const snap = await getDocs(qJobs);
           snap.docs.forEach((d) => allJobs.push({ id: d.id, ...d.data() }));
         }
@@ -1383,55 +1866,35 @@ export default function WeekTimesheet() {
           if (nm && code) nameToCode[nm] = code;
         });
 
-        const deriveCodesFromList = (list = []) =>
-          list
-            .map((emp) => {
-              if (emp?.userCode) return emp.userCode;
-              const nm = String(emp?.name || "").trim().toLowerCase();
-              if (!nm) return null;
-              return nameToCode[nm] || null;
-            })
-            .filter(Boolean);
-
+        const nightShootWorkedDates = new Set();
         const out = [];
         const seen = new Set();
 
         allJobs.forEach((job) => {
-          const bookingDates = Array.isArray(job.bookingDates) ? job.bookingDates : [];
-          const employeesByDate = job.employeesByDate || {};
-
-          const globalCodes = (job.employees || [])
-            .map((emp) => {
-              if (emp?.userCode) return emp.userCode;
-              const nm = String(emp?.name || "").trim().toLowerCase();
-              if (!nm) return null;
-              return nameToCode[nm] || null;
-            })
-            .filter(Boolean);
+          const bookingDates = getBookingDates(job);
 
           let pickedDateISO = null;
 
           for (const dateISO of bookingDates) {
-            if (!last14Set.has(dateISO)) continue;
+            if (!lastSet.has(dateISO)) continue;
 
-            let assigned = false;
+            const assigned = isEmployeeAssignedToBookingDate(
+              job,
+              dateISO,
+              myCode,
+              nameToCode
+            );
 
-            if (employeesByDate && Object.keys(employeesByDate).length > 0) {
-              const listForDate = Array.isArray(employeesByDate[dateISO]) ? employeesByDate[dateISO] : [];
-              const codesForDate = deriveCodesFromList(listForDate);
-              assigned = codesForDate.includes(myCode);
-            } else {
-              assigned = globalCodes.includes(myCode);
-            }
+            if (!assigned) continue;
 
-            if (assigned) {
-              pickedDateISO = dateISO;
-              break;
+            if (!pickedDateISO) pickedDateISO = dateISO;
+
+            if (hasNightShootInBookingNotes(job, dateISO)) {
+              nightShootWorkedDates.add(dateISO);
             }
           }
 
           if (!pickedDateISO) return;
-
           if (seen.has(job.id)) return;
           seen.add(job.id);
 
@@ -1444,27 +1907,74 @@ export default function WeekTimesheet() {
           });
         });
 
+        const recentWeekStarts = Array.from(new Set(lastDates.map((dateISO) => mondayISO(dateISO)).filter(Boolean)));
+        const recentTimesheets = await Promise.all(
+          recentWeekStarts
+            .filter((weekStartISO) => weekStartISO && weekStartISO !== id)
+            .map(async (weekStartISO) => {
+              const snap = await getDoc(doc(db, "timesheets", `${employee.userCode}_${weekStartISO}`));
+              if (!snap.exists()) return null;
+              return { weekStart: weekStartISO, ...snap.data() };
+            })
+        );
+
+        const savedOnsetDates = recentTimesheets.flatMap((ts) =>
+          ts ? collectOnsetTurnaroundCreditDates(ts, lastSet, ts.weekStart) : []
+        );
+        const savedTurnaroundUses = recentTimesheets.reduce(
+          (total, ts) => total + (ts ? countTurnaroundUses(ts) : 0),
+          0
+        );
+
         out.sort((a, b) => String(b.dateISO || "").localeCompare(String(a.dateISO || "")));
         setTurnaroundJobs(out);
+        setTurnaroundBookingCreditDates(Array.from(nightShootWorkedDates));
+        setTurnaroundOnsetCreditDates(savedOnsetDates);
+        setTurnaroundCreditsConsumed(savedTurnaroundUses);
       } catch (err) {
         console.error("[turnaround] error:", err);
         setTurnaroundEligible(false);
         setTurnaroundJobs([]);
-        setTurnaroundCreditsTotal(0);
-        setTurnaroundCreditDates([]);
+        setTurnaroundBookingCreditDates([]);
+        setTurnaroundOnsetCreditDates([]);
+        setTurnaroundCreditsConsumed(0);
       }
     })();
-  }, [loading, isAuthed, employee?.userCode]);
+  }, [loading, isAuthed, employee?.userCode, id]);
 
-  function withDefaultYardTimes(ts) {
+  useEffect(() => {
+    const lastSet = new Set(buildLastNDatesISO(TURNAROUND_LOOKBACK_DAYS));
+    const localOnsetDates = id
+      ? collectOnsetTurnaroundCreditDates(timesheet, lastSet, id)
+      : [];
+
+    const creditRoots = collapseConsecutiveDatesToCredits([
+      ...turnaroundBookingCreditDates,
+      ...turnaroundOnsetCreditDates,
+      ...localOnsetDates,
+    ]);
+    const creditDates = creditRoots.sort((a, b) =>
+      String(b).localeCompare(String(a))
+    );
+    const creditsTotal = creditDates.length;
+
+    setTurnaroundCreditDates(creditDates);
+    setTurnaroundCreditsTotal(creditsTotal);
+    setTurnaroundEligible(creditsTotal > 0);
+  }, [id, timesheet, turnaroundBookingCreditDates, turnaroundOnsetCreditDates]);
+
+  const withDefaultYardTimes = useCallback((ts) => {
     const weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
     const next = { ...ts, days: { ...ts.days } };
 
     weekdays.forEach((d) => {
       const e = { ...(next.days?.[d] || {}) };
       if (String(e.mode || "yard").toLowerCase() === "yard") {
-        if (!e.leaveTime) e.leaveTime = DEFAULT_YARD_START;
-        if (!e.arriveBack && !e.arriveTime) e.arriveBack = DEFAULT_YARD_END;
+        if (!e.leaveTime) e.leaveTime = yardDefaultStart;
+        if (!e.arriveBack && !e.arriveTime) e.arriveBack = yardDefaultEnd;
+        if (!e.isTurnaround && (!Array.isArray(e.yardSegments) || e.yardSegments.length === 0)) {
+          e.yardSegments = [{ start: yardDefaultStart, end: yardDefaultEnd }];
+        }
         next.days[d] = ensureModeDefaults(e);
       } else {
         next.days[d] = ensureModeDefaults(e);
@@ -1472,7 +1982,7 @@ export default function WeekTimesheet() {
     });
 
     return annotateTimesheetMidnight(next);
-  }
+  }, [yardDefaultEnd, yardDefaultStart]);
 
   function buildJobSnapshot(jobsByDayMap) {
     const byDay = Object.fromEntries(
@@ -1499,14 +2009,15 @@ export default function WeekTimesheet() {
 
   function imprintJobsIntoDays(ts, jobsByDayMap, weekStartISO) {
     const copy = { ...ts, days: { ...ts.days } };
-    const start = new Date(`${weekStartISO}T00:00:00`);
+    const start = toDateSafe(weekStartISO);
+    if (!start) return annotateTimesheetMidnight(copy);
 
     const isoByDay = {};
     for (let i = 0; i < 7; i++) {
       const d = new Date(start);
       d.setDate(start.getDate() + i);
       d.setHours(0, 0, 0, 0);
-      isoByDay[DAYS[i]] = d.toISOString().slice(0, 10);
+      isoByDay[DAYS[i]] = iso(d);
     }
 
     for (const day of DAYS) {
@@ -1535,7 +2046,7 @@ export default function WeekTimesheet() {
   const isApproved = statusStr === "approved";
   const isLocked = isApproved;
 
-  // ✅ NEW: current-week turnaround usage + remaining credits
+  // current-week turnaround usage + single-use cap
   const usedTurnarounds = useMemo(() => {
     let used = 0;
     for (const d of DAYS) {
@@ -1545,7 +2056,12 @@ export default function WeekTimesheet() {
     return used;
   }, [timesheet]);
 
-  const turnaroundCreditsRemaining = Math.max(0, (turnaroundCreditsTotal || 0) - (usedTurnarounds || 0));
+  const turnaroundUnusedCredits = Math.max(
+    0,
+    Number(turnaroundCreditsTotal || 0) - Number(turnaroundCreditsConsumed || 0)
+  );
+  const turnaroundUsesAllowed = turnaroundUnusedCredits > 0 ? Math.min(TURNAROUND_MAX_USES_PER_WEEK, turnaroundUnusedCredits) : 0;
+  const turnaroundCreditsRemaining = Math.max(0, turnaroundUsesAllowed - (usedTurnarounds || 0));
 
   const clearWeekendBlocks = useCallback(
     (day) => {
@@ -1571,6 +2087,9 @@ export default function WeekTimesheet() {
               overnight: false,
               nightShoot: false,
               mealSup: false,
+              yardTravelEnabled: false,
+              yardTravelLeaveTime: null,
+              yardTravelArriveTime: null,
               travelLunchSup: false,
               travelPD: false,
               dayNotes: existing.dayNotes || "",
@@ -1584,18 +2103,112 @@ export default function WeekTimesheet() {
     [isLocked]
   );
 
+  const clearBankHolidayBlocks = useCallback(
+    (day) => {
+      if (isLocked) return;
+
+      setTimesheet((prev) => {
+        const existing = prev.days?.[day] || {};
+        return {
+          ...prev,
+          days: {
+            ...prev.days,
+            [day]: buildNonWorkingDayEntry(existing, "bankholiday", {
+              bankHolidayWorked: false,
+            }),
+          },
+        };
+      });
+    },
+    [isLocked]
+  );
+
+  const toggleUnpaidDay = useCallback(
+    (day, enabled) => {
+      if (isLocked) return;
+
+      setTimesheet((prev) => {
+        const existing = ensureModeDefaults(
+          prev.days?.[day] || { mode: WEEKEND_SET.has(day) ? "off" : "yard", dayNotes: "" }
+        );
+        const hol = holidaysByDay?.[day];
+        const isFullHoliday = !!hol && !hol?.isHalfDay;
+        const isBankHolidayDay = !!bankHolidaysByDay?.[day]?.notWorking;
+
+        if (isFullHoliday || isBankHolidayDay) return prev;
+
+        if (enabled) {
+          const unpaidRestore = stripUnpaidRestore(existing);
+          return {
+            ...prev,
+            days: {
+              ...prev.days,
+              [day]: buildNonWorkingDayEntry(existing, "unpaid", {
+                unpaidDay: true,
+                bankHolidayWorked: false,
+                unpaidRestore,
+              }),
+            },
+          };
+        }
+
+        const restoreMode = WEEKEND_SET.has(day) ? "off" : "yard";
+        const restoredBase = stripUnpaidRestore(existing.unpaidRestore);
+        const restored =
+          restoredBase
+            ? ensureModeDefaults({
+                ...restoredBase,
+                unpaidDay: false,
+                unpaidRestore: null,
+              })
+            : restoreMode === "yard"
+            ? ensureModeDefaults({
+                ...existing,
+                mode: "yard",
+                unpaidDay: false,
+                unpaidRestore: null,
+                leaveTime: yardDefaultStart,
+                arriveBack: yardDefaultEnd,
+                yardSegments: [{ start: yardDefaultStart, end: yardDefaultEnd, note: "" }],
+                lunchSup: true,
+                bankHolidayWorked: false,
+              })
+            : ensureModeDefaults({
+                ...existing,
+                mode: "off",
+                unpaidDay: false,
+                unpaidRestore: null,
+                bankHolidayWorked: false,
+              });
+
+        return {
+          ...prev,
+          days: {
+            ...prev.days,
+            [day]: restored,
+          },
+        };
+      });
+    },
+    [isLocked, holidaysByDay, bankHolidaysByDay, yardDefaultStart, yardDefaultEnd]
+  );
+
   const addYardSegment = useCallback(
     (day) => {
       if (isLocked) return;
 
       setTimesheet((prev) => {
         const existing = prev.days?.[day] || { mode: "yard" };
+        const isBankHolidayDay = !!bankHolidaysByDay?.[day]?.notWorking;
+        const switchedToYard = String(existing.mode || "").toLowerCase() !== "yard";
 
         let base = { ...existing };
-        if (String(base.mode || "").toLowerCase() !== "yard") {
+        if (switchedToYard) {
           base.mode = "yard";
-          base.leaveTime = base.leaveTime || DEFAULT_YARD_START;
-          base.arriveBack = base.arriveBack || DEFAULT_YARD_END;
+          base.leaveTime = base.leaveTime || yardDefaultStart;
+          base.arriveBack = base.arriveBack || yardDefaultEnd;
+          base.lunchSup = true;
+          base.yardSegments = [];
 
           // clear non-yard time fields
           base.arriveTime = null;
@@ -1609,26 +2222,45 @@ export default function WeekTimesheet() {
           // if switching to yard via add block, keep turnaround OFF by default
           base.isTurnaround = base.isTurnaround === true ? true : false;
         }
+        if (isBankHolidayDay) base.bankHolidayWorked = true;
 
         const e = ensureModeDefaults(base);
         const segs = Array.isArray(e.yardSegments) ? e.yardSegments : [];
 
-        if (segs.length === 0) {
-          const firstSeg = { start: DEFAULT_YARD_START, end: DEFAULT_YARD_END };
+        if (switchedToYard) {
+          const firstSeg = segs[0] || { start: yardDefaultStart, end: yardDefaultEnd, note: "" };
           return {
             ...prev,
             days: {
               ...prev.days,
               [day]: {
                 ...e,
+                lunchSup: true,
+                ...(isBankHolidayDay ? { bankHolidayWorked: true } : {}),
                 yardSegments: [firstSeg],
               },
             },
           };
         }
 
-        const last = segs[segs.length - 1] || { start: DEFAULT_YARD_START, end: DEFAULT_YARD_END };
-        const nextSeg = { start: last.end || DEFAULT_YARD_START, end: DEFAULT_YARD_END };
+        if (segs.length === 0) {
+          const firstSeg = { start: yardDefaultStart, end: yardDefaultEnd, note: "" };
+          return {
+            ...prev,
+            days: {
+              ...prev.days,
+              [day]: {
+                ...e,
+                lunchSup: true,
+                ...(isBankHolidayDay ? { bankHolidayWorked: true } : {}),
+                yardSegments: [firstSeg],
+              },
+            },
+          };
+        }
+
+        const last = segs[segs.length - 1] || { start: yardDefaultStart, end: yardDefaultEnd };
+        const nextSeg = { start: last.end || yardDefaultStart, end: yardDefaultEnd, note: "" };
 
         return {
           ...prev,
@@ -1636,13 +2268,14 @@ export default function WeekTimesheet() {
             ...prev.days,
             [day]: {
               ...e,
+              ...(isBankHolidayDay ? { bankHolidayWorked: true } : {}),
               yardSegments: [...segs, nextSeg],
             },
           },
         };
       });
     },
-    [isLocked]
+    [isLocked, bankHolidaysByDay, yardDefaultStart, yardDefaultEnd]
   );
 
   // allow deleting the FIRST / LAST remaining segment (can go to 0)
@@ -1653,6 +2286,7 @@ export default function WeekTimesheet() {
       setTimesheet((prev) => {
         const current = prev.days?.[day] || { mode: "yard" };
         const mode = String(current.mode || "yard").toLowerCase();
+        const isBankHolidayDay = !!bankHolidaysByDay?.[day]?.notWorking;
         if (mode !== "yard") return prev;
 
         const e = ensureModeDefaults(current);
@@ -1666,12 +2300,13 @@ export default function WeekTimesheet() {
           ...e,
           yardSegments: segs, // can be empty
           lunchSup: segs.length === 0 ? false : e.lunchSup,
+          ...(isBankHolidayDay ? { bankHolidayWorked: true } : {}),
         });
 
         return { ...prev, days: { ...prev.days, [day]: nextEntry } };
       });
     },
-    [isLocked]
+    [isLocked, bankHolidaysByDay]
   );
 
   const updateYardSegment = useCallback(
@@ -1679,15 +2314,29 @@ export default function WeekTimesheet() {
       if (isLocked) return;
 
       setTimesheet((prev) => {
+        const isBankHolidayDay = !!bankHolidaysByDay?.[day]?.notWorking;
         const e = ensureModeDefaults(prev.days?.[day] || { mode: "yard" });
-        const segs = (Array.isArray(e.yardSegments) ? e.yardSegments : []).map((s, i) =>
-          i === index ? { ...s, [field]: value } : s
-        );
-        return { ...prev, days: { ...prev.days, [day]: { ...e, yardSegments: segs } } };
+        const segs = (Array.isArray(e.yardSegments) ? e.yardSegments : []).map((s, i) => (i === index ? { ...s, [field]: value } : s));
+        return {
+          ...prev,
+          days: {
+            ...prev.days,
+            [day]: {
+              ...e,
+              ...(isBankHolidayDay ? { bankHolidayWorked: true } : {}),
+              yardSegments: segs,
+            },
+          },
+        };
       });
     },
-    [isLocked]
+    [isLocked, bankHolidaysByDay]
   );
+
+  const toggleDayTogglePanel = useCallback((day) => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setTogglePanelByDay((prev) => ({ ...prev, [day]: !prev?.[day] }));
+  }, []);
 
   const validateTurnaroundSelectionsOrAlert = useCallback((ts) => {
     for (const dayName of DAYS) {
@@ -1699,7 +2348,7 @@ export default function WeekTimesheet() {
         if (!ok) {
           Alert.alert(
             "Turnaround Day needs a job",
-            `Please select the job for Turnaround Day on ${dayName} (from the last 2 weeks).`
+            `Please select the job for Turnaround Day on ${dayName} (from the last 3 weeks).`
           );
           return false;
         }
@@ -1708,53 +2357,97 @@ export default function WeekTimesheet() {
     return true;
   }, []);
 
-  const saveTimesheet = async () => {
-    if (isLocked) {
-      Alert.alert("Locked", "This timesheet has been approved and can no longer be edited.");
-      return;
-    }
-    try {
-      const ref = doc(db, "timesheets", `${employee.userCode}_${id}`);
+  const saveTimesheet = useCallback(
+    async ({ exitAfterSave = true, onAfterSave } = {}) => {
+      if (isLocked) {
+        Alert.alert("Locked", "This timesheet has been approved and can no longer be edited.");
+        return;
+      }
+      try {
+        const timesheetDocId = `${employee.userCode}_${id}`;
+        const ref = doc(db, "timesheets", timesheetDocId);
+        const docPath = `timesheets/${timesheetDocId}`;
 
-      const prepared = imprintJobsIntoDays(withDefaultYardTimes(timesheet), jobsByDay, id);
-      if (!validateTurnaroundSelectionsOrAlert(prepared)) return;
+        const prepared = imprintJobsIntoDays(withDefaultYardTimes(timesheet), jobsByDay, id);
+        if (!validateTurnaroundSelectionsOrAlert(prepared)) return;
 
-      const jobSnapshot = buildJobSnapshot(jobsByDay);
+        const jobSnapshot = buildJobSnapshot(jobsByDay);
 
-      const singleJobId = jobSnapshot.bookingIds.length === 1 ? jobSnapshot.bookingIds[0] : null;
-      const singleJobNumber = jobSnapshot.jobNumbers.length === 1 ? jobSnapshot.jobNumbers[0] : null;
+        const singleJobId = jobSnapshot.bookingIds.length === 1 ? jobSnapshot.bookingIds[0] : null;
+        const singleJobNumber = jobSnapshot.jobNumbers.length === 1 ? jobSnapshot.jobNumbers[0] : null;
 
-      const payload = {
-        ...prepared,
-        weekStart: id,
-        employeeCode: employee.userCode,
-        employeeName: employee.displayName || employee.name || null,
-        jobSnapshot,
-        jobId: singleJobId,
-        jobNumber: singleJobNumber,
+        const payload = {
+          ...prepared,
+          weekStart: id,
+          employeeCode: employee.userCode,
+          employeeName: employee.displayName || employee.name || null,
+          jobSnapshot,
+          jobId: singleJobId,
+          jobNumber: singleJobNumber,
 
-        // ✅ audit fields for turnaround credit system
-        turnaroundCredits: {
-          total: turnaroundCreditsTotal || 0,
-          sourcesLast14Days: turnaroundCreditDates || [],
-        },
+          // Audit fields for turnaround credit system (kept same field name to avoid breaking existing readers)
+          turnaroundCredits: {
+            total: turnaroundCreditsTotal || 0,
+            sourcesLast14Days: turnaroundCreditDates || [],
+            sourcesLast21Days: turnaroundCreditDates || [],
+          },
 
-        updatedAt: serverTimestamp(),
-        submitted: timesheet.submitted ? true : false,
-      };
+          updatedAt: serverTimestamp(),
+          submitted: timesheet.submitted ? true : false,
+        };
 
-      await setDoc(ref, payload, { merge: true });
+        const queuePayload = {
+          ...payload,
+          updatedAt: new Date().toISOString(),
+        };
 
-      Alert.alert(
-        timesheet.submitted ? "✅ Updated" : "✅ Saved",
-        timesheet.submitted ? "Your submitted timesheet has been updated." : "Your timesheet has been saved as a draft."
-      );
-      router.back();
-    } catch (err) {
-      console.error(err);
-      Alert.alert("❌ Error", "Could not save timesheet");
-    }
-  };
+        const { queued } = await runOrQueueFirestoreMutation({
+          run: () => setDoc(ref, payload, { merge: true }),
+          mutation: {
+            operation: "set",
+            docPath,
+            data: queuePayload,
+            options: { merge: true },
+            entityType: "timesheet",
+            entityId: timesheetDocId,
+            meta: { weekStart: id, submitted: !!timesheet.submitted },
+          },
+        });
+
+        if (queued) {
+          Alert.alert("Saved offline", "No network right now. Your timesheet changes will sync automatically.");
+        } else {
+          Alert.alert(
+            timesheet.submitted ? "Updated" : "Saved",
+            timesheet.submitted
+              ? "Your submitted timesheet has been updated."
+              : "Your timesheet has been saved as a draft."
+          );
+        }
+        setBaselineSignature(serialiseTimesheetForCompare(prepared));
+        if (exitAfterSave) {
+          allowNavigationRef.current = true;
+          router.back();
+        }
+        onAfterSave?.();
+      } catch (err) {
+        console.error(err);
+        Alert.alert("Error", "Could not save timesheet");
+      }
+    },
+    [
+      employee,
+      id,
+      isLocked,
+      jobsByDay,
+      router,
+      timesheet,
+      turnaroundCreditDates,
+      turnaroundCreditsTotal,
+      validateTurnaroundSelectionsOrAlert,
+      withDefaultYardTimes,
+    ]
+  );
 
   const submitTimesheet = async () => {
     if (isLocked) {
@@ -1762,7 +2455,9 @@ export default function WeekTimesheet() {
       return;
     }
     try {
-      const ref = doc(db, "timesheets", `${employee.userCode}_${id}`);
+      const timesheetDocId = `${employee.userCode}_${id}`;
+      const ref = doc(db, "timesheets", timesheetDocId);
+      const docPath = `timesheets/${timesheetDocId}`;
 
       const prepared = imprintJobsIntoDays(withDefaultYardTimes(timesheet), jobsByDay, id);
       if (!validateTurnaroundSelectionsOrAlert(prepared)) return;
@@ -1781,10 +2476,11 @@ export default function WeekTimesheet() {
         jobId: singleJobId,
         jobNumber: singleJobNumber,
 
-        // ✅ audit fields for turnaround credit system
+        // Audit fields for turnaround credit system (kept same field name to avoid breaking existing readers)
         turnaroundCredits: {
           total: turnaroundCreditsTotal || 0,
           sourcesLast14Days: turnaroundCreditDates || [],
+          sourcesLast21Days: turnaroundCreditDates || [],
         },
 
         updatedAt: serverTimestamp(),
@@ -1792,12 +2488,36 @@ export default function WeekTimesheet() {
         submittedAt: serverTimestamp(),
       };
 
-      await setDoc(ref, payload, { merge: true });
-      Alert.alert("📤 Submitted", "Your timesheet has been submitted.");
+      const nowISO = new Date().toISOString();
+      const queuePayload = {
+        ...payload,
+        updatedAt: nowISO,
+        submittedAt: nowISO,
+      };
+
+      const { queued } = await runOrQueueFirestoreMutation({
+        run: () => setDoc(ref, payload, { merge: true }),
+        mutation: {
+          operation: "set",
+          docPath,
+          data: queuePayload,
+          options: { merge: true },
+          entityType: "timesheet",
+          entityId: timesheetDocId,
+          meta: { weekStart: id, submitted: true },
+        },
+      });
+
+      if (queued) {
+        Alert.alert("Submission queued", "You appear to be offline. We queued this timesheet and it will auto-submit when back online.");
+      } else {
+        Alert.alert("Submitted", "Your timesheet has been submitted.");
+      }
+      allowNavigationRef.current = true;
       router.back();
     } catch (err) {
       console.error(err);
-      Alert.alert("❌ Error", "Could not submit timesheet");
+      Alert.alert("Error", "Could not submit timesheet");
     }
   };
 
@@ -1810,9 +2530,9 @@ export default function WeekTimesheet() {
 
         const hol = holidaysByDay?.[day];
         const isFullHoliday = !!hol && !hol?.isHalfDay;
+        const isBankHolidayDay = !!bankHolidaysByDay?.[day]?.notWorking;
 
         if (isFullHoliday) return prev;
-        if (bankHolidaysByDay?.[day]?.notWorking) return prev;
 
         let updated = { ...existing, [field]: value };
         const isHalfHoliday = !!hol && !!hol?.isHalfDay;
@@ -1822,11 +2542,18 @@ export default function WeekTimesheet() {
           updated.mode = nextMode;
 
           if (nextMode === "yard") {
-            updated.leaveTime = updated.leaveTime || DEFAULT_YARD_START;
-            updated.arriveBack = updated.arriveBack || DEFAULT_YARD_END;
+            updated.leaveTime = updated.leaveTime || yardDefaultStart;
+            updated.arriveBack = updated.arriveBack || yardDefaultEnd;
+            updated.lunchSup = true;
+            if (!updated.isTurnaround && (!Array.isArray(updated.yardSegments) || updated.yardSegments.length === 0)) {
+              updated.yardSegments = [{ start: yardDefaultStart, end: yardDefaultEnd }];
+            }
           } else {
             updated.yardSegments = [];
             updated.lunchSup = false;
+            updated.yardTravelEnabled = false;
+            updated.yardTravelLeaveTime = null;
+            updated.yardTravelArriveTime = null;
 
             // Turnaround only applies to Yard
             updated.isTurnaround = false;
@@ -1845,13 +2572,24 @@ export default function WeekTimesheet() {
           }
 
           if (nextMode === "travel") {
-            updated.travelLunchSup = typeof updated.travelLunchSup === "boolean" ? updated.travelLunchSup : true;
+            updated.travelLunchSup = false;
             updated.travelPD = typeof updated.travelPD === "boolean" ? updated.travelPD : false;
           }
 
           if (nextMode === "onset") {
             updated.nightShoot = typeof updated.nightShoot === "boolean" ? updated.nightShoot : false;
-            updated.mealSup = typeof updated.mealSup === "boolean" ? updated.mealSup : true; // ✅ default on
+            updated.mealSup = typeof updated.mealSup === "boolean" ? updated.mealSup : true; // default on
+          }
+        }
+
+        if (field === "yardTravelEnabled") {
+          updated.yardTravelEnabled = !!value;
+          if (updated.yardTravelEnabled) {
+            updated.yardTravelLeaveTime = normaliseTimeValue(updated.yardTravelLeaveTime) || yardDefaultStart;
+            updated.yardTravelArriveTime = normaliseTimeValue(updated.yardTravelArriveTime) || yardDefaultEnd;
+          } else {
+            updated.yardTravelLeaveTime = null;
+            updated.yardTravelArriveTime = null;
           }
         }
 
@@ -1859,43 +2597,73 @@ export default function WeekTimesheet() {
 
         if (isHalfHoliday) {
           updated.mode = "yard";
-          updated.leaveTime = updated.leaveTime || DEFAULT_YARD_START;
-          updated.arriveBack = updated.arriveBack || DEFAULT_YARD_END;
+          updated.leaveTime = updated.leaveTime || yardDefaultStart;
+          updated.arriveBack = updated.arriveBack || yardDefaultEnd;
+          updated.lunchSup = true;
+          if (!updated.isTurnaround && (!Array.isArray(updated.yardSegments) || updated.yardSegments.length === 0)) {
+            updated.yardSegments = [{ start: yardDefaultStart, end: yardDefaultEnd }];
+          }
           updated.halfHoliday = true;
           updated.halfHolidayLabel = hol?.halfLabel || "Half day";
         }
 
+        if (isBankHolidayDay && String(updated.mode || "bankholiday").toLowerCase() !== "bankholiday") {
+          updated.bankHolidayWorked = true;
+        }
+
+        updated.unpaidDay = String(updated.mode || "").toLowerCase() === "unpaid";
+        if (!updated.unpaidDay) updated.unpaidRestore = null;
+
         updated = ensureModeDefaults(updated);
 
-        // auto overnight if times imply crossing midnight
-        if (updated.mode === "onset" || updated.mode === "travel") {
+        if (updated.mode === "yard") {
+          const segs = Array.isArray(updated.yardSegments) ? updated.yardSegments : [];
+          const yardTravelOffset = boolish(updated.yardTravelEnabled)
+            ? timeFieldOffset(updated.yardTravelLeaveTime, updated.yardTravelArriveTime)
+            : null;
+          updated.crossesMidnight =
+            segs.some((seg) => segmentMeta(seg).crossesMidnight) || (yardTravelOffset?.dayOffset ?? 0) === 1;
+        } else if (updated.mode === "travel") {
+          const travelOffset = timeFieldOffset(updated.leaveTime, updated.arriveTime);
+          updated.crossesMidnight = (travelOffset?.dayOffset ?? 0) === 1;
+        } else if (updated.mode === "onset") {
           const base = updated.leaveTime || updated.arriveTime || updated.callTime || null;
           const arriveBackOffset = timeFieldOffset(base, updated.arriveBack);
           const wrapOffset = timeFieldOffset(base, updated.wrapTime);
-          const impliedOvernight = (arriveBackOffset?.dayOffset ?? 0) === 1 || (wrapOffset?.dayOffset ?? 0) === 1;
-
-          if (impliedOvernight) {
-            updated.overnight = true;
-            updated.crossesMidnight = true;
-          }
+          updated.crossesMidnight =
+            (arriveBackOffset?.dayOffset ?? 0) === 1 || (wrapOffset?.dayOffset ?? 0) === 1;
+        } else if (updated.mode !== "yard") {
+          updated.crossesMidnight = false;
         }
 
         return { ...prev, days: { ...prev.days, [day]: updated } };
       });
     },
-    [isLocked, holidaysByDay, bankHolidaysByDay]
+    [isLocked, holidaysByDay, bankHolidaysByDay, yardDefaultStart, yardDefaultEnd]
   );
 
   const toggleTurnaround = useCallback(
     (day) => {
       if (isLocked) return;
+      const currentDayEntry = ensureModeDefaults(
+        timesheet?.days?.[day] || {
+          mode: WEEKEND_SET.has(day) ? "off" : "yard",
+          dayNotes: "",
+        }
+      );
+      const turningOn = !currentDayEntry.isTurnaround;
+      if (turningOn && (!Array.isArray(turnaroundJobs) || turnaroundJobs.length === 0)) {
+        Alert.alert(
+          "No jobs to choose",
+          "You need at least one recent job from the last 3 weeks before marking a Turnaround day."
+        );
+        return;
+      }
 
       let nextOn = false;
 
       setTimesheet((prev) => {
-        const existing = ensureModeDefaults(
-          prev.days?.[day] || { mode: WEEKEND_SET.has(day) ? "off" : "yard", dayNotes: "" }
-        );
+        const existing = ensureModeDefaults(prev.days?.[day] || { mode: WEEKEND_SET.has(day) ? "off" : "yard", dayNotes: "" });
 
         // Only works on Yard
         if (String(existing.mode || "yard").toLowerCase() !== "yard") return prev;
@@ -1909,18 +2677,21 @@ export default function WeekTimesheet() {
 
         nextOn = !existing.isTurnaround;
 
-        // ✅ If turning ON, enforce credit cap
+        // If turning ON, enforce weekly single-use cap
         if (nextOn) {
-          const totalCredits = Number(turnaroundCreditsTotal || 0);
-          if (totalCredits <= 0) {
-            Alert.alert("No Turnaround credits", "Turnaround is only available if you had a Night Shoot in your day notes within the past 2 weeks.");
+          const availableCredits = Number(turnaroundUnusedCredits || 0);
+          if (availableCredits <= 0) {
+            Alert.alert(
+              "No Turnaround credits",
+              "All available Turnaround credits have already been used in recent weeks."
+            );
             nextOn = false;
             return prev;
           }
-          if (alreadyUsed >= totalCredits) {
+          if (alreadyUsed >= TURNAROUND_MAX_USES_PER_WEEK) {
             Alert.alert(
-              "No Turnaround credits left",
-              `You have used ${alreadyUsed}/${totalCredits} Turnaround credit(s). You can’t add another unless you have more Night Shoot day-notes in the past 2 weeks.`
+              "Turnaround already used",
+              "Turnaround can only be used once per week. Turn off the existing Turnaround day first if you need to move it."
             );
             nextOn = false;
             return prev;
@@ -1951,125 +2722,385 @@ export default function WeekTimesheet() {
       setTurnaroundPickerDay(day);
       setTurnaroundPickerOpen(true);
     },
-    [isLocked, turnaroundCreditsTotal]
+    [isLocked, turnaroundJobs, turnaroundUnusedCredits, timesheet]
   );
 
-  const setTurnaroundJobForDay = useCallback((day, job) => {
-    if (!day) return;
-    setTimesheet((prev) => {
-      const existing = ensureModeDefaults(prev.days?.[day] || { mode: "yard" });
-      if (String(existing.mode || "yard").toLowerCase() !== "yard") return prev;
+  const setTurnaroundJobForDay = useCallback(
+    (day, job) => {
+      if (!day) return;
+      setTimesheet((prev) => {
+        const existing = ensureModeDefaults(prev.days?.[day] || { mode: "yard" });
+        if (String(existing.mode || "yard").toLowerCase() !== "yard") return prev;
 
-      // If somehow job picker opened without credit remaining, guard
-      const alreadyUsed = DAYS.reduce((acc, d) => {
-        const e = ensureModeDefaults(prev.days?.[d] || {});
-        const isTA = String(e.mode || "yard").toLowerCase() === "yard" && e.isTurnaround === true;
-        return acc + (isTA ? 1 : 0);
-      }, 0);
+        // If somehow job picker opened without remaining allowance, guard
+        const alreadyUsed = DAYS.reduce((acc, d) => {
+          const e = ensureModeDefaults(prev.days?.[d] || {});
+          const isTA = String(e.mode || "yard").toLowerCase() === "yard" && e.isTurnaround === true;
+          return acc + (isTA ? 1 : 0);
+        }, 0);
 
-      const totalCredits = Number(turnaroundCreditsTotal || 0);
-      if (existing.isTurnaround !== true && alreadyUsed >= totalCredits) {
-        Alert.alert(
-          "No Turnaround credits left",
-          `You’ve used ${alreadyUsed}/${totalCredits} Turnaround credit(s).`
-        );
-        return prev;
-      }
+        const allowance =
+          Number(turnaroundUnusedCredits || 0) > 0
+            ? Math.min(TURNAROUND_MAX_USES_PER_WEEK, Number(turnaroundUnusedCredits || 0))
+            : 0;
+        if (existing.isTurnaround !== true && alreadyUsed >= allowance) {
+          Alert.alert(
+            "Turnaround already used",
+            "Turnaround can only be used once per week. Turn off the existing Turnaround day first if you need to move it."
+          );
+          return prev;
+        }
 
-      const next = ensureModeDefaults({
-        ...existing,
-        isTurnaround: true,
-        turnaroundJob: job ? { ...job } : null,
+        const next = ensureModeDefaults({
+          ...existing,
+          isTurnaround: true,
+          turnaroundJob: job ? { ...job } : null,
+        });
+        return { ...prev, days: { ...prev.days, [day]: next } };
       });
-      return { ...prev, days: { ...prev.days, [day]: next } };
-    });
-  }, [turnaroundCreditsTotal]);
+    },
+    [turnaroundUnusedCredits]
+  );
+
+  const closeTurnaroundPicker = useCallback(() => {
+    const day = turnaroundPickerDay;
+    const entry = day
+      ? ensureModeDefaults(timesheet?.days?.[day] || { mode: "yard" })
+      : null;
+    const shouldRevert =
+      !!day &&
+      String(entry?.mode || "yard").toLowerCase() === "yard" &&
+      entry?.isTurnaround === true &&
+      !entry?.turnaroundJob?.bookingId;
+
+    if (shouldRevert) {
+      setTimesheet((prev) => {
+        const existing = ensureModeDefaults(prev.days?.[day] || { mode: "yard" });
+        const hasSegments =
+          Array.isArray(existing.yardSegments) && existing.yardSegments.length > 0;
+        const next = ensureModeDefaults({
+          ...existing,
+          isTurnaround: false,
+          turnaroundJob: null,
+          yardSegments: hasSegments
+            ? existing.yardSegments
+            : [{ start: yardDefaultStart, end: yardDefaultEnd }],
+        });
+        return { ...prev, days: { ...prev.days, [day]: next } };
+      });
+      Alert.alert(
+        "Select a job for Turnaround",
+        `Please pick a job for ${day} to keep Turnaround on.`
+      );
+    }
+
+    setTurnaroundPickerOpen(false);
+    setTurnaroundPickerDay(null);
+  }, [timesheet, turnaroundPickerDay, yardDefaultStart, yardDefaultEnd]);
 
   if (loading || !isAuthed) return null;
 
-  const statusLabel = isApproved
-    ? "Approved (locked)"
-    : timesheet.submitted
-    ? "Submitted"
-    : "Draft (not submitted)";
+  const statusLabel = isApproved ? "Approved" : timesheet.submitted ? "Submitted" : "Draft";
+
+  const renderToggleButton = (day, disabled = false) => {
+    const open = !!togglePanelByDay?.[day];
+    return (
+      <TouchableOpacity
+        style={[
+          styles.togglePickerBtn,
+          {
+            backgroundColor: colors.surfaceAlt,
+            borderColor: colors.border,
+            opacity: disabled ? 0.5 : 1,
+          },
+        ]}
+        onPress={() => toggleDayTogglePanel(day)}
+        disabled={disabled}
+      >
+        <Icon name={open ? "minus-circle" : "plus-circle"} size={12} color={colors.textMuted} />
+        <Text style={[styles.togglePickerText, { color: colors.textMuted }]}>{open ? "Hide toggles" : "Add toggles"}</Text>
+      </TouchableOpacity>
+    );
+  };
+
+  const renderYardToggleFields = (day, entry, disabled = false) => {
+    if (!togglePanelByDay?.[day]) return null;
+
+    return (
+      <>
+        <InfoToggleRow
+          label="Add travel time?"
+          value={!!entry.yardTravelEnabled}
+          onChange={(v) => updateDay(day, "yardTravelEnabled", v)}
+          disabled={disabled}
+          infoTitle="Yard Travel Time"
+          infoText="Use this when a yard day also included separate travel time that should be added to the total."
+        />
+
+        {!!entry.yardTravelEnabled && (
+          <View style={styles.onSetBlock}>
+            <TimeDropdown
+              label="Travel Leave"
+              value={entry.yardTravelLeaveTime}
+              onSelect={(t) => updateDay(day, "yardTravelLeaveTime", t)}
+              options={TIME_OPTIONS}
+              disabled={disabled}
+            />
+            <TimeDropdown
+              label="Travel Arrive"
+              value={entry.yardTravelArriveTime}
+              onSelect={(t) => updateDay(day, "yardTravelArriveTime", t)}
+              options={TIME_OPTIONS}
+              disabled={disabled}
+            />
+          </View>
+        )}
+
+        <InfoToggleRow
+          label="Overnight?"
+          value={boolish(entry.overnight)}
+          onChange={(v) => updateDay(day, "overnight", v)}
+          disabled={disabled}
+          infoTitle="Overnight"
+          infoText="Turn this on if this yard day included an overnight stay."
+        />
+      </>
+    );
+  };
+
+  const renderYardLunchField = (day, entry, disabled = false) => {
+    const segs = Array.isArray(entry?.yardSegments) ? entry.yardSegments : [];
+    const hasBlocks = segs.length > 0;
+    if (entry?.isTurnaround && !hasBlocks) return null;
+
+    return (
+      <InfoToggleRow
+        label="Lunch?"
+        value={!entry?.lunchSup}
+        onChange={(v) => updateDay(day, "lunchSup", !v)}
+        disabled={disabled}
+        infoTitle="Yard Lunch"
+        infoText="Turn this on to deduct the 30 minute lunch break from this yard day."
+      />
+    );
+  };
+
+  const renderWeekdayYardControls = (
+    day,
+    entry,
+    {
+      isWeekend = false,
+      isFullHoliday = false,
+      isBankHolidayOff = false,
+      isHalfHoliday = false,
+      isUnpaidDay = false,
+      disabled = false,
+      showTurnaround = false,
+      canAddTurnaround = false,
+      turnaroundBlockedTitle = "",
+      turnaroundBlockedMessage = "",
+    } = {}
+  ) => {
+    if (isWeekend || isFullHoliday || isBankHolidayOff) return null;
+
+    return (
+      <View style={styles.unpaidToggleRow}>
+        <TouchableOpacity
+          style={[
+            styles.turnaroundBtn,
+            {
+              backgroundColor: isUnpaidDay ? softAmberBg : subtleChipBg,
+              borderColor: isUnpaidDay ? softAmber : colors.border,
+              opacity: isLocked ? 0.5 : 1,
+            },
+          ]}
+          onPress={() => toggleUnpaidDay(day, !isUnpaidDay)}
+          disabled={isLocked}
+        >
+          <Icon
+            name={isUnpaidDay ? "check-circle" : "slash"}
+            size={12}
+            color={isUnpaidDay ? softAmber : colors.textMuted}
+          />
+          <Text style={[styles.turnaroundBtnText, { color: isUnpaidDay ? softAmber : colors.textMuted }]}>Unpaid day</Text>
+        </TouchableOpacity>
+
+        {showTurnaround && (
+          <TouchableOpacity
+            style={[
+              styles.turnaroundBtn,
+              {
+                backgroundColor: entry?.isTurnaround ? softSuccessBg : subtleChipBg,
+                borderColor: entry?.isTurnaround ? softSuccess : colors.border,
+                opacity: disabled ? 0.5 : canAddTurnaround || entry?.isTurnaround ? 1 : 0.5,
+              },
+            ]}
+            onPress={() => {
+              if (!canAddTurnaround && !entry?.isTurnaround) {
+                Alert.alert(turnaroundBlockedTitle, turnaroundBlockedMessage);
+                return;
+              }
+              toggleTurnaround(day);
+            }}
+            disabled={disabled}
+          >
+            <Icon name={entry?.isTurnaround ? "check-circle" : "refresh-ccw"} size={12} color={entry?.isTurnaround ? softSuccess : colors.textMuted} />
+            <Text style={[styles.turnaroundBtnText, { color: entry?.isTurnaround ? softSuccess : colors.textMuted }]}>Turnaround</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+    );
+  };
+
+  const renderYardSegments = (day, segments, controlsDisabled = false) => {
+    if (!Array.isArray(segments) || segments.length === 0) return null;
+
+    return segments.map((seg, idx) => (
+      <View key={`${day}-segment-${idx}`} style={styles.segmentBlock}>
+        <View style={styles.segmentRow}>
+          <TimeDropdown
+            label={`Start ${idx + 1}`}
+            value={seg.start}
+            onSelect={(t) => updateYardSegment(day, idx, "start", t)}
+            options={TIME_OPTIONS}
+            disabled={controlsDisabled}
+          />
+          <View style={{ width: 8 }} />
+          <TimeDropdown
+            label={`Finish ${idx + 1}`}
+            value={seg.end}
+            onSelect={(t) => updateYardSegment(day, idx, "end", t)}
+            options={TIME_OPTIONS}
+            disabled={controlsDisabled}
+          />
+
+          <TouchableOpacity
+            onPress={() => removeYardSegment(day, idx)}
+            style={[
+              styles.segmentDelete,
+              { backgroundColor: colors.surface, borderColor: colors.border, opacity: controlsDisabled ? 0.5 : 1 },
+            ]}
+            disabled={controlsDisabled}
+          >
+            <Icon name="trash-2" size={16} color={colors.danger} />
+          </TouchableOpacity>
+        </View>
+
+        <TextInput
+          placeholder={`Notes for block ${idx + 1}`}
+          placeholderTextColor={colors.textMuted}
+          style={[
+            styles.segmentNoteInput,
+            { backgroundColor: colors.inputBackground, borderColor: colors.inputBorder, color: colors.text, opacity: controlsDisabled ? 0.6 : 1 },
+          ]}
+          multiline
+          editable={!controlsDisabled}
+          value={String(seg?.note || "")}
+          onChangeText={(t) => updateYardSegment(day, idx, "note", t)}
+        />
+      </View>
+    ));
+  };
+
+  const renderDayNotesField = (day, value, disabled = false) => (
+    <TextInput
+      placeholder="Notes for this day"
+      placeholderTextColor={colors.textMuted}
+      style={[
+        styles.dayInput,
+        {
+          backgroundColor: colors.inputBackground,
+          borderColor: colors.inputBorder,
+          color: colors.text,
+          opacity: disabled ? 0.6 : 1,
+        },
+      ]}
+      multiline
+      editable={!disabled}
+      value={value || ""}
+      onChangeText={(t) => updateDay(day, "dayNotes", t)}
+    />
+  );
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
+    <View style={[styles.container, { backgroundColor: colors.background, paddingTop: insets.top }]}>
       <TurnaroundJobPicker
         visible={turnaroundPickerOpen}
-        onClose={() => setTurnaroundPickerOpen(false)}
+        onClose={closeTurnaroundPicker}
         jobs={turnaroundJobs}
         onPick={(job) => {
           if (!turnaroundPickerDay) return;
           setTurnaroundJobForDay(turnaroundPickerDay, job);
+          setTurnaroundPickerOpen(false);
+          setTurnaroundPickerDay(null);
         }}
       />
 
-      <ScrollView contentContainerStyle={{ paddingBottom: 80 }}>
-        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
-          <Icon name="arrow-left" size={18} color={colors.text} />
-          <Text style={[styles.backText, { color: colors.text }]}>Back</Text>
-        </TouchableOpacity>
+      <ScrollView contentContainerStyle={{ paddingBottom: 0 }} stickyHeaderIndices={[0]}>
+        <View style={[styles.stickyHeader, { backgroundColor: colors.background }]}>
+          <View style={styles.headerRow}>
+            <TouchableOpacity
+              style={styles.backBtn}
+              onPress={() =>
+                confirmDiscardChanges(
+                  () => router.back(),
+                  () => {
+                    void saveTimesheet({ exitAfterSave: true });
+                  }
+                )
+              }
+            >
+              <Icon name="arrow-left" size={18} color={colors.text} />
+              <Text style={[styles.backText, { color: colors.text }]}>Back</Text>
+            </TouchableOpacity>
 
-        <Text style={[styles.title, { color: colors.text }]}>
-          📝 Timesheet: Week of {id}
-        </Text>
+            <Text style={[styles.title, { color: colors.text }]}>Week of {formattedWeekStart}</Text>
 
-        <View style={styles.statusRow}>
-          <View style={[styles.pill, timesheet.submitted ? styles.pillOk : styles.pillDraft]}>
-            <Text
+            <View
               style={[
-                styles.pillText,
-                timesheet.submitted ? styles.pillTextOk : styles.pillTextDraft,
+                styles.pill,
+                {
+                  backgroundColor: timesheet.submitted ? softSuccessBg : subtleChipBg,
+                  borderColor: timesheet.submitted ? softSuccess : colors.border,
+                },
+              ]}
+            >
+              <Text
+                style={[
+                  styles.pillText,
+                { color: timesheet.submitted ? softSuccess : colors.textMuted },
               ]}
             >
               {statusLabel}
             </Text>
+            </View>
           </View>
 
-          {!isApproved && !timesheet.submitted && (
-            <Text style={[styles.statusHint, { color: colors.textMuted }]}>
-              Save keeps a draft. Submit sends it for approval.
-            </Text>
-          )}
-
           {isApproved && (
-            <Text style={[styles.statusHint, { color: colors.textMuted }]}>
-              Approved by your manager. This week is locked and can’t be edited.
-            </Text>
+            <View style={styles.statusRow}>
+              <Text style={[styles.statusHint, { color: colors.textMuted }]}>Approved by your manager. This week is locked and can’t be edited.</Text>
+            </View>
           )}
         </View>
 
-        {/* ✅ NEW: Turnaround credits banner (only if available) */}
+        {/* Turnaround credits banner (only if available) */}
         {turnaroundCreditsTotal > 0 && (
-          <View
-            style={[
-              styles.creditBox,
-              {
-                backgroundColor: colors.surfaceAlt,
-                borderColor: colors.border,
-              },
-            ]}
-          >
+          <View style={[styles.creditBox, { backgroundColor: colors.surface, borderColor: colors.border }]}>
             <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+              <Text style={{ color: colors.text, fontWeight: "900" }}>Turnaround credits</Text>
               <Text style={{ color: colors.text, fontWeight: "900" }}>
-                ♻️ Turnaround credits
-              </Text>
-              <Text style={{ color: colors.text, fontWeight: "900" }}>
-                {turnaroundCreditsRemaining}/{turnaroundCreditsTotal} left
+                {turnaroundCreditsRemaining}/{turnaroundUsesAllowed} left
               </Text>
             </View>
 
             <Text style={{ color: colors.textMuted, marginTop: 4, fontSize: 11 }}>
-              Credits are earned only when “Night Shoot” is written in your day notes within the last 2 weeks.
-              You can use 1 Turnaround per Night Shoot day-note.
+              Credits come from booking notes marked “Night Shoot” or on-set days that wrapped past midnight in the last 3 weeks. Each credit can only be used once, and Turnaround can only be used once per week.
             </Text>
           </View>
         )}
 
         {DAYS.map((day) => {
-          const entryRaw =
-            timesheet.days?.[day] || { mode: WEEKEND_SET.has(day) ? "off" : "yard", dayNotes: "" };
+          const entryRaw = timesheet.days?.[day] || { mode: WEEKEND_SET.has(day) ? "off" : "yard", dayNotes: "" };
           const entry = ensureModeDefaults(entryRaw);
 
           const jobs = jobsByDay?.[day] || [];
@@ -2080,77 +3111,148 @@ export default function WeekTimesheet() {
           const isHalfHoliday = !!holidayInfo?.isHalfDay;
           const isFullHoliday = isHoliday && !isHalfHoliday;
           const isBankHolidayOff = !!bankHolidayInfo && bankHolidayInfo.notWorking === true;
+          const isWorkedBankHoliday = isBankHolidayOff && boolish(entry.bankHolidayWorked);
+          const isUnpaidDay = isUnpaidDayEntry(entry);
 
           const effectiveEntry = isHalfHoliday ? ensureModeDefaults({ ...entry, mode: "yard" }) : entry;
-          const yardEntry =
-            effectiveEntry.mode === "yard" ? ensureModeDefaults(effectiveEntry) : effectiveEntry;
+          const yardEntry = effectiveEntry.mode === "yard" ? ensureModeDefaults(effectiveEntry) : effectiveEntry;
 
           const primaryJobId = jobs.length > 0 ? jobs[0].id : null;
 
-          const controlsDisabled = isLocked || isFullHoliday || isBankHolidayOff;
+          const controlsDisabled =
+            isLocked || isFullHoliday || isUnpaidDay || (isBankHolidayOff && !isWorkedBankHoliday);
           const isWeekend = WEEKEND_SET.has(day);
 
-          let holidayLabel = "Paid Holiday";
-          if (holidayInfo?.isUnpaid || holidayInfo?.leaveType === "Unpaid") holidayLabel = "Unpaid Holiday";
-          else if (holidayInfo?.isAccrued || holidayInfo?.leaveType === "Accrued") holidayLabel = "Accrued / TOIL Holiday";
+          let holidayLabel = isWeekend ? "Holiday" : "Paid Holiday";
+          let holidayTone = softSuccess;
+          if (!isWeekend && (holidayInfo?.isUnpaid || holidayInfo?.leaveType === "Unpaid")) {
+            holidayLabel = "Unpaid Holiday";
+            holidayTone = softAmber;
+          } else if (!isWeekend && (holidayInfo?.isAccrued || holidayInfo?.leaveType === "Accrued")) {
+            holidayLabel = "Accrued / TOIL Holiday";
+            holidayTone = softSuccess;
+          }
 
           const showTurnaroundButton =
-            turnaroundEligible &&
-            !controlsDisabled &&
-            !isHalfHoliday &&
-            String(yardEntry.mode || "yard").toLowerCase() === "yard";
+            !controlsDisabled && !isHalfHoliday && String(yardEntry.mode || "yard").toLowerCase() === "yard";
 
           const segsForUI = Array.isArray(yardEntry.yardSegments) ? yardEntry.yardSegments : [];
-          const hasTimeBlocks = segsForUI.length > 0;
+          const dayToggleOpen = !!togglePanelByDay?.[day];
 
-          // If no credits remaining, allow turning OFF but prevent turning ON (button still shown, but press will alert)
-          const canAddTurnaround =
-            (turnaroundCreditsTotal || 0) > 0 && turnaroundCreditsRemaining > 0;
+          const hasTurnaroundCredit = (turnaroundUnusedCredits || 0) > 0;
+          const canAddTurnaround = hasTurnaroundCredit && turnaroundCreditsRemaining > 0;
+          const turnaroundBlockedTitle = hasTurnaroundCredit ? "Turnaround already used" : "No Turnaround credits";
+          const turnaroundBlockedMessage = hasTurnaroundCredit
+            ? "Turnaround can only be used once per week. Turn off the existing Turnaround day first if you need to move it."
+            : "All available Turnaround credits from the last 3 weeks have already been used.";
 
           return (
-            <View
-              key={day}
-              style={[
-                styles.dayBlock,
-                {
-                  backgroundColor: colors.surfaceAlt,
-                  borderColor: colors.border,
-                  opacity: isLocked ? 0.9 : 1,
-                },
-              ]}
-            >
-              <Text style={[styles.dayTitle, { color: colors.text }]}>{day}</Text>
-
-              {isBankHolidayOff && (
-                <View style={[styles.bankHolidayBlock, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-                  <Text style={{ color: colors.text, fontWeight: "900" }}>
-                    🏦 {bankHolidayInfo?.name || "Bank Holiday"} (Not working)
-                  </Text>
+            <View key={day}>
+              <View
+                style={[
+                  styles.dayBlock,
+                  { backgroundColor: colors.surface, borderColor: colors.border, opacity: isLocked ? 0.9 : 1 },
+                ]}
+              >
+                <View style={styles.dayHeaderRow}>
+                  <Text style={[styles.dayTitle, { color: colors.text }]}>{day}</Text>
+                  {String(yardEntry.mode || "").toLowerCase() === "yard" && !isFullHoliday && !isUnpaidDay && (
+                    <Text style={[styles.dayModeTitle, { color: colors.textMuted }]}>Yard Day</Text>
+                  )}
                 </View>
-              )}
+
+                {renderWeekdayYardControls(day, yardEntry, {
+                  isWeekend,
+                  isFullHoliday,
+                  isBankHolidayOff,
+                  isHalfHoliday,
+                  isUnpaidDay,
+                  disabled: controlsDisabled,
+                  showTurnaround: showTurnaroundButton,
+                  canAddTurnaround,
+                  turnaroundBlockedTitle,
+                  turnaroundBlockedMessage,
+                })}
+
+                {isUnpaidDay && (
+                  <>
+                    <View style={styles.unpaidInlineNote}>
+                      <Text style={[styles.unpaidInlineText, { color: colors.textMuted }]}>
+                        Hours hidden while enabled.
+                      </Text>
+                    </View>
+                    {renderDayNotesField(day, entry.dayNotes, controlsDisabled)}
+                  </>
+                )}
+
+                {isBankHolidayOff && (
+                  <View style={[styles.bankHolidayBlock, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+                    <Text style={{ color: colors.text, fontWeight: "900" }}>
+                      {bankHolidayInfo?.name || "Bank Holiday"} {isWorkedBankHoliday ? "(Worked)" : "(Not working)"}
+                    </Text>
+                    <Text style={[styles.holidaySub, { color: colors.textMuted, marginTop: 4 }]}>
+                      {isWorkedBankHoliday
+                        ? "This bank holiday is being filled in as a worked day."
+                        : "Not working by default. Add a time block if you worked this bank holiday."}
+                    </Text>
+
+                    {!isLocked && !isFullHoliday && !isWorkedBankHoliday && (
+                      <TouchableOpacity
+                        style={[
+                          styles.addBlockBtn,
+                          { backgroundColor: addBlockButtonColors.backgroundColor, borderColor: addBlockButtonColors.borderColor, marginTop: 8 },
+                        ]}
+                        onPress={() => addYardSegment(day)}
+                      >
+                        <Icon name="plus" size={14} color={addBlockButtonColors.color} />
+                        <Text style={[styles.addBlockText, { color: addBlockButtonColors.color }]}>Add time block</Text>
+                      </TouchableOpacity>
+                    )}
+
+                    {!isLocked && !isFullHoliday && isWorkedBankHoliday && (
+                      <TouchableOpacity
+                        style={[
+                          styles.addBlockBtn,
+                          { backgroundColor: colors.surface, borderColor: colors.danger, marginTop: 8 },
+                        ]}
+                        onPress={() =>
+                          Alert.alert(
+                            "Clear bank holiday work?",
+                            `This will remove all time blocks for ${day} and set it back to Bank Holiday (not working).`,
+                            [
+                              { text: "Cancel", style: "cancel" },
+                              { text: "Clear", style: "destructive", onPress: () => clearBankHolidayBlocks(day) },
+                            ]
+                          )
+                        }
+                      >
+                        <Icon name="x-circle" size={14} color={colors.danger} />
+                        <Text style={[styles.addBlockText, { color: colors.danger }]}>Clear bank holiday work</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                )}
 
               {isHoliday && (
                 <View
                   style={[
                     styles.holidayBlock,
-                    {
-                      backgroundColor: colors.surface,
-                      borderColor: colors.border,
-                      marginBottom: isHalfHoliday ? 8 : 0,
-                    },
+                    { backgroundColor: colors.surface, borderColor: colors.border, marginBottom: isHalfHoliday ? 8 : 0 },
                   ]}
                 >
-                  <Text style={{ color: colors.danger, fontWeight: "bold" }}>
-                    {holidayLabel}
-                    {isHalfHoliday ? " (Half day)" : ""}
-                  </Text>
+                  <View style={styles.holidayHeaderRow}>
+                    <Text style={{ color: holidayTone, fontWeight: "bold" }}>
+                      {holidayLabel}
+                      {isHalfHoliday ? " (Half day)" : ""}
+                    </Text>
+
+                    {!!holidayInfo?.holidayReason && (
+                      <Text style={[styles.holidaySub, { color: colors.textMuted }]}>{holidayInfo.holidayReason}</Text>
+                    )}
+                  </View>
 
                   {!!holidayInfo?.halfLabel && isHalfHoliday && (
                     <Text style={[styles.holidaySub, { color: colors.textMuted }]}>{holidayInfo.halfLabel}</Text>
-                  )}
-
-                  {!!holidayInfo?.holidayReason && (
-                    <Text style={[styles.holidaySub, { color: colors.textMuted }]}>{holidayInfo.holidayReason}</Text>
                   )}
 
                   {isHalfHoliday && (
@@ -2161,13 +3263,11 @@ export default function WeekTimesheet() {
                 </View>
               )}
 
-              {isFullHoliday ? null : jobs.length > 0 ? (
+              {isFullHoliday || isUnpaidDay ? null : jobs.length > 0 ? (
                 <>
                   {jobs.map((job) => (
                     <View key={job.id} style={[styles.jobLink, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-                      <Text style={[styles.jobMain, { color: colors.success }]}>
-                        📌 {job.jobNumber || job.id} – {job.client || "Client"}
-                      </Text>
+                      <Text style={[styles.jobMain, { color: colors.text }]}>{job.jobNumber || job.id} – {job.client || "Client"}</Text>
                       <Text style={[styles.jobSub, { color: colors.textMuted }]}>{job.location || ""}</Text>
                     </View>
                   ))}
@@ -2176,11 +3276,7 @@ export default function WeekTimesheet() {
                     <TouchableOpacity
                       style={[
                         styles.modeBtn,
-                        {
-                          backgroundColor: colors.surfaceAlt,
-                          borderColor: colors.border,
-                          opacity: controlsDisabled || isHalfHoliday ? 0.5 : 1,
-                        },
+                        { backgroundColor: colors.surfaceAlt, borderColor: colors.border, opacity: controlsDisabled || isHalfHoliday ? 0.5 : 1 },
                         effectiveEntry.mode === "travel" && { backgroundColor: colors.accentSoft, borderColor: colors.accent },
                       ]}
                       onPress={() => !controlsDisabled && !isHalfHoliday && updateDay(day, "mode", "travel", primaryJobId)}
@@ -2192,12 +3288,8 @@ export default function WeekTimesheet() {
                     <TouchableOpacity
                       style={[
                         styles.modeBtn,
-                        {
-                          backgroundColor: colors.surfaceAlt,
-                          borderColor: colors.text,
-                          opacity: controlsDisabled || isHalfHoliday ? 0.5 : 1,
-                        },
-                        effectiveEntry.mode === "onset" && { backgroundColor: colors.accentSoft, borderColor: colors.text },
+                        { backgroundColor: colors.surfaceAlt, borderColor: colors.border, opacity: controlsDisabled || isHalfHoliday ? 0.5 : 1 },
+                        effectiveEntry.mode === "onset" && { backgroundColor: colors.accentSoft, borderColor: colors.accent },
                       ]}
                       onPress={() => !controlsDisabled && !isHalfHoliday && updateDay(day, "mode", "onset", primaryJobId)}
                       disabled={controlsDisabled || isHalfHoliday}
@@ -2208,12 +3300,8 @@ export default function WeekTimesheet() {
                     <TouchableOpacity
                       style={[
                         styles.modeBtn,
-                        {
-                          backgroundColor: colors.surfaceAlt,
-                          borderColor: colors.border,
-                          opacity: controlsDisabled ? 0.5 : 1,
-                        },
-                        effectiveEntry.mode === "yard" && { backgroundColor: colors.accentSoft, borderColor: colors.border },
+                        { backgroundColor: colors.surfaceAlt, borderColor: colors.border, opacity: controlsDisabled ? 0.5 : 1 },
+                        effectiveEntry.mode === "yard" && { backgroundColor: colors.accentSoft, borderColor: colors.accent },
                       ]}
                       onPress={() => !controlsDisabled && updateDay(day, "mode", "yard", primaryJobId)}
                       disabled={controlsDisabled}
@@ -2222,207 +3310,99 @@ export default function WeekTimesheet() {
                     </TouchableOpacity>
                   </View>
 
-                  {/* ✅ TRAVEL UI */}
+                  {/* Travel UI */}
                   {!isHalfHoliday && effectiveEntry.mode === "travel" && (
                     <View style={styles.onSetBlock}>
-                      <TimeDropdown
-                        label="Leave Time"
-                        value={effectiveEntry.leaveTime}
-                        onSelect={(t) => updateDay(day, "leaveTime", t)}
-                        options={TIME_OPTIONS}
-                        disabled={controlsDisabled}
-                      />
-                      <TimeDropdown
-                        label="Arrive Time"
-                        value={effectiveEntry.arriveTime}
-                        onSelect={(t) => updateDay(day, "arriveTime", t)}
-                        options={TIME_OPTIONS}
-                        disabled={controlsDisabled}
-                      />
+                      <TimeDropdown label="Leave Time" value={effectiveEntry.leaveTime} onSelect={(t) => updateDay(day, "leaveTime", t)} options={TIME_OPTIONS} disabled={controlsDisabled} />
+                      <TimeDropdown label="Arrive Time" value={effectiveEntry.arriveTime} onSelect={(t) => updateDay(day, "arriveTime", t)} options={TIME_OPTIONS} disabled={controlsDisabled} />
 
-                      <InfoToggleRow
-                        label="Lunch?"
-                        value={!!effectiveEntry.travelLunchSup}
-                        onChange={(v) => updateDay(day, "travelLunchSup", v)}
-                        disabled={controlsDisabled}
-                        infoTitle="Travel Lunch"
-                        infoText="Turn this on if lunch is provided/covered for your travel day."
-                      />
+                      {renderToggleButton(day, controlsDisabled)}
 
-                      <InfoToggleRow
-                        label="PD?"
-                        value={!!effectiveEntry.travelPD}
-                        onChange={(v) => updateDay(day, "travelPD", v)}
-                        disabled={controlsDisabled}
-                        infoTitle="Travel PD"
-                        infoText="Use this if you’re claiming PD/Per Diem for the travel day (if applicable)."
-                      />
+                      {dayToggleOpen && (
+                        <>
+                          <InfoToggleRow
+                            label="Travel meal?"
+                            value={!!effectiveEntry.travelPD}
+                            onChange={(v) => updateDay(day, "travelPD", v)}
+                            disabled={controlsDisabled}
+                            infoTitle="Travel Meal"
+                            infoText="Turn this on if a travel meal is provided/covered for this travel day."
+                          />
 
-                      <TextInput
-                        placeholder="Notes for this day"
-                        placeholderTextColor={colors.textMuted}
-                        style={[
-                          styles.dayInput,
-                          {
-                            backgroundColor: colors.inputBackground,
-                            borderColor: colors.inputBorder,
-                            color: colors.text,
-                            opacity: controlsDisabled ? 0.6 : 1,
-                          },
-                        ]}
-                        multiline
-                        editable={!controlsDisabled}
-                        value={effectiveEntry.dayNotes || ""}
-                        onChangeText={(t) => updateDay(day, "dayNotes", t)}
-                      />
+                          <InfoToggleRow
+                            label="Overnight?"
+                            value={boolish(effectiveEntry.overnight)}
+                            onChange={(v) => updateDay(day, "overnight", v)}
+                            disabled={controlsDisabled}
+                            infoTitle="Overnight"
+                            infoText="Turn this on if your travel day required an overnight stay."
+                          />
+                        </>
+                      )}
+
+                      {renderDayNotesField(day, effectiveEntry.dayNotes, controlsDisabled)}
                     </View>
                   )}
 
-                  {/* ✅ ON SET UI */}
+                  {/* On Set UI */}
                   {!isHalfHoliday && effectiveEntry.mode === "onset" && (
                     <View style={styles.onSetBlock}>
-                      <TimeDropdown
-                        label="Leave Time"
-                        value={effectiveEntry.leaveTime}
-                        onSelect={(t) => updateDay(day, "leaveTime", t)}
-                        options={TIME_OPTIONS}
-                        disabled={controlsDisabled}
-                      />
-                      <TimeDropdown
-                        label="Arrive Time"
-                        value={effectiveEntry.arriveTime}
-                        onSelect={(t) => updateDay(day, "arriveTime", t)}
-                        options={TIME_OPTIONS}
-                        disabled={controlsDisabled}
-                      />
+                      <TimeDropdown label="Leave Time" value={effectiveEntry.leaveTime} onSelect={(t) => updateDay(day, "leaveTime", t)} options={TIME_OPTIONS} disabled={controlsDisabled} />
+                      <TimeDropdown label="Arrive Time" value={effectiveEntry.arriveTime} onSelect={(t) => updateDay(day, "arriveTime", t)} options={TIME_OPTIONS} disabled={controlsDisabled} />
 
-                      <PrecallDropdown
-                        value={effectiveEntry.precallDuration}
-                        onSelect={(v) => updateDay(day, "precallDuration", v)}
-                        disabled={controlsDisabled}
-                      />
+                      <PrecallDropdown value={effectiveEntry.precallDuration} onSelect={(v) => updateDay(day, "precallDuration", v)} disabled={controlsDisabled} />
 
-                      <TimeDropdown
-                        label="Unit Call"
-                        value={effectiveEntry.callTime}
-                        onSelect={(t) => updateDay(day, "callTime", t)}
-                        options={TIME_OPTIONS}
-                        disabled={controlsDisabled}
-                      />
-                      <TimeDropdown
-                        label="Wrap Time"
-                        value={effectiveEntry.wrapTime}
-                        onSelect={(t) => updateDay(day, "wrapTime", t)}
-                        options={TIME_OPTIONS}
-                        disabled={controlsDisabled}
-                      />
-                      <TimeDropdown
-                        label="Arrive Back"
-                        value={effectiveEntry.arriveBack}
-                        onSelect={(t) => updateDay(day, "arriveBack", t)}
-                        options={TIME_OPTIONS}
-                        disabled={controlsDisabled}
-                      />
+                      <TimeDropdown label="Unit Call" value={effectiveEntry.callTime} onSelect={(t) => updateDay(day, "callTime", t)} options={TIME_OPTIONS} disabled={controlsDisabled} />
+                      <TimeDropdown label="Wrap Time" value={effectiveEntry.wrapTime} onSelect={(t) => updateDay(day, "wrapTime", t)} options={TIME_OPTIONS} disabled={controlsDisabled} />
+                      <TimeDropdown label="Arrive Back" value={effectiveEntry.arriveBack} onSelect={(t) => updateDay(day, "arriveBack", t)} options={TIME_OPTIONS} disabled={controlsDisabled} />
 
-                      <InfoToggleRow
-                        label="Overnight?"
-                        value={effectiveEntry.overnight || false}
-                        onChange={(v) => updateDay(day, "overnight", v)}
-                        disabled={controlsDisabled}
-                        infoTitle="Overnight"
-                        infoText="Turn this on if you stayed overnight (hotel or accommodation)."
-                      />
+                      {renderToggleButton(day, controlsDisabled)}
 
-                      <InfoToggleRow
-                        label="Night Shoot?"
-                        value={!!effectiveEntry.nightShoot}
-                        onChange={(v) => updateDay(day, "nightShoot", v)}
-                        disabled={controlsDisabled}
-                        infoTitle="Night Shoot"
-                        infoText="Turn this on if shoot is a night shoot (or you shoot past 12:00 midnight)."
-                      />
+                      {dayToggleOpen && (
+                        <>
+                          <InfoToggleRow
+                            label="Overnight?"
+                            value={boolish(effectiveEntry.overnight)}
+                            onChange={(v) => updateDay(day, "overnight", v)}
+                            disabled={controlsDisabled}
+                            infoTitle="Overnight"
+                            infoText="Turn this on if you stayed overnight (hotel or accommodation)."
+                          />
 
-                      {/* ✅ Meal supplement toggle for On Set day */}
-                      <InfoToggleRow
-                        label="Meal supp?"
-                        value={!!effectiveEntry.mealSup}
-                        onChange={(v) => updateDay(day, "mealSup", v)}
-                        disabled={controlsDisabled}
-                        infoTitle="Meal supplement"
-                        infoText="Turn this on only if there was no meal supplement/food offered on set. If catering was offered but you chose not to eat, do not turn this on."
-                      />
+                          <InfoToggleRow
+                            label="Night Shoot?"
+                            value={!!effectiveEntry.nightShoot}
+                            onChange={(v) => updateDay(day, "nightShoot", v)}
+                            disabled={controlsDisabled}
+                            infoTitle="Night Shoot"
+                            infoText="Turn this on if shoot is a night shoot (or you shoot past 12:00 midnight)."
+                          />
 
-                      <TextInput
-                        placeholder="Notes for this day"
-                        placeholderTextColor={colors.textMuted}
-                        style={[
-                          styles.dayInput,
-                          {
-                            backgroundColor: colors.inputBackground,
-                            borderColor: colors.inputBorder,
-                            color: colors.text,
-                            opacity: controlsDisabled ? 0.6 : 1,
-                          },
-                        ]}
-                        multiline
-                        editable={!controlsDisabled}
-                        value={effectiveEntry.dayNotes || ""}
-                        onChangeText={(t) => updateDay(day, "dayNotes", t)}
-                      />
+                          <InfoToggleRow
+                            label="Meal supp?"
+                            value={!!effectiveEntry.mealSup}
+                            onChange={(v) => updateDay(day, "mealSup", v)}
+                            disabled={controlsDisabled}
+                            infoTitle="Meal supplement"
+                            infoText="Turn this on only if there was no meal supplement/food offered on set. If catering was offered but you chose not to eat, do not turn this on."
+                          />
+                        </>
+                      )}
+
+                      {renderDayNotesField(day, effectiveEntry.dayNotes, controlsDisabled)}
                     </View>
                   )}
 
                   {/* Yard block */}
                   {yardEntry.mode === "yard" && (
                     <>
-                      <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
-                        <Text style={[styles.sectionCap, { color: colors.textMuted }]}>Yard Day</Text>
-
-                        {showTurnaroundButton && (
-                          <TouchableOpacity
-                            style={[
-                              styles.turnaroundBtn,
-                              {
-                                backgroundColor: yardEntry.isTurnaround ? colors.accentSoft : colors.surface,
-                                borderColor: yardEntry.isTurnaround ? colors.accent : colors.border,
-                                opacity: controlsDisabled ? 0.5 : canAddTurnaround || yardEntry.isTurnaround ? 1 : 0.5,
-                              },
-                            ]}
-                            onPress={() => {
-                              if (!canAddTurnaround && !yardEntry.isTurnaround) {
-                                Alert.alert(
-                                  "No Turnaround credits left",
-                                  `You have ${turnaroundCreditsRemaining}/${turnaroundCreditsTotal} credit(s) left.`
-                                );
-                                return;
-                              }
-                              toggleTurnaround(day);
-                            }}
-                            disabled={controlsDisabled}
-                          >
-                            <Icon
-                              name={yardEntry.isTurnaround ? "check-circle" : "refresh-ccw"}
-                              size={14}
-                              color={yardEntry.isTurnaround ? colors.accent : colors.text}
-                            />
-                            <Text style={{ color: colors.text, fontWeight: "800", fontSize: 12 }}>
-                              Turnaround
-                            </Text>
-                          </TouchableOpacity>
-                        )}
-                      </View>
 
                       {yardEntry.isTurnaround === true && (
                         <View style={[styles.turnaroundPanel, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-                          <Text style={{ color: colors.textMuted, fontSize: 11, fontWeight: "800" }}>
-                            Turnaround for job (last 2 weeks)
-                          </Text>
+                          <Text style={{ color: colors.textMuted, fontSize: 11, fontWeight: "800" }}>Turnaround for job (last 3 weeks)</Text>
 
                           <TouchableOpacity
-                            style={[
-                              styles.turnaroundSelect,
-                              { backgroundColor: colors.inputBackground, borderColor: colors.inputBorder },
-                            ]}
+                            style={[styles.turnaroundSelect, { backgroundColor: colors.inputBackground, borderColor: colors.inputBorder }]}
                             onPress={() => {
                               setTurnaroundPickerDay(day);
                               setTurnaroundPickerOpen(true);
@@ -2431,18 +3411,14 @@ export default function WeekTimesheet() {
                           >
                             <Text style={{ color: yardEntry.turnaroundJob?.bookingId ? colors.text : colors.textMuted }}>
                               {yardEntry.turnaroundJob?.bookingId
-                                ? `${yardEntry.turnaroundJob.jobNumber || yardEntry.turnaroundJob.bookingId} — ${
-                                    yardEntry.turnaroundJob.client || "Client"
-                                  }`
+                                ? `${yardEntry.turnaroundJob.jobNumber || yardEntry.turnaroundJob.bookingId} — ${yardEntry.turnaroundJob.client || "Client"}`
                                 : "Select job"}
                             </Text>
                             <Icon name="chevron-down" size={16} color={colors.textMuted} />
                           </TouchableOpacity>
 
                           {yardEntry.turnaroundJob?.location ? (
-                            <Text style={{ color: colors.textMuted, marginTop: 4, fontSize: 12 }}>
-                              {yardEntry.turnaroundJob.location}
-                            </Text>
+                            <Text style={{ color: colors.textMuted, marginTop: 4, fontSize: 12 }}>{yardEntry.turnaroundJob.location}</Text>
                           ) : null}
 
                           <Text style={{ color: colors.textMuted, marginTop: 6, fontSize: 11 }}>
@@ -2451,118 +3427,44 @@ export default function WeekTimesheet() {
                         </View>
                       )}
 
-                      {segsForUI.length > 0 &&
-                        segsForUI.map((seg, idx) => (
-                          <View key={idx} style={styles.segmentRow}>
-                            <TimeDropdown
-                              label={`Start ${idx + 1}`}
-                              value={seg.start}
-                              onSelect={(t) => updateYardSegment(day, idx, "start", t)}
-                              options={TIME_OPTIONS}
-                              disabled={controlsDisabled}
-                            />
-                            <View style={{ width: 8 }} />
-                            <TimeDropdown
-                              label={`Finish ${idx + 1}`}
-                              value={seg.end}
-                              onSelect={(t) => updateYardSegment(day, idx, "end", t)}
-                              options={TIME_OPTIONS}
-                              disabled={controlsDisabled}
-                            />
-
-                            <TouchableOpacity
-                              onPress={() => removeYardSegment(day, idx)}
-                              style={[
-                                styles.segmentDelete,
-                                {
-                                  backgroundColor: colors.surface,
-                                  borderColor: colors.border,
-                                  opacity: controlsDisabled ? 0.5 : 1,
-                                },
-                              ]}
-                              disabled={controlsDisabled}
-                            >
-                              <Icon name="trash-2" size={16} color={colors.danger} />
-                            </TouchableOpacity>
-                          </View>
-                        ))}
+                      {renderYardSegments(day, segsForUI, controlsDisabled)}
 
                       <TouchableOpacity
                         style={[
                           styles.addBlockBtn,
-                          {
-                            backgroundColor: colors.accentSoft,
-                            borderColor: colors.success,
-                            opacity: controlsDisabled ? 0.5 : 1,
-                          },
+                          { backgroundColor: addBlockButtonColors.backgroundColor, borderColor: addBlockButtonColors.borderColor, opacity: controlsDisabled ? 0.5 : 1 },
                         ]}
                         onPress={() => addYardSegment(day)}
                         disabled={controlsDisabled}
                       >
-                        <Icon name="plus" size={14} color={colors.success} />
-                        <Text style={[styles.addBlockText, { color: colors.success }]}>
-                          Add time block
-                        </Text>
+                        <Icon name="plus" size={14} color={addBlockButtonColors.color} />
+                        <Text style={[styles.addBlockText, { color: addBlockButtonColors.color }]}>Add time block</Text>
                       </TouchableOpacity>
 
                       {isWeekend && (segsForUI.length || 0) > 0 && (
                         <TouchableOpacity
                           style={[
                             styles.addBlockBtn,
-                            {
-                              backgroundColor: colors.surface,
-                              borderColor: colors.danger,
-                              opacity: controlsDisabled ? 0.5 : 1,
-                            },
+                            { backgroundColor: colors.surface, borderColor: colors.danger, opacity: controlsDisabled ? 0.5 : 1 },
                           ]}
                           onPress={() =>
-                            Alert.alert(
-                              "Clear weekend blocks?",
-                              `This will remove all time blocks for ${day} and set it back to Off.`,
-                              [
-                                { text: "Cancel", style: "cancel" },
-                                { text: "Clear", style: "destructive", onPress: () => clearWeekendBlocks(day) },
-                              ]
-                            )
+                            Alert.alert("Clear weekend blocks?", `This will remove all time blocks for ${day} and set it back to Off.`, [
+                              { text: "Cancel", style: "cancel" },
+                              { text: "Clear", style: "destructive", onPress: () => clearWeekendBlocks(day) },
+                            ])
                           }
                           disabled={controlsDisabled}
                         >
                           <Icon name="x-circle" size={14} color={colors.danger} />
-                          <Text style={[styles.addBlockText, { color: colors.danger }]}>
-                            Clear weekend blocks
-                          </Text>
+                          <Text style={[styles.addBlockText, { color: colors.danger }]}>Clear weekend blocks</Text>
                         </TouchableOpacity>
                       )}
 
-                      {/* Hide Lunch toggle when Turnaround ON and NO time blocks */}
-                      {(!yardEntry.isTurnaround || hasTimeBlocks) && (
-                        <InfoToggleRow
-                          label="Lunch?"
-                          value={!!yardEntry.lunchSup}
-                          onChange={(v) => updateDay(day, "lunchSup", v)}
-                          disabled={controlsDisabled}
-                          infoTitle="Lunch Break"
-                          infoText="Turn this on if lunch had 30min break."
-                        />
-                      )}
+                      {renderYardLunchField(day, yardEntry, controlsDisabled)}
+                      {renderToggleButton(day, controlsDisabled)}
+                      {renderYardToggleFields(day, yardEntry, controlsDisabled)}
 
-                      <TextInput
-                        placeholder="Notes for this day"
-                        placeholderTextColor={colors.textMuted}
-                        style={[
-                          styles.dayInput,
-                          {
-                            backgroundColor: colors.inputBackground,
-                            borderColor: colors.inputBorder,
-                            color: colors.text,
-                            opacity: controlsDisabled ? 0.6 : 1,
-                          },
-                        ]}
-                        multiline
-                        editable={!controlsDisabled}
-                        value={yardEntry.dayNotes || ""}
-                        onChangeText={(t) => updateDay(day, "dayNotes", t)}
-                      />
+                      {renderDayNotesField(day, yardEntry.dayNotes, controlsDisabled)}
                     </>
                   )}
                 </>
@@ -2574,20 +3476,18 @@ export default function WeekTimesheet() {
                     <TouchableOpacity
                       style={[
                         styles.addBlockBtn,
-                        { backgroundColor: colors.accentSoft, borderColor: colors.success, opacity: controlsDisabled ? 0.5 : 1 },
+                        { backgroundColor: addBlockButtonColors.backgroundColor, borderColor: addBlockButtonColors.borderColor, opacity: controlsDisabled ? 0.5 : 1 },
                       ]}
                       onPress={() => addYardSegment(day)}
                       disabled={controlsDisabled}
                     >
-                      <Icon name="plus" size={14} color={colors.success} />
-                      <Text style={[styles.addBlockText, { color: colors.success }]}>Add time block</Text>
+                      <Icon name="plus" size={14} color={addBlockButtonColors.color} />
+                      <Text style={[styles.addBlockText, { color: addBlockButtonColors.color }]}>Add time block</Text>
                     </TouchableOpacity>
                   ) : (
                     <>
                       <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
-                        <Text style={[styles.sectionCap, { color: colors.textMuted }]}>Yard Day</Text>
-
-                        {turnaroundEligible && !controlsDisabled && !isHalfHoliday && (
+                        {!controlsDisabled && !isHalfHoliday && (
                           <TouchableOpacity
                             style={[
                               styles.turnaroundBtn,
@@ -2599,35 +3499,25 @@ export default function WeekTimesheet() {
                             ]}
                             onPress={() => {
                               if (!canAddTurnaround && !entry.isTurnaround) {
-                                Alert.alert(
-                                  "No Turnaround credits left",
-                                  `You have ${turnaroundCreditsRemaining}/${turnaroundCreditsTotal} credit(s) left.`
-                                );
+                                Alert.alert(turnaroundBlockedTitle, turnaroundBlockedMessage);
                                 return;
                               }
                               toggleTurnaround(day);
                             }}
                             disabled={controlsDisabled}
                           >
-                            <Icon
-                              name={entry.isTurnaround ? "check-circle" : "refresh-ccw"}
-                              size={14}
-                              color={entry.isTurnaround ? colors.accent : colors.text}
-                            />
-                            <Text style={{ color: colors.text, fontWeight: "800", fontSize: 12 }}>Turnaround</Text>
+                            <Icon name={entry.isTurnaround ? "check-circle" : "refresh-ccw"} size={12} color={entry.isTurnaround ? colors.accent : colors.text} />
+                            <Text style={[styles.turnaroundBtnText, { color: colors.text }]}>Turnaround</Text>
                           </TouchableOpacity>
                         )}
                       </View>
 
                       {entry.isTurnaround === true && (
                         <View style={[styles.turnaroundPanel, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-                          <Text style={{ color: colors.textMuted, fontSize: 11, fontWeight: "800" }}>Turnaround for job (last 2 weeks)</Text>
+                          <Text style={{ color: colors.textMuted, fontSize: 11, fontWeight: "800" }}>Turnaround for job (last 3 weeks)</Text>
 
                           <TouchableOpacity
-                            style={[
-                              styles.turnaroundSelect,
-                              { backgroundColor: colors.inputBackground, borderColor: colors.inputBorder },
-                            ]}
+                            style={[styles.turnaroundSelect, { backgroundColor: colors.inputBackground, borderColor: colors.inputBorder }]}
                             onPress={() => {
                               setTurnaroundPickerDay(day);
                               setTurnaroundPickerOpen(true);
@@ -2644,49 +3534,18 @@ export default function WeekTimesheet() {
                         </View>
                       )}
 
-                      {Array.isArray(entry.yardSegments) &&
-                        entry.yardSegments.length > 0 &&
-                        entry.yardSegments.map((seg, idx) => (
-                          <View key={idx} style={styles.segmentRow}>
-                            <TimeDropdown
-                              label={`Start ${idx + 1}`}
-                              value={seg.start}
-                              onSelect={(t) => updateYardSegment(day, idx, "start", t)}
-                              options={TIME_OPTIONS}
-                              disabled={controlsDisabled}
-                            />
-                            <View style={{ width: 8 }} />
-                            <TimeDropdown
-                              label={`Finish ${idx + 1}`}
-                              value={seg.end}
-                              onSelect={(t) => updateYardSegment(day, idx, "end", t)}
-                              options={TIME_OPTIONS}
-                              disabled={controlsDisabled}
-                            />
-
-                            <TouchableOpacity
-                              onPress={() => removeYardSegment(day, idx)}
-                              style={[
-                                styles.segmentDelete,
-                                { backgroundColor: colors.surface, borderColor: colors.border, opacity: controlsDisabled ? 0.5 : 1 },
-                              ]}
-                              disabled={controlsDisabled}
-                            >
-                              <Icon name="trash-2" size={16} color={colors.danger} />
-                            </TouchableOpacity>
-                          </View>
-                        ))}
+                      {renderYardSegments(day, entry.yardSegments, controlsDisabled)}
 
                       <TouchableOpacity
                         style={[
                           styles.addBlockBtn,
-                          { backgroundColor: colors.accentSoft, borderColor: colors.success, opacity: controlsDisabled ? 0.5 : 1 },
+                          { backgroundColor: addBlockButtonColors.backgroundColor, borderColor: addBlockButtonColors.borderColor, opacity: controlsDisabled ? 0.5 : 1 },
                         ]}
                         onPress={() => addYardSegment(day)}
                         disabled={controlsDisabled}
                       >
-                        <Icon name="plus" size={14} color={colors.success} />
-                        <Text style={[styles.addBlockText, { color: colors.success }]}>Add time block</Text>
+                        <Icon name="plus" size={14} color={addBlockButtonColors.color} />
+                        <Text style={[styles.addBlockText, { color: addBlockButtonColors.color }]}>Add time block</Text>
                       </TouchableOpacity>
 
                       {entry.yardSegments?.length > 0 && (
@@ -2708,76 +3567,25 @@ export default function WeekTimesheet() {
                         </TouchableOpacity>
                       )}
 
-                      {(() => {
-                        const segs = Array.isArray(entry.yardSegments) ? entry.yardSegments : [];
-                        const hasBlocks = segs.length > 0;
-                        return !entry.isTurnaround || hasBlocks ? (
-                          <InfoToggleRow
-                            label="Lunch?"
-                            value={!!entry.lunchSup}
-                            onChange={(v) => updateDay(day, "lunchSup", v)}
-                            disabled={controlsDisabled}
-                            infoTitle="Lunch Break"
-                            infoText="Turn this on if you had 30min lunch break"
-                          />
-                        ) : null;
-                      })()}
+                      {renderYardLunchField(day, entry, controlsDisabled)}
+                      {renderToggleButton(day, controlsDisabled)}
+                      {renderYardToggleFields(day, entry, controlsDisabled)}
 
-                      <TextInput
-                        placeholder="Notes for this day"
-                        placeholderTextColor={colors.textMuted}
-                        style={[
-                          styles.dayInput,
-                          { backgroundColor: colors.inputBackground, borderColor: colors.inputBorder, color: colors.text, opacity: controlsDisabled ? 0.6 : 1 },
-                        ]}
-                        multiline
-                        editable={!controlsDisabled}
-                        value={entry.dayNotes || ""}
-                        onChangeText={(t) => updateDay(day, "dayNotes", t)}
-                      />
+                      {renderDayNotesField(day, entry.dayNotes, controlsDisabled)}
                     </>
                   )}
                 </>
-              ) : isBankHolidayOff ? (
+              ) : isBankHolidayOff && !isWorkedBankHoliday ? (
                 <Text style={{ color: colors.textMuted }}>Off (Bank Holiday)</Text>
               ) : (
                 <>
-                  <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
-                    <Text style={[styles.sectionCap, { color: colors.textMuted }]}>Yard Day</Text>
-
-                    {turnaroundEligible && !controlsDisabled && !isHalfHoliday && (
-                      <TouchableOpacity
-                        style={[
-                          styles.turnaroundBtn,
-                          { backgroundColor: entry.isTurnaround ? colors.accentSoft : colors.surface, borderColor: entry.isTurnaround ? colors.accent : colors.border, opacity: canAddTurnaround || entry.isTurnaround ? 1 : 0.5 },
-                        ]}
-                        onPress={() => {
-                          if (!canAddTurnaround && !entry.isTurnaround) {
-                            Alert.alert(
-                              "No Turnaround credits left",
-                              `You have ${turnaroundCreditsRemaining}/${turnaroundCreditsTotal} credit(s) left.`
-                            );
-                            return;
-                          }
-                          toggleTurnaround(day);
-                        }}
-                        disabled={controlsDisabled}
-                      >
-                        <Icon name={entry.isTurnaround ? "check-circle" : "refresh-ccw"} size={14} color={entry.isTurnaround ? colors.accent : colors.text} />
-                        <Text style={{ color: colors.text, fontWeight: "800", fontSize: 12 }}>Turnaround</Text>
-                      </TouchableOpacity>
-                    )}
-                  </View>
 
                   {entry.isTurnaround === true && (
                     <View style={[styles.turnaroundPanel, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-                      <Text style={{ color: colors.textMuted, fontSize: 11, fontWeight: "800" }}>Turnaround for job (last 2 weeks)</Text>
+                      <Text style={{ color: colors.textMuted, fontSize: 11, fontWeight: "800" }}>Turnaround for job (last 3 weeks)</Text>
 
                       <TouchableOpacity
-                        style={[
-                          styles.turnaroundSelect,
-                          { backgroundColor: colors.inputBackground, borderColor: colors.inputBorder },
-                        ]}
+                        style={[styles.turnaroundSelect, { backgroundColor: colors.inputBackground, borderColor: colors.inputBorder }]}
                         onPress={() => {
                           setTurnaroundPickerDay(day);
                           setTurnaroundPickerOpen(true);
@@ -2794,68 +3602,28 @@ export default function WeekTimesheet() {
                     </View>
                   )}
 
-                  {Array.isArray(entry.yardSegments) &&
-                    entry.yardSegments.length > 0 &&
-                    entry.yardSegments.map((seg, idx) => (
-                      <View key={idx} style={styles.segmentRow}>
-                        <TimeDropdown label={`Start ${idx + 1}`} value={seg.start} onSelect={(t) => updateYardSegment(day, idx, "start", t)} options={TIME_OPTIONS} disabled={controlsDisabled} />
-                        <View style={{ width: 8 }} />
-                        <TimeDropdown label={`Finish ${idx + 1}`} value={seg.end} onSelect={(t) => updateYardSegment(day, idx, "end", t)} options={TIME_OPTIONS} disabled={controlsDisabled} />
-
-                        <TouchableOpacity
-                          onPress={() => removeYardSegment(day, idx)}
-                          style={[
-                            styles.segmentDelete,
-                            { backgroundColor: colors.surface, borderColor: colors.border, opacity: controlsDisabled ? 0.5 : 1 },
-                          ]}
-                          disabled={controlsDisabled}
-                        >
-                          <Icon name="trash-2" size={16} color={colors.danger} />
-                        </TouchableOpacity>
-                      </View>
-                    ))}
+                  {renderYardSegments(day, entry.yardSegments, controlsDisabled)}
 
                   <TouchableOpacity
                     style={[
                       styles.addBlockBtn,
-                      { backgroundColor: colors.accentSoft, borderColor: colors.success, opacity: controlsDisabled ? 0.5 : 1 },
+                      { backgroundColor: addBlockButtonColors.backgroundColor, borderColor: addBlockButtonColors.borderColor, opacity: controlsDisabled ? 0.5 : 1 },
                     ]}
                     onPress={() => addYardSegment(day)}
                     disabled={controlsDisabled}
                   >
-                    <Icon name="plus" size={14} color={colors.success} />
-                    <Text style={[styles.addBlockText, { color: colors.success }]}>Add time block</Text>
+                    <Icon name="plus" size={14} color={addBlockButtonColors.color} />
+                    <Text style={[styles.addBlockText, { color: addBlockButtonColors.color }]}>Add time block</Text>
                   </TouchableOpacity>
 
-                  {(() => {
-                    const segs = Array.isArray(entry.yardSegments) ? entry.yardSegments : [];
-                    const hasBlocks = segs.length > 0;
-                    return !entry.isTurnaround || hasBlocks ? (
-                      <InfoToggleRow
-                        label="Lunch?"
-                        value={!!entry.lunchSup}
-                        onChange={(v) => updateDay(day, "lunchSup", v)}
-                        disabled={controlsDisabled}
-                        infoTitle="Yard Lunch"
-                        infoText="Turn this on if lunch had 30min break."
-                      />
-                    ) : null;
-                  })()}
+                  {renderYardLunchField(day, entry, controlsDisabled)}
+                  {renderToggleButton(day, controlsDisabled)}
+                  {renderYardToggleFields(day, entry, controlsDisabled)}
 
-                  <TextInput
-                    placeholder="Notes for this day"
-                    placeholderTextColor={colors.textMuted}
-                    style={[
-                      styles.dayInput,
-                      { backgroundColor: colors.inputBackground, borderColor: colors.inputBorder, color: colors.text, opacity: controlsDisabled ? 0.6 : 1 },
-                    ]}
-                    multiline
-                    editable={!controlsDisabled}
-                    value={entry.dayNotes || ""}
-                    onChangeText={(t) => updateDay(day, "dayNotes", t)}
-                  />
+                  {renderDayNotesField(day, entry.dayNotes, controlsDisabled)}
                 </>
               )}
+              </View>
             </View>
           );
         })}
@@ -2865,12 +3633,7 @@ export default function WeekTimesheet() {
           placeholderTextColor={colors.textMuted}
           style={[
             styles.input,
-            {
-              backgroundColor: colors.inputBackground,
-              borderColor: colors.inputBorder,
-              color: colors.text,
-              opacity: isLocked ? 0.6 : 1,
-            },
+            { backgroundColor: colors.inputBackground, borderColor: colors.inputBorder, color: colors.text, opacity: isLocked ? 0.6 : 1 },
           ]}
           multiline
           editable={!isLocked}
@@ -2878,10 +3641,9 @@ export default function WeekTimesheet() {
           onChangeText={(t) => setTimesheet((prev) => ({ ...prev, notes: t }))}
         />
 
-        {/* ✅ Summary at the bottom */}
         <HoursSummary timesheet={timesheet} holidaysByDay={holidaysByDay} bankHolidaysByDay={bankHolidaysByDay} />
 
-        <View style={{ flexDirection: "row", justifyContent: "space-between", margin: 10 }}>
+        <View style={{ flexDirection: "row", justifyContent: "space-between", marginHorizontal: 10, marginTop: 10, marginBottom: 10 }}>
           {isLocked ? (
             <View style={{ flex: 1, alignItems: "center" }}>
               <Text style={[styles.statusHint, { color: colors.textMuted }]}>
@@ -2891,17 +3653,14 @@ export default function WeekTimesheet() {
           ) : !timesheet.submitted ? (
             <>
               <TouchableOpacity
-                style={[
-                  styles.actionButton,
-                  { backgroundColor: colors.surfaceAlt, borderColor: colors.border, borderWidth: 1 },
-                ]}
+                style={[styles.actionButton, { backgroundColor: colors.surfaceAlt, borderColor: colors.border, borderWidth: 1 }]}
                 onPress={saveTimesheet}
               >
-                <Text style={[styles.actionButtonText, { color: colors.text }]}>💾 Save Draft</Text>
+                <Text style={[styles.actionButtonText, { color: colors.text }]}>Save Draft</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
-                style={[styles.actionButton, { backgroundColor: colors.success }]}
+                style={[styles.actionButton, { backgroundColor: colors.accent }]}
                 onPress={() =>
                   Alert.alert(
                     "Submit timesheet?",
@@ -2913,37 +3672,35 @@ export default function WeekTimesheet() {
                   )
                 }
               >
-                <Text style={[styles.actionButtonText, { color: "#fff" }]}>📤 Submit for Approval</Text>
+                <Text style={[styles.actionButtonText, { color: colors.textOnAccent }]}>Submit for Approval</Text>
               </TouchableOpacity>
             </>
           ) : (
-            <TouchableOpacity style={[styles.actionButton, { backgroundColor: colors.success }]} onPress={saveTimesheet}>
-              <Text style={[styles.actionButtonText, { color: "#fff" }]}>🔁 Update Submission</Text>
+            <TouchableOpacity style={[styles.actionButton, { backgroundColor: colors.accent }]} onPress={saveTimesheet}>
+              <Text style={[styles.actionButtonText, { color: colors.textOnAccent }]}>Update Submission</Text>
             </TouchableOpacity>
           )}
         </View>
       </ScrollView>
-    </SafeAreaView>
+    </View>
   );
 }
 
 /* ───────────────────────── styles ───────────────────────── */
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#000", padding: 6 },
-  backBtn: { flexDirection: "row", alignItems: "center", marginBottom: 10 },
+  container: { flex: 1, padding: 6 },
+  stickyHeader: { paddingTop: 2, marginBottom: 10 },
+  headerRow: { flexDirection: "row", alignItems: "center", marginBottom: 10, gap: 8 },
+  backBtn: { flexDirection: "row", alignItems: "center", minWidth: 64 },
   backText: { fontSize: 14, marginLeft: 6 },
-  title: { fontSize: 16, fontWeight: "700", marginBottom: 6 },
+  title: { flex: 1, fontSize: 16, fontWeight: "700", textAlign: "center" },
 
   statusRow: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 },
-  pill: { paddingVertical: 3, paddingHorizontal: 8, borderRadius: 999, borderWidth: 1 },
-  pillOk: { backgroundColor: "#bbf7d0", borderColor: "#86efac" },
-  pillDraft: { backgroundColor: "#fed7aa", borderColor: "#fdba74" },
+  statusRowCentered: { justifyContent: "center" },
+  pill: { paddingVertical: 3, paddingHorizontal: 8, borderRadius: 999, borderWidth: 1, marginRight: 6 },
   pillText: { fontWeight: "800", fontSize: 11 },
-  pillTextOk: { color: "#052e16" },
-  pillTextDraft: { color: "#7c2d12" },
   statusHint: { fontSize: 11 },
 
-  // ✅ NEW: credits banner
   creditBox: {
     marginHorizontal: 8,
     marginBottom: 10,
@@ -2952,32 +3709,45 @@ const styles = StyleSheet.create({
     padding: 10,
   },
 
-  dayBlock: { padding: 10, borderRadius: 10, marginBottom: 10, borderWidth: 1 },
-  dayTitle: { fontSize: 14, fontWeight: "700", marginBottom: 6 },
+  dayHeaderRow: { flexDirection: "row", alignItems: "baseline", gap: 8, marginBottom: 4 },
+  dayBlock: { padding: 8, borderRadius: 6, marginBottom: 8, borderWidth: 1 },
+  dayTitle: { fontSize: 14, fontWeight: "700" },
+  dayModeTitle: { fontSize: 12, fontWeight: "700", opacity: 0.9 },
+  unpaidToggleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 6,
+    marginBottom: 4,
+  },
+  unpaidInlineNote: { marginBottom: 4 },
+  unpaidInlineText: { fontSize: 10.5 },
 
-  bankHolidayBlock: { padding: 10, borderRadius: 8, borderWidth: 1, marginBottom: 8 },
+  bankHolidayBlock: { padding: 8, borderRadius: 8, borderWidth: 1, marginBottom: 6 },
 
-  holidayBlock: { padding: 10, borderRadius: 8, borderWidth: 1 },
-  holidaySub: { fontSize: 11, marginTop: 4 },
+  holidayBlock: { padding: 8, borderRadius: 8, borderWidth: 1 },
+  holidayHeaderRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 },
+  holidaySub: { fontSize: 11, marginTop: 3 },
 
-  modeRow: { flexDirection: "row", marginBottom: 6, gap: 6 },
-  modeBtn: { flex: 1, paddingVertical: 8, borderRadius: 8, alignItems: "center", borderWidth: 1 },
+  modeRow: { flexDirection: "row", marginBottom: 4, gap: 6 },
+  modeBtn: { flex: 1, paddingVertical: 7, borderRadius: 8, alignItems: "center", borderWidth: 1 },
   modeText: { fontSize: 12, fontWeight: "700" },
 
-  onSetBlock: { marginTop: 4 },
+  onSetBlock: { marginTop: 2 },
 
   label: { fontSize: 11, marginBottom: 2 },
   dropdownBox: {
-    paddingVertical: 10,
+    paddingVertical: 8,
     paddingHorizontal: 10,
     borderRadius: 8,
     borderWidth: 1,
-    minHeight: 40,
+    minHeight: 36,
     justifyContent: "center",
   },
 
-  sectionCap: { marginBottom: 6, fontWeight: "700", fontSize: 12, opacity: 0.9 },
-  segmentRow: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 8 },
+  sectionCap: { marginBottom: 4, fontWeight: "700", fontSize: 12, opacity: 0.9 },
+  segmentBlock: { marginBottom: 6 },
+  segmentRow: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 6 },
   segmentDelete: {
     marginLeft: 6,
     paddingVertical: 6,
@@ -2986,8 +3756,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     justifyContent: "center",
     alignItems: "center",
-    height: 40,
+    height: 36,
   },
+  segmentNoteInput: { paddingVertical: 6, paddingHorizontal: 8, borderRadius: 8, fontSize: 12, borderWidth: 1, minHeight: 32 },
 
   addBlockBtn: {
     flexDirection: "row",
@@ -2995,20 +3766,33 @@ const styles = StyleSheet.create({
     gap: 6,
     alignSelf: "flex-start",
     marginTop: 2,
-    marginBottom: 8,
+    marginBottom: 6,
     paddingVertical: 4,
     paddingHorizontal: 8,
     borderRadius: 999,
     borderWidth: 1,
   },
   addBlockText: { fontWeight: "700", fontSize: 12 },
+  togglePickerBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    alignSelf: "flex-start",
+    marginTop: 2,
+    marginBottom: 6,
+    paddingVertical: 3,
+    paddingHorizontal: 8,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  togglePickerText: { fontSize: 11, fontWeight: "700" },
 
-  jobLink: { padding: 8, borderRadius: 8, marginBottom: 6, borderWidth: 1 },
+  jobLink: { padding: 7, borderRadius: 8, marginBottom: 5, borderWidth: 1 },
   jobMain: { fontWeight: "700", fontSize: 12.5 },
   jobSub: { fontSize: 12, marginTop: 2 },
 
-  dayInput: { padding: 8, borderRadius: 8, marginTop: 6, fontSize: 12, borderWidth: 1 },
-  input: { padding: 10, borderRadius: 8, margin: 8, fontSize: 13, height: 55, borderWidth: 1 },
+  dayInput: { padding: 8, borderRadius: 8, marginTop: 4, fontSize: 12, borderWidth: 1 },
+  input: { padding: 10, borderRadius: 8, marginHorizontal: 10, marginTop: 8, marginBottom: 8, fontSize: 13, height: 55, borderWidth: 1 },
 
   toggleRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginVertical: 6 },
 
@@ -3026,19 +3810,19 @@ const styles = StyleSheet.create({
   modalItem: { padding: 10, borderBottomWidth: 1 },
   closeBtn: { marginTop: 8, padding: 10, borderRadius: 8, alignItems: "center" },
 
-  actionButton: { flex: 1, alignItems: "center", paddingVertical: 12, borderRadius: 8, marginHorizontal: 5 },
+  actionButton: { flex: 1, alignItems: "center", paddingVertical: 12, borderRadius: 8, marginHorizontal: 0 },
   actionButtonText: { fontWeight: "bold", fontSize: 15 },
 
-  // Turnaround UI
   turnaroundBtn: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
-    paddingVertical: 4,
-    paddingHorizontal: 10,
+    gap: 4,
+    paddingVertical: 2,
+    paddingHorizontal: 8,
     borderRadius: 999,
     borderWidth: 1,
   },
+  turnaroundBtnText: { fontWeight: "700", fontSize: 10.5, letterSpacing: 0.2 },
   turnaroundPanel: {
     borderWidth: 1,
     borderRadius: 10,
@@ -3056,15 +3840,15 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
 
-  // ✅ Summary UI
   summaryBox: {
-    marginHorizontal: 8,
+    marginHorizontal: 10,
     marginTop: 6,
     marginBottom: 10,
     borderRadius: 10,
     borderWidth: 1,
     padding: 10,
   },
+  summaryHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   summaryRow: {
     flexDirection: "row",
     justifyContent: "space-between",

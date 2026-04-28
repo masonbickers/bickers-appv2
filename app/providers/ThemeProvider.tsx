@@ -10,6 +10,7 @@ import React, {
     useState,
 } from "react";
 import { Appearance } from "react-native";
+import { designTokens, type DesignTokens } from "../../lib/design/tokens";
 
 const THEME_STORAGE_KEY = "bickers-theme-preference";
 
@@ -21,12 +22,16 @@ type Colors = {
   background: string;
   surface: string;
   surfaceAlt: string;
+  surfaceElevated: string;
   border: string;
   text: string;
   textMuted: string;
+  textOnAccent: string;
+  primary: string;
   accent: string;
   accentSoft: string;
   danger: string;
+  warning: string;
   success: string;
   inputBackground: string;
   inputBorder: string;
@@ -36,6 +41,7 @@ type ThemeContextValue = {
   theme: Theme;          // user preference
   colorScheme: ColorScheme; // effective scheme
   colors: Colors;
+  tokens: DesignTokens;
   setTheme: (theme: Theme) => void;
   toggleTheme: () => void;
 };
@@ -49,35 +55,42 @@ interface ThemeProviderProps {
 function buildColors(scheme: ColorScheme): Colors {
   if (scheme === "light") {
     return {
-      background: "#ffffff",
+      background: "#F4F7FA",
       surface: "#FFFFFF",
-      surfaceAlt: "#F3F4F6",
-      border: "#E5E7EB",
-      text: "#202020ff",
-      textMuted: "#7d7d7dff",
-      accent: "#ED1C24",
-      accentSoft: "#E0F2FE",
-      danger: "#ED1C24",
-      success: "#16A34A",
+      surfaceAlt: "#E9EEF5",
+      surfaceElevated: "#FFFFFF",
+      border: "#D4DCE6",
+      text: "#15202B",
+      textMuted: "#5F6C7B",
+      textOnAccent: "#FFFFFF",
+      primary: "#ED1C25",
+      accent: "#ED1C25",
+      accentSoft: "#F8E6E7",
+      danger: "#B42318",
+      warning: "#B76800",
+      success: "#157347",
       inputBackground: "#FFFFFF",
-      inputBorder: "#d9d9d9ff",
+      inputBorder: "#C7D1DD",
     };
   }
 
-  // True black dark mode
   return {
     background: "#000000",
-    surface: "#000000",
-    surfaceAlt: "#111111",
-    border: "#262626",
-    text: "#FFFFFF",
-    textMuted: "#A3A3A3",
-    accent: "#ED1C24",
-    accentSoft: "#404040ff",
-    danger: "#ED1C24",
-    success: "#22C55E",
-    inputBackground: "#000000",
-    inputBorder: "#262626",
+    surface: "#0B0B0C",
+    surfaceAlt: "#151517",
+    surfaceElevated: "#1D1D21",
+    border: "#2B2B31",
+    text: "#F5F5F5",
+    textMuted: "#A1A1AA",
+    textOnAccent: "#FFFFFF",
+    primary: "#ED1C25",
+    accent: "#ED1C25",
+    accentSoft: "#3A1216",
+    danger: "#ED1C25",
+    warning: "#F2A93B",
+    success: "#34C38F",
+    inputBackground: "#111114",
+    inputBorder: "#303038",
   };
 }
 
@@ -87,6 +100,7 @@ const ThemeContext = createContext<ThemeContextValue>({
   theme: "system",
   colorScheme: "light",
   colors: buildColors("light"),
+  tokens: designTokens,
   setTheme: () => {},
   toggleTheme: () => {},
 });
@@ -153,6 +167,7 @@ export function ThemeProvider({ children }: ThemeProviderProps) {
       theme,
       colorScheme,
       colors,
+      tokens: designTokens,
       setTheme,
       toggleTheme,
     }),
@@ -165,3 +180,9 @@ export function ThemeProvider({ children }: ThemeProviderProps) {
 /* ---------- Hook ---------- */
 
 export const useTheme = () => useContext(ThemeContext);
+
+// Expo Router treats every file inside app/ as a route.
+// Keep a noop default export here so this provider module is not warned as invalid.
+export default function ThemeProviderRouteShim() {
+  return null;
+}

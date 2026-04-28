@@ -5,6 +5,7 @@ import * as ImagePicker from "expo-image-picker";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import {
   addDoc,
+  arrayUnion,
   collection,
   doc,
   getDocs,
@@ -18,7 +19,6 @@ import {
   ActivityIndicator,
   Alert,
   Image,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
@@ -26,6 +26,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 
 import { db } from "../../../../firebaseConfig";
 import { useTheme } from "../../../providers/ThemeProvider";
@@ -37,8 +38,8 @@ const COLORS = {
   textHigh: "#FFFFFF",
   textMid: "#E0E0E0",
   textLow: "#888888",
-  primaryAction: "#FF3B30",
-  recceAction: "#FF3B30",
+  primaryAction: "#ED1C25",
+  recceAction: "#ED1C25",
   inputBg: "#2a2a2a",
   lightGray: "#4a4a4a",
 };
@@ -112,6 +113,37 @@ function computeNextServiceFromDate(dateStr) {
   const mm = pad(next.getMonth() + 1);
   const dd = pad(next.getDate());
   return `${yyyy}-${mm}-${dd}`;
+}
+
+function buildVehicleServiceHistoryItem({
+  completedDate,
+  serviceRecordId,
+  notes,
+  odometer,
+  partsUsed,
+}) {
+  return {
+    completedDate,
+    bookingId: null,
+    serviceRecordId,
+    provider: "",
+    bookingRef: "",
+    notes,
+    recordedAt: new Date(),
+    location: "",
+    odometer,
+    partsUsed,
+  };
+}
+
+function isDownloadUrl(uri) {
+  return typeof uri === "string" && /^https?:\/\//i.test(uri);
+}
+
+function addPresent(target, key, value) {
+  if (value !== undefined && value !== null && value !== "") {
+    target[key] = value;
+  }
 }
 
 // 🔑 multi-draft key for minor service forms
@@ -502,6 +534,8 @@ export default function MinorServiceFormScreen() {
       const odoNumber = odometer ? Number(odometer) : null;
       const nextServiceDate = nextServiceComputed || null;
       const serviceDateTime = `${serviceDate} ${serviceTime}`;
+      const photoURIs = photos.map((p) => p.uri);
+      const photoURLs = photoURIs.filter(isDownloadUrl);
 
       const record = {
         vehicleId: selectedVehicleId,
@@ -517,21 +551,47 @@ export default function MinorServiceFormScreen() {
         workSummary: workSummary.trim(),
         partsUsed: partsUsed.trim(),
         nextServiceDate,
+        nextService: nextServiceDate,
         extraNotes: extraNotes.trim(),
         checks,
         checkRatings,
         checkNA,
-        photoURIs: photos.map((p) => p.uri),
+        checkNotes: {},
+        checkPhotoURIs: {},
+        checkPhotoURLs: {},
+        photoURIs,
+        photoURLs,
         signedBy: signedBy.trim(),
         createdAt: serverTimestamp(),
       };
 
-      await addDoc(collection(db, "serviceRecords"), record);
+      const serviceRecordRef = await addDoc(collection(db, "serviceRecords"), record);
 
       const vehicleRef = doc(db, "vehicles", selectedVehicleId);
+      const historyNotes = [workSummary.trim(), extraNotes.trim()]
+        .filter(Boolean)
+        .join(" ");
       const updatePayload = {
-        lastService: serviceDateTime,
+        lastService: serviceDate,
+        serviceHistory: arrayUnion(
+          buildVehicleServiceHistoryItem({
+            completedDate: serviceDate,
+            serviceRecordId: serviceRecordRef.id,
+            notes: historyNotes,
+            odometer: odoNumber,
+            partsUsed: partsUsed.trim(),
+          })
+        ),
       };
+      const canonicalName = v?.name || v?.vehicleName || "";
+      const canonicalReg = v?.registration || v?.reg || "";
+      addPresent(updatePayload, "name", canonicalName);
+      addPresent(updatePayload, "vehicleName", canonicalName);
+      addPresent(updatePayload, "registration", canonicalReg);
+      addPresent(updatePayload, "reg", canonicalReg);
+      addPresent(updatePayload, "manufacturer", v?.manufacturer || "");
+      addPresent(updatePayload, "model", v?.model || "");
+      addPresent(updatePayload, "category", v?.category || "");
       if (nextServiceDate) {
         updatePayload.nextService = nextServiceDate;
       }
@@ -579,6 +639,7 @@ export default function MinorServiceFormScreen() {
 
   return (
     <SafeAreaView
+      edges={["left", "right"]}
       style={[
         styles.container,
         { backgroundColor: colors.background || COLORS.background },
@@ -1106,13 +1167,30 @@ function FormField({
   multiline = false,
   keyboardType = "default",
 }) {
+  const { colors } = useTheme();
+
   return (
     <View style={styles.fieldGroup}>
-      <Text style={styles.fieldLabel}>{label}</Text>
+      <Text
+        style={[
+          styles.fieldLabel,
+          { color: colors.textMuted || COLORS.textMid },
+        ]}
+      >
+        {label}
+      </Text>
       <TextInput
-        style={[styles.input, multiline && styles.inputMultiline]}
+        style={[
+          styles.input,
+          {
+            backgroundColor: colors.inputBackground || COLORS.inputBg,
+            borderColor: colors.inputBorder || COLORS.lightGray,
+            color: colors.text || COLORS.textHigh,
+          },
+          multiline && styles.inputMultiline,
+        ]}
         placeholder={placeholder}
-        placeholderTextColor={COLORS.textLow}
+        placeholderTextColor={colors.textMuted || COLORS.textLow}
         value={value}
         onChangeText={onChangeText}
         multiline={multiline}
@@ -1155,7 +1233,15 @@ function ChecklistSection({
         </Text>
       </View>
 
-      <View style={styles.card}>
+      <View
+        style={[
+          styles.card,
+          {
+            backgroundColor: colors.surfaceAlt || COLORS.card,
+            borderColor: colors.border || COLORS.border,
+          },
+        ]}
+      >
         {items.map((item) => (
           <ChecklistRow
             key={item}
@@ -1184,6 +1270,7 @@ function ChecklistRow({
   rating,
   onChangeRating,
 }) {
+  const { colors } = useTheme();
   const disabled = na;
 
   return (
@@ -1203,7 +1290,10 @@ function ChecklistRow({
             <View
               style={[
                 styles.checkIconEmpty,
-                disabled && { borderColor: COLORS.textLow, opacity: 0.4 },
+                {
+                  borderColor: colors.textMuted || COLORS.textMid,
+                },
+                disabled && { opacity: 0.4 },
               ]}
             />
           )}
@@ -1211,7 +1301,8 @@ function ChecklistRow({
         <Text
           style={[
             styles.checkLabel,
-            checked && { color: COLORS.textHigh },
+            { color: colors.textMuted || COLORS.textLow },
+            checked && { color: colors.text || COLORS.textHigh },
             disabled && { opacity: 0.5 },
           ]}
         >
@@ -1237,6 +1328,7 @@ function ChecklistRow({
               <Text
                 style={[
                   styles.ratingText,
+                  { color: colors.textMuted || COLORS.textLow },
                   isActive && styles.ratingTextActive,
                 ]}
               >
@@ -1288,12 +1380,13 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     padding: 16,
+    paddingTop: 8,
   },
   infoCard: {
     backgroundColor: COLORS.card,
     borderRadius: 10,
     padding: 14,
-    marginBottom: 18,
+    marginBottom: 12,
     borderLeftWidth: 4,
     borderLeftColor: COLORS.primaryAction,
     borderWidth: 1,
@@ -1310,7 +1403,7 @@ const styles = StyleSheet.create({
     color: COLORS.textMid,
   },
   sectionHeaderRow: {
-    marginTop: 6,
+    marginTop: 4,
     marginBottom: 6,
     flexDirection: "row",
     justifyContent: "space-between",
@@ -1329,7 +1422,7 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.card,
     borderRadius: 10,
     padding: 12,
-    marginBottom: 14,
+    marginBottom: 10,
     borderWidth: 1,
     borderColor: COLORS.border,
   },

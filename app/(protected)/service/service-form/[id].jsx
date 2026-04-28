@@ -1,24 +1,27 @@
 // app/(protected)/service/service-form/[id].jsx
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as ImagePicker from "expo-image-picker";
+import * as ImageManipulator from "expo-image-manipulator";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import {
-  addDoc,
+  arrayUnion,
   collection,
   doc,
+  getDoc,
   getDocs,
   orderBy,
   query,
   serverTimestamp,
+  setDoc,
   updateDoc,
 } from "firebase/firestore";
+import { getDownloadURL, ref, uploadBytesResumable } from "firebase/storage";
 import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
   Image,
   Modal,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
@@ -26,9 +29,10 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
-import { db } from "../../../../firebaseConfig";
+import { db, storage } from "../../../../firebaseConfig";
 import { useTheme } from "../../../providers/ThemeProvider";
 
 const COLORS = {
@@ -38,8 +42,8 @@ const COLORS = {
   textHigh: "#FFFFFF",
   textMid: "#E0E0E0",
   textLow: "#888888",
-  primaryAction: "#FF3B30",
-  recceAction: "#FF3B30",
+  primaryAction: "#ED1C25",
+  recceAction: "#ED1C25",
   inputBg: "#2a2a2a",
   lightGray: "#4a4a4a",
 };
@@ -90,29 +94,192 @@ const CHECK_ELECTRICAL_TEST = [
 
 function getNowParts() {
   const d = new Date();
-  const pad = (n) => String(n).padStart(2, "0");
-  const yyyy = d.getFullYear();
-  const mm = pad(d.getMonth() + 1);
-  const dd = pad(d.getDate());
   const hh = pad(d.getHours());
   const min = pad(d.getMinutes());
   return {
-    date: `${yyyy}-${mm}-${dd}`, // YYYY-MM-DD
+    date: formatDateForDisplay(d), // DD/MM/YYYY
     time: `${hh}:${min}`, // HH:MM
   };
 }
 
+function pad(n) {
+  return String(n).padStart(2, "0");
+}
+
+function formatDateForDisplay(value) {
+  if (!value) return "";
+
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) return "";
+    return `${pad(value.getDate())}/${pad(value.getMonth() + 1)}/${value.getFullYear()}`;
+  }
+
+  const str = String(value).trim();
+  if (!str) return "";
+
+  const isoMatch = str.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+  if (isoMatch) {
+    const [, yyyy, mm, dd] = isoMatch;
+    return `${pad(dd)}/${pad(mm)}/${yyyy}`;
+  }
+
+  const ukMatch = str.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);
+  if (ukMatch) {
+    const [, dd, mm, yyyy] = ukMatch;
+    return `${pad(dd)}/${pad(mm)}/${yyyy}`;
+  }
+
+  return str;
+}
+
+function parseDisplayDate(dateStr) {
+  if (!dateStr) return null;
+
+  const str = String(dateStr).trim();
+  const isoMatch = str.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+  if (isoMatch) {
+    const [, yyyy, mm, dd] = isoMatch.map(Number);
+    return new Date(yyyy, mm - 1, dd);
+  }
+
+  const ukMatch = str.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);
+  if (ukMatch) {
+    const [, dd, mm, yyyy] = ukMatch.map(Number);
+    return new Date(yyyy, mm - 1, dd);
+  }
+
+  const parsed = new Date(str);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
 function computeNextServiceFromDate(dateStr) {
   if (!dateStr) return "";
-  const d = new Date(dateStr);
+  const d = parseDisplayDate(dateStr);
+  if (!d) return "";
   if (Number.isNaN(d.getTime())) return "";
   const next = new Date(d);
   next.setFullYear(next.getFullYear() + 1);
-  const pad = (n) => String(n).padStart(2, "0");
-  const yyyy = next.getFullYear();
-  const mm = pad(next.getMonth() + 1);
-  const dd = pad(next.getDate());
-  return `${yyyy}-${mm}-${dd}`;
+  return formatDateForDisplay(next);
+}
+
+function splitServiceDateTime(record) {
+  if (record?.serviceDateOnly) {
+    return {
+      date: formatDateForDisplay(record.serviceDateOnly),
+      time: record.serviceTime || "00:00",
+    };
+  }
+
+  const serviceDate = typeof record?.serviceDate === "string" ? record.serviceDate : "";
+  const [datePart, timePart] = serviceDate.split(" ");
+  return {
+    date: formatDateForDisplay(datePart) || "",
+    time: timePart || record?.serviceTime || "00:00",
+  };
+}
+
+function buildVehicleServiceHistoryItem({
+  completedDate,
+  serviceRecordId,
+  notes,
+  odometer,
+  partsUsed,
+}) {
+  return {
+    completedDate,
+    bookingId: null,
+    serviceRecordId,
+    provider: "",
+    bookingRef: "",
+    notes,
+    recordedAt: new Date(),
+    location: "",
+    odometer,
+    partsUsed,
+  };
+}
+
+function isDownloadUrl(uri) {
+  return typeof uri === "string" && /^https?:\/\//i.test(uri);
+}
+
+function sanitizeStorageSegment(value) {
+  return String(value || "item")
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || "item";
+}
+
+async function ensureUploadableImageUri(uri) {
+  if (!uri || isDownloadUrl(uri)) return uri;
+
+  try {
+    const manip = await ImageManipulator.manipulateAsync(
+      uri,
+      [{ resize: { width: 1600 } }],
+      { compress: 0.8, format: ImageManipulator.SaveFormat.JPEG }
+    );
+    return manip?.uri || uri;
+  } catch {
+    return uri;
+  }
+}
+
+async function uploadImageUri(uri, path) {
+  if (isDownloadUrl(uri)) return uri;
+
+  const uploadableUri = await ensureUploadableImageUri(uri);
+  const response = await fetch(uploadableUri);
+  const blob = await response.blob();
+  const storageRef = ref(storage, path);
+
+  await new Promise((resolve, reject) => {
+    const task = uploadBytesResumable(storageRef, blob, {
+      contentType: blob.type || "image/jpeg",
+    });
+    task.on("state_changed", undefined, reject, resolve);
+  });
+
+  return getDownloadURL(storageRef);
+}
+
+async function uploadPhotoList(photoItems, basePath) {
+  const uris = photoItems.map((p) => (typeof p === "string" ? p : p?.uri)).filter(Boolean);
+
+  const uploaded = [];
+  for (const [index, uri] of uris.entries()) {
+    if (isDownloadUrl(uri)) {
+      uploaded.push(uri);
+      continue;
+    }
+
+    const filename = `${Date.now()}-${index}.jpg`;
+    uploaded.push(await uploadImageUri(uri, `${basePath}/${filename}`));
+  }
+
+  return uploaded;
+}
+
+async function uploadCheckPhotoMap(checkPhotosMap, basePath) {
+  const uploadedMap = {};
+
+  for (const [label, photoItems] of Object.entries(checkPhotosMap)) {
+    if (!Array.isArray(photoItems) || photoItems.length === 0) continue;
+    const safeLabel = sanitizeStorageSegment(label);
+    const uploaded = await uploadPhotoList(photoItems, `${basePath}/${safeLabel}`);
+    if (uploaded.length > 0) {
+      uploadedMap[label] = uploaded;
+    }
+  }
+
+  return uploadedMap;
+}
+
+function addPresent(target, key, value) {
+  if (value !== undefined && value !== null && value !== "") {
+    target[key] = value;
+  }
 }
 
 // 🔑 MUST match book-work.jsx
@@ -120,13 +287,17 @@ const SERVICE_DRAFTS_KEY = "serviceFormDrafts_v1";
 
 export default function ServiceFormScreen() {
   const router = useRouter();
-  const { id } = useLocalSearchParams();
+  const { id, recordId } = useLocalSearchParams();
   const formId = Array.isArray(id) ? id[0] : id; // ensure string
+  const editRecordId = Array.isArray(recordId) ? recordId[0] : recordId;
+  const isEditingRecord = !!editRecordId;
 
   const { colors } = useTheme();
 
   const [vehicles, setVehicles] = useState([]);
   const [loadingVehicles, setLoadingVehicles] = useState(true);
+  const [loadingRecord, setLoadingRecord] = useState(false);
+  const [editingRecord, setEditingRecord] = useState(null);
   const [submitting, setSubmitting] = useState(false);
 
   // 🔎 VEHICLE SEARCH + SELECTION
@@ -136,8 +307,8 @@ export default function ServiceFormScreen() {
 
   // INITIAL DATE/TIME (AUTO, NON-EDITABLE)
   const now = getNowParts();
-  const [serviceDate] = useState(now.date); // read-only
-  const [serviceTime] = useState(now.time); // read-only
+  const [serviceDate, setServiceDate] = useState(now.date); // read-only
+  const [serviceTime, setServiceTime] = useState(now.time); // read-only
 
   // SERVICE FIELDS
   const [odometer, setOdometer] = useState("");
@@ -223,6 +394,7 @@ export default function ServiceFormScreen() {
 
   useEffect(() => {
     const loadDraft = async () => {
+      if (isEditingRecord) return;
       if (!formId) return;
       try {
         const raw = await AsyncStorage.getItem(SERVICE_DRAFTS_KEY);
@@ -237,6 +409,8 @@ export default function ServiceFormScreen() {
           setVehicleCollapsed(true);
         }
         if (draft.vehicleSearch) setVehicleSearch(draft.vehicleSearch);
+        if (draft.serviceDate) setServiceDate(formatDateForDisplay(draft.serviceDate));
+        if (draft.serviceTime) setServiceTime(draft.serviceTime);
         if (draft.odometer) setOdometer(String(draft.odometer));
         if (draft.serviceType) setServiceType(draft.serviceType);
         if (draft.workSummary) setWorkSummary(draft.workSummary);
@@ -267,12 +441,76 @@ export default function ServiceFormScreen() {
     };
 
     loadDraft();
-  }, [formId]);
+  }, [formId, isEditingRecord]);
+
+  /* ---------------- LOAD EXISTING RECORD FOR EDIT ---------------- */
+
+  useEffect(() => {
+    const loadRecordForEdit = async () => {
+      if (!editRecordId) return;
+
+      setLoadingRecord(true);
+      try {
+        const ref = doc(db, "serviceRecords", String(editRecordId));
+        const snap = await getDoc(ref);
+        if (!snap.exists()) {
+          Alert.alert("Not found", "Could not find this service record.");
+          router.back();
+          return;
+        }
+
+        const record = snap.data();
+        setEditingRecord({ id: snap.id, ...record });
+        const { date, time } = splitServiceDateTime(record);
+
+        setSelectedVehicleId(record.vehicleId || null);
+        setVehicleCollapsed(!!record.vehicleId);
+        setVehicleSearch(record.vehicleName || record.registration || "");
+        if (date) setServiceDate(date);
+        if (time) setServiceTime(time);
+        if (record.odometer !== undefined && record.odometer !== null) {
+          setOdometer(String(record.odometer));
+        }
+        if (record.serviceType) setServiceType(record.serviceType);
+        setWorkSummary(record.workSummary || "");
+        setPartsUsed(record.partsUsed || "");
+        setExtraNotes(record.extraNotes || "");
+        setSignedBy(record.signedBy || "");
+        setChecks(record.checks || {});
+        setCheckRatings(record.checkRatings || {});
+        setCheckNA(record.checkNA || {});
+        setCheckNotes(record.checkNotes || {});
+
+        const builtCheckPhotos = {};
+        Object.entries(record.checkPhotoURIs || record.checkPhotoURLs || {}).forEach(
+          ([label, uris]) => {
+            if (Array.isArray(uris)) {
+              builtCheckPhotos[label] = uris.map((uri) => ({ uri }));
+            }
+          }
+        );
+        setCheckPhotos(builtCheckPhotos);
+
+        const existingPhotos = record.photoURIs || record.photoURLs || [];
+        if (Array.isArray(existingPhotos)) {
+          setPhotos(existingPhotos.map((uri) => ({ uri })));
+        }
+      } catch (err) {
+        console.error("Failed to load service record for edit:", err);
+        Alert.alert("Error", "Could not load this service record for editing.");
+      } finally {
+        setLoadingRecord(false);
+      }
+    };
+
+    loadRecordForEdit();
+  }, [editRecordId, router]);
 
   /* ---------------- AUTO-SAVE DRAFT LOCALLY (MULTI) ---------------- */
 
   useEffect(() => {
     const saveDraft = async () => {
+      if (isEditingRecord) return;
       if (!formId) return;
 
       try {
@@ -359,6 +597,7 @@ export default function ServiceFormScreen() {
     saveDraft();
   }, [
     formId,
+    isEditingRecord,
     selectedVehicleId,
     selectedVehicle,
     vehicleSearch,
@@ -691,20 +930,31 @@ export default function ServiceFormScreen() {
       const odoNumber = odometer ? Number(odometer) : null;
       const nextServiceDate = nextServiceComputed || null;
       const serviceDateTime = `${serviceDate} ${serviceTime}`;
+      const recordVehicleName =
+        v?.name || v?.vehicleName || editingRecord?.vehicleName || "";
+      const recordRegistration =
+        v?.registration || v?.reg || editingRecord?.registration || "";
 
-      const checkPhotoURIs = {};
-      Object.entries(checkPhotos).forEach(([label, arr]) => {
-        if (Array.isArray(arr) && arr.length > 0) {
-          checkPhotoURIs[label] = arr.map((p) => p.uri);
-        }
-      });
+      const serviceRecordRef = isEditingRecord
+        ? doc(db, "serviceRecords", String(editRecordId))
+        : doc(collection(db, "serviceRecords"));
+      const storageBasePath = `serviceRecords/${serviceRecordRef.id}`;
+
+      const photoURLs = await uploadPhotoList(
+        photos,
+        `${storageBasePath}/overall`
+      );
+      const checkPhotoURLs = await uploadCheckPhotoMap(
+        checkPhotos,
+        `${storageBasePath}/checks`
+      );
 
       const record = {
         vehicleId: selectedVehicleId,
-        vehicleName: v?.name || v?.vehicleName || "",
-        registration: v?.registration || v?.reg || "",
-        manufacturer: v?.manufacturer || "",
-        model: v?.model || "",
+        vehicleName: recordVehicleName,
+        registration: recordRegistration,
+        manufacturer: v?.manufacturer || editingRecord?.manufacturer || "",
+        model: v?.model || editingRecord?.model || "",
         serviceDate: serviceDateTime,
         serviceDateOnly: serviceDate,
         serviceTime: serviceTime,
@@ -713,23 +963,55 @@ export default function ServiceFormScreen() {
         workSummary: workSummary.trim(),
         partsUsed: partsUsed.trim(),
         nextServiceDate,
+        nextService: nextServiceDate,
         extraNotes: extraNotes.trim(),
         checks,
         checkRatings,
         checkNA,
         checkNotes,
-        checkPhotoURIs,
-        photoURIs: photos.map((p) => p.uri),
+        checkPhotoURIs: checkPhotoURLs,
+        checkPhotoURLs,
+        photoURIs: photoURLs,
+        photoURLs,
         signedBy: signedBy.trim(),
-        createdAt: serverTimestamp(),
+        ...(isEditingRecord
+          ? { updatedAt: serverTimestamp() }
+          : { createdAt: serverTimestamp() }),
       };
 
-      await addDoc(collection(db, "serviceRecords"), record);
+      if (isEditingRecord) {
+        await updateDoc(serviceRecordRef, record);
+      } else {
+        await setDoc(serviceRecordRef, record);
+      }
 
       const vehicleRef = doc(db, "vehicles", selectedVehicleId);
+      const historyNotes = [workSummary.trim(), extraNotes.trim()]
+        .filter(Boolean)
+        .join(" ");
       const updatePayload = {
-        lastService: serviceDateTime,
+        lastService: serviceDate,
       };
+      if (!isEditingRecord) {
+        updatePayload.serviceHistory = arrayUnion(
+          buildVehicleServiceHistoryItem({
+            completedDate: serviceDate,
+            serviceRecordId: serviceRecordRef.id,
+            notes: historyNotes,
+            odometer: odoNumber,
+            partsUsed: partsUsed.trim(),
+          })
+        );
+      }
+      const canonicalName = recordVehicleName;
+      const canonicalReg = recordRegistration;
+      addPresent(updatePayload, "name", canonicalName);
+      addPresent(updatePayload, "vehicleName", canonicalName);
+      addPresent(updatePayload, "registration", canonicalReg);
+      addPresent(updatePayload, "reg", canonicalReg);
+      addPresent(updatePayload, "manufacturer", v?.manufacturer || "");
+      addPresent(updatePayload, "model", v?.model || "");
+      addPresent(updatePayload, "category", v?.category || "");
       if (nextServiceDate) {
         updatePayload.nextService = nextServiceDate;
       }
@@ -760,12 +1042,18 @@ export default function ServiceFormScreen() {
         console.error("Failed to remove draft after submit:", e);
       }
 
-      Alert.alert("Service saved", "Service record saved and vehicle updated.", [
-        {
-          text: "OK",
-          onPress: () => router.back(),
-        },
-      ]);
+      Alert.alert(
+        isEditingRecord ? "Service updated" : "Service saved",
+        isEditingRecord
+          ? "Service record updated."
+          : "Service record saved and vehicle updated.",
+        [
+          {
+            text: "OK",
+            onPress: () => router.back(),
+          },
+        ]
+      );
     } catch (err) {
       console.error("Failed to save service record:", err);
       Alert.alert("Error", "Could not save service record. Please try again.");
@@ -778,6 +1066,7 @@ export default function ServiceFormScreen() {
 
   return (
     <SafeAreaView
+      edges={["left", "right"]}
       style={[
         styles.container,
         { backgroundColor: colors.background || COLORS.background },
@@ -804,7 +1093,7 @@ export default function ServiceFormScreen() {
               { color: colors.text || COLORS.textHigh },
             ]}
           >
-            Service Job Form
+            {isEditingRecord ? "Edit Service Record" : "Service Job Form"}
           </Text>
           <Text
             style={[
@@ -812,12 +1101,21 @@ export default function ServiceFormScreen() {
               { color: colors.textMuted || COLORS.textMid },
             ]}
           >
-            Record full service, 0–5 condition scores and photos.
+            {isEditingRecord
+              ? "Update missed details, condition scores, notes and photos."
+              : "Record full service, 0–5 condition scores and photos."}
           </Text>
         </View>
       </View>
 
       <ScrollView contentContainerStyle={styles.scrollContent}>
+        {loadingRecord && (
+          <View style={styles.centerRow}>
+            <ActivityIndicator size="small" color={COLORS.primaryAction} />
+            <Text style={styles.emptyText}>Loading service record…</Text>
+          </View>
+        )}
+
         {/* CONTEXT CARD */}
         <View
           style={[
@@ -940,7 +1238,7 @@ export default function ServiceFormScreen() {
                     { color: colors.textMuted || COLORS.textMid },
                   ]}
                 >
-                  Last service: {selectedVehicle.lastService || "—"}
+                  Last service: {formatDateForDisplay(selectedVehicle.lastService) || "—"}
                 </Text>
               </View>
             </>
@@ -1409,7 +1707,7 @@ export default function ServiceFormScreen() {
                 style={{ marginRight: 6 }}
               />
               <Text style={styles.submitText}>
-                Save service & update vehicle
+                {isEditingRecord ? "Save changes" : "Save service & update vehicle"}
               </Text>
             </>
           )}
@@ -1505,13 +1803,30 @@ function FormField({
   multiline = false,
   keyboardType = "default",
 }) {
+  const { colors } = useTheme();
+
   return (
     <View style={styles.fieldGroup}>
-      <Text style={styles.fieldLabel}>{label}</Text>
+      <Text
+        style={[
+          styles.fieldLabel,
+          { color: colors.textMuted || COLORS.textMid },
+        ]}
+      >
+        {label}
+      </Text>
       <TextInput
-        style={[styles.input, multiline && styles.inputMultiline]}
+        style={[
+          styles.input,
+          {
+            backgroundColor: colors.inputBackground || COLORS.inputBg,
+            borderColor: colors.inputBorder || COLORS.lightGray,
+            color: colors.text || COLORS.textHigh,
+          },
+          multiline && styles.inputMultiline,
+        ]}
         placeholder={placeholder}
-        placeholderTextColor={COLORS.textLow}
+        placeholderTextColor={colors.textMuted || COLORS.textLow}
         value={value}
         onChangeText={onChangeText}
         multiline={multiline}
@@ -1607,6 +1922,7 @@ function ChecklistRow({
   onPressPhoto,
   onRemovePhoto,
 }) {
+  const { colors } = useTheme();
   const disabled = na;
 
   return (
@@ -1634,7 +1950,8 @@ function ChecklistRow({
         <Text
           style={[
             styles.checkLabel,
-            checked && { color: COLORS.textHigh },
+            { color: colors.textMuted || COLORS.textLow },
+            checked && { color: colors.text || COLORS.textHigh },
             disabled && { opacity: 0.5 },
           ]}
         >
@@ -1660,6 +1977,7 @@ function ChecklistRow({
               <Text
                 style={[
                   styles.ratingText,
+                  { color: colors.textMuted || COLORS.textLow },
                   isActive && styles.ratingTextActive,
                 ]}
               >
@@ -1688,9 +2006,16 @@ function ChecklistRow({
 
       {/* Notes for this check */}
       <TextInput
-        style={styles.checkNoteInput}
+        style={[
+          styles.checkNoteInput,
+          {
+            backgroundColor: colors.inputBackground || COLORS.inputBg,
+            borderColor: colors.inputBorder || COLORS.lightGray,
+            color: colors.text || COLORS.textHigh,
+          },
+        ]}
         placeholder="Notes for this check…"
-        placeholderTextColor={COLORS.textLow}
+        placeholderTextColor={colors.textMuted || COLORS.textLow}
         value={note}
         onChangeText={onChangeNote}
         multiline
@@ -1751,12 +2076,13 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     padding: 16,
+    paddingTop: 8,
   },
   infoCard: {
     backgroundColor: COLORS.card,
     borderRadius: 10,
     padding: 14,
-    marginBottom: 18,
+    marginBottom: 12,
     borderLeftWidth: 4,
     borderLeftColor: COLORS.primaryAction,
     borderWidth: 1,
@@ -1773,7 +2099,7 @@ const styles = StyleSheet.create({
     color: COLORS.textMid,
   },
   sectionHeaderRow: {
-    marginTop: 8,
+    marginTop: 4,
     marginBottom: 6,
     flexDirection: "row",
     justifyContent: "space-between",
@@ -1792,7 +2118,7 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.card,
     borderRadius: 10,
     padding: 12,
-    marginBottom: 14,
+    marginBottom: 10,
     borderWidth: 1,
     borderColor: COLORS.border,
   },

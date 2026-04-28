@@ -4,13 +4,13 @@ import { useRouter } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
 // Firebase
@@ -29,7 +29,7 @@ const COLORS = {
   textMid: "#E0E0E0",
   textLow: "#888888",
   primaryAction: "#2176FF",
-  recceAction: "#FF3B30",
+  recceAction: "#ED1C25",
   inputBg: "#2a2a2a",
   lightGray: "#4a4a4a",
 };
@@ -118,9 +118,15 @@ export default function ServiceScreen() {
 
   const processed = useMemo(() => {
     return vehicles.map((v) => {
-      const motStatus = classifyStatus(v.nextMotDate || v.motDueDate);
+      const motStatus = classifyStatus(
+        v.nextMOT ||
+          v.nextMot ||
+          v.nextMotDate ||
+          v.motDueDate ||
+          v.motExpiryDate
+      );
       const serviceStatus = classifyStatus(
-        v.nextServiceDate || v.serviceDueDate
+        v.nextService || v.nextServiceDate || v.serviceDueDate || v.nextSvc
       );
       const defects = Array.isArray(v.defects) ? v.defects : [];
       const hasDefects = defects.length > 0;
@@ -182,6 +188,7 @@ export default function ServiceScreen() {
 
   return (
     <SafeAreaView
+      edges={["left", "right"]}
       style={[
         styles.container,
         { backgroundColor: colors.background || COLORS.background },
@@ -260,7 +267,7 @@ export default function ServiceScreen() {
                 {
                   color:
                     overdueCount > 0
-                      ? colors.danger || "#FF3B30"
+                      ? colors.danger || "#ED1C25"
                       : colors.textMuted || COLORS.textMid,
                 },
               ]}
@@ -286,7 +293,7 @@ export default function ServiceScreen() {
                 {
                   color:
                     defectCount > 0
-                      ? colors.danger || "#FF3B30"
+                      ? colors.danger || "#ED1C25"
                       : colors.textMuted || COLORS.textMid,
                 },
               ]}
@@ -378,7 +385,7 @@ export default function ServiceScreen() {
 
               const borderAccent =
                 worstCode === "overdue"
-                  ? "#FF3B30"
+                  ? "#ED1C25"
                   : worstCode === "due-soon"
                   ? "#FF9500"
                   : colors.border || COLORS.border;
@@ -394,7 +401,7 @@ export default function ServiceScreen() {
                     },
                   ]}
                   activeOpacity={0.85}
-                  onPress={() => router.push(`/vehicles/${v.id}`)} // adjust if your detail route differs
+                  onPress={() => router.push(`/service/vehicles/${v.id}`)}
                 >
                   {/* Top row */}
                   <View style={styles.vehicleHeaderRow}>
@@ -489,7 +496,7 @@ function StatusPill({ label, status }) {
 
   if (code === "overdue") {
     bg = "rgba(255,59,48,0.22)";
-    fg = "#FF3B30";
+    fg = "#ED1C25";
   } else if (code === "due-soon") {
     bg = "rgba(255,149,0,0.22)";
     fg = "#FF9500";
@@ -544,12 +551,13 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     padding: 16,
+    paddingTop: 8,
   },
   infoCard: {
     backgroundColor: COLORS.card,
-    padding: 15,
+    padding: 12,
     borderRadius: 10,
-    marginBottom: 20,
+    marginBottom: 12,
     borderLeftWidth: 4,
     borderLeftColor: COLORS.primaryAction,
   },
@@ -586,7 +594,8 @@ const styles = StyleSheet.create({
   sectionDivider: {
     flexDirection: "row",
     alignItems: "center",
-    marginVertical: 15,
+    marginTop: 12,
+    marginBottom: 8,
   },
   sectionTitle: {
     color: COLORS.textHigh,
@@ -597,7 +606,7 @@ const styles = StyleSheet.create({
   emptyState: {
     alignItems: "center",
     justifyContent: "center",
-    marginTop: 40,
+    marginTop: 12,
     paddingHorizontal: 24,
   },
   emptyTitle: {
@@ -612,7 +621,7 @@ const styles = StyleSheet.create({
   },
   vehicleCard: {
     backgroundColor: COLORS.card,
-    padding: 15,
+    padding: 12,
     borderRadius: 10,
     marginBottom: 14,
     borderLeftWidth: 4,

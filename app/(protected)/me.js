@@ -4,32 +4,40 @@ import { collection, getDocs, query, where } from "firebase/firestore";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
-  Dimensions,
-  Image,
   RefreshControl,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
-// ✅ notification inbox helpers
 import { getInbox } from "../../lib/notificationInbox";
+import { createDashboardCardStyles } from "../../lib/design/dashboard";
+import { designTokens as t } from "../../lib/design/tokens";
 
 // 🔑 Provider + Firebase
 import { auth, db } from "../../firebaseConfig";
 import { useAuth } from "../providers/AuthProvider";
 import { useTheme } from "../providers/ThemeProvider";
 
-const buttonSpacing = 12;
+function withAlpha(hex, alpha) {
+  const safeAlpha = Math.max(0, Math.min(1, Number(alpha) || 0));
+  const raw = String(hex || "").replace("#", "");
+  if (!/^[0-9a-fA-F]{6}$/.test(raw)) return `rgba(255,255,255,${safeAlpha})`;
+  const r = parseInt(raw.slice(0, 2), 16);
+  const g = parseInt(raw.slice(2, 4), 16);
+  const b = parseInt(raw.slice(4, 6), 16);
+  return `rgba(${r},${g},${b},${safeAlpha})`;
+}
 
 export default function MePage() {
   const router = useRouter();
   const { user, employee, isAuthed, loading } = useAuth();
   const { colors } = useTheme();
+  const dashboardCards = useMemo(() => createDashboardCardStyles(colors), [colors]);
 
   const [refreshing, setRefreshing] = useState(false);
   const [busy, setBusy] = useState(true);
@@ -52,9 +60,6 @@ export default function MePage() {
 
   // latest manager query on a timesheet
   const [latestTimesheetQuery, setLatestTimesheetQuery] = useState(null);
-
-  // notifications badge
-  const [notifUnread, setNotifUnread] = useState(0);
 
   // ✅ Bank holidays (UK Gov JSON) for current year
   const currentYear = new Date().getFullYear();
@@ -128,28 +133,13 @@ export default function MePage() {
       }
     : { name: "Unknown User", email: "No email", userCode: "N/A" };
 
-  const userInitials = (account.name || "U")
-    .split(" ")
-    .map((n) => n[0])
-    .join("")
-    .toUpperCase()
-    .slice(0, 2);
-
-  const timeOfDay = (() => {
-    const h = new Date().getHours();
-    if (h < 12) return "Good morning";
-    if (h < 18) return "Good afternoon";
-    return "Good evening";
-  })();
-
   // load unread notifications count from inbox (AsyncStorage)
   const loadNotifBadge = useCallback(async () => {
     try {
       const list = await getInbox();
-      const unread = Array.isArray(list) ? list.filter((n) => !n.read).length : 0;
-      setNotifUnread(unread);
+      void list;
     } catch {
-      setNotifUnread(0);
+      return;
     }
   }, []);
 
@@ -357,6 +347,7 @@ export default function MePage() {
   }, [
     employee?.userCode,
     employee?.name,
+    employee?.displayName,
     employee?.email,
     user?.email,
     currentYear,
@@ -374,311 +365,332 @@ export default function MePage() {
     setRefreshing(false);
   }, [loadPersonal, loadNotifBadge]);
 
-  const tiles = useMemo(
-    () => [
-      { label: "My Schedule", icon: "calendar", onPress: () => router.push("/screens/schedule") },
-      { label: "Contacts", icon: "users", onPress: () => router.push("/contacts") },
-      { label: "Profile", icon: "user", onPress: () => router.push("/edit-profile") },
-    ],
-    [router]
-  );
-
   if (loading || !isAuthed) return null;
 
   const queryCard = latestTimesheetQuery;
   const queryWeekLabel = queryCard?.weekStart ? formatWeekLabel(queryCard.weekStart) : null;
   const queryFieldLabel = fieldLabel(queryCard?.field);
   const queryDay = queryCard?.day;
-
+  const profileTone = "#64748B";
+  const timesheetTone = "#CA8A04";
+  const holidayTone = "#16A34A";
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
       <View style={{ flex: 1 }}>
         <ScrollView
           contentContainerStyle={styles.scrollContent}
           refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              tintColor={colors.accent}
+            />
           }
         >
-          {/* Header */}
-          <View style={styles.headerRow}>
-            <Image
-              source={require("../../assets/images/bickers-action-logo.png")}
-              style={styles.logo}
-              resizeMode="contain"
-            />
-
-            <View style={styles.headerRight}>
-              {/* Notifications bell w/ badge */}
-              <TouchableOpacity
-                style={[
-                  styles.notifBtn,
-                  { backgroundColor: colors.surfaceAlt, borderColor: colors.border },
-                ]}
-                activeOpacity={0.85}
-                onPress={() => router.push("/(protected)/notifications")}
-              >
-                <Icon name="bell" size={18} color={colors.text} />
-                {notifUnread > 0 && (
-                  <View style={[styles.badge, { backgroundColor: colors.accent }]}>
-                    <Text style={styles.badgeText}>
-                      {notifUnread > 99 ? "99+" : String(notifUnread)}
-                    </Text>
-                  </View>
-                )}
-              </TouchableOpacity>
-
-              {/* Profile */}
-              <TouchableOpacity
-                style={[
-                  styles.userIcon,
-                  { backgroundColor: colors.surfaceAlt, borderColor: colors.border },
-                ]}
-                onPress={() => router.push("/edit-profile")}
-              >
-                <Text style={[styles.userInitials, { color: colors.text }]}>{userInitials}</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          {/* Greeting card */}
+          {/* My Profile */}
           <View
             style={[
-              styles.greetingCard,
-              { backgroundColor: colors.surface, borderColor: colors.border },
+              styles.sectionCard,
+              dashboardCards.sectionCard,
             ]}
           >
-            <View style={{ flex: 1 }}>
-              <Text style={[styles.greeting, { color: colors.textMuted }]}>{timeOfDay},</Text>
-              <Text style={[styles.greetingName, { color: colors.text }]}>{account.name}</Text>
-              <Text style={[styles.todayText, { color: colors.textMuted }]}>
-                {new Date().toLocaleDateString("en-GB", {
-                  weekday: "long",
-                  day: "2-digit",
-                  month: "short",
-                  year: "numeric",
-                })}
+            <View style={styles.sectionHeader}>
+              <Text style={[styles.profileTitle, { color: colors.text }]}>My Profile</Text>
+              <View style={styles.profileActionRow}>
+                <TouchableOpacity
+                  style={[
+                    styles.sectionCountPill,
+                    {
+                      backgroundColor: withAlpha(profileTone, 0.13),
+                      borderColor: withAlpha(profileTone, 0.4),
+                    },
+                  ]}
+                  activeOpacity={0.85}
+                  onPress={() => router.push("/settings")}
+                >
+                  <Icon name="settings" size={13} color={profileTone} />
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[
+                    styles.sectionCountPill,
+                    {
+                      backgroundColor: withAlpha(profileTone, 0.13),
+                      borderColor: withAlpha(profileTone, 0.4),
+                    },
+                  ]}
+                  activeOpacity={0.85}
+                  onPress={() => router.push("/edit-profile")}
+                >
+                  <Icon name="user" size={13} color={profileTone} />
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            <View
+              style={[
+                styles.infoRow,
+                dashboardCards.nestedCard,
+              ]}
+            >
+              <View
+                style={[
+                  styles.infoIconWrap,
+                  {
+                    backgroundColor: withAlpha(colors.surfaceAlt, 0.9),
+                    borderColor: withAlpha(colors.border, 0.82),
+                  },
+                ]}
+              >
+                <Icon name="mail" size={14} color={colors.textMuted} />
+              </View>
+              <Text style={[styles.cardRowText, { color: colors.text }]} numberOfLines={1}>
+                {account.email}
               </Text>
             </View>
 
-            <View style={styles.chipsCol}>
-              <TouchableOpacity
+            <View
+              style={[
+                styles.infoRow,
+                dashboardCards.nestedCard,
+              ]}
+            >
+              <View
                 style={[
-                  styles.chip,
-                  styles.chipPrimary,
-                  { backgroundColor: colors.accent, borderColor: colors.accent },
+                  styles.infoIconWrap,
+                  {
+                    backgroundColor: withAlpha(colors.surfaceAlt, 0.9),
+                    borderColor: withAlpha(colors.border, 0.82),
+                  },
                 ]}
-                onPress={() => router.push("/edit-profile")}
               >
-                <Icon name="user" size={14} color="#fff" />
-                <Text style={[styles.chipText, { color: "#fff" }]}>View Profile</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[
-                  styles.chip,
-                  styles.chipGhost,
-                  { backgroundColor: colors.surfaceAlt, borderColor: colors.border },
-                ]}
-                onPress={() => router.push("/settings")}
-              >
-                <Icon name="settings" size={14} color={colors.text} />
-                <Text style={[styles.chipText, { color: colors.text }]}>Settings</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          {/* My Profile */}
-          <View style={[styles.block, { backgroundColor: colors.surfaceAlt, borderColor: colors.border }]}>
-            <Text style={[styles.blockTitle, { color: colors.text }]}>My Profile</Text>
-
-            <View style={styles.cardRow}>
-              <Icon name="mail" size={16} color={colors.textMuted} />
-              <Text style={[styles.cardRowText, { color: colors.text }]}>{account.email}</Text>
-            </View>
-
-            <View style={styles.cardRow}>
-              <Icon name="hash" size={16} color={colors.textMuted} />
-              <Text style={[styles.cardRowText, { color: colors.text }]}>
-                Code: {account.userCode}
-              </Text>
+                <Icon name="hash" size={14} color={colors.textMuted} />
+              </View>
+              <Text style={[styles.cardRowText, { color: colors.text }]}>Code: {account.userCode}</Text>
             </View>
           </View>
 
           {/* Timesheet Snapshot */}
-          <View style={[styles.block, { backgroundColor: colors.surfaceAlt, borderColor: colors.border }]}>
-            <Text style={[styles.blockTitle, { color: colors.text }]}>Timesheet</Text>
+          <View
+            style={[
+              styles.sectionCard,
+              dashboardCards.sectionCard,
+              styles.flatSectionCard,
+            ]}
+          >
+            <View style={styles.sectionHeader}>
+              <View style={styles.sectionTitleWrap}>
+                <Text style={[styles.sectionTitle, { color: colors.text }]}>Timesheet</Text>
+                <Text style={[styles.sectionSubTitle, { color: colors.textMuted }]}>
+                  Weekly hours and approvals
+                </Text>
+              </View>
+              <View
+                style={[
+                  styles.sectionCountPill,
+                  {
+                    backgroundColor: withAlpha(timesheetTone, 0.13),
+                    borderColor: withAlpha(timesheetTone, 0.4),
+                  },
+                ]}
+              >
+                <Text style={[styles.sectionCountText, { color: timesheetTone }]}>
+                  Pending: {timesheetStats.pending}
+                </Text>
+              </View>
+            </View>
 
-            {busy ? (
-              <ActivityIndicator size="small" color={colors.accent} />
-            ) : (
-              <>
-                <View style={styles.statRow}>
-                  <View style={[styles.statCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-                    <Text style={[styles.statLabel, { color: colors.textMuted }]}>This Week</Text>
-                    <Text style={[styles.statValue, { color: colors.text }]}>{timesheetStats.weekHours}h</Text>
-                  </View>
-
-                  <View style={[styles.statCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-                    <Text style={[styles.statLabel, { color: colors.textMuted }]}>Pending</Text>
-                    <Text style={[styles.statValue, { color: colors.text }]}>{timesheetStats.pending}</Text>
-                  </View>
-
-                  <View style={[styles.statCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-                    <Text style={[styles.statLabel, { color: colors.textMuted }]}>Last Submitted</Text>
-                    <Text style={[styles.statValue, { color: colors.text }]}>
-                      {formatDateShort(timesheetStats.lastSubmitted) || "—"}
-                    </Text>
-                  </View>
+            <View
+              style={[
+                styles.sectionPanel,
+                {
+                  backgroundColor: colors.surface,
+                  borderColor: colors.border,
+                },
+              ]}
+            >
+              {busy ? (
+                <View style={styles.loadingWrap}>
+                  <ActivityIndicator size="small" color={colors.textMuted} />
                 </View>
+              ) : (
+                <>
+                  <View style={styles.statRow}>
+                    <View style={[styles.statCard, styles.flatStatCard]}>
+                      <Text style={[styles.statLabel, { color: colors.textMuted }]}>This Week</Text>
+                      <Text style={[styles.statValue, { color: colors.text }]}>{timesheetStats.weekHours}h</Text>
+                    </View>
 
-                {queryCard && (
+                    <View style={[styles.statCard, styles.flatStatCard]}>
+                      <Text style={[styles.statLabel, { color: colors.textMuted }]}>Pending</Text>
+                      <Text style={[styles.statValue, { color: colors.text }]}>{timesheetStats.pending}</Text>
+                    </View>
+
+                    <View style={[styles.statCard, styles.flatStatCard]}>
+                      <Text style={[styles.statLabel, { color: colors.textMuted }]}>Last Submitted</Text>
+                      <Text style={[styles.statValue, { color: colors.text }]}>
+                        {formatDateShort(timesheetStats.lastSubmitted) || "—"}
+                      </Text>
+                    </View>
+                  </View>
+
+                  {queryCard && (
+                    <TouchableOpacity
+                      style={[
+                        styles.queryCard,
+                        { borderColor: "#f97316", backgroundColor: colors.surface },
+                      ]}
+                      activeOpacity={0.9}
+                      onPress={() => router.push(`/(protected)/query/${queryCard.id}`)}
+                    >
+                      <View style={styles.queryIcon}>
+                        <Icon name="alert-circle" size={16} color="#f97316" />
+                      </View>
+
+                      <View style={{ flex: 1 }}>
+                        <Text style={[styles.queryTitle, { color: colors.text }]}>
+                          Manager queried your timesheet
+                        </Text>
+
+                        <Text style={[styles.querySubtitle, { color: colors.textMuted }]}>
+                          {queryWeekLabel
+                            ? `Week of ${queryWeekLabel}${queryDay ? ` – ${queryDay}` : ""}`
+                            : "Recent submission"}
+                        </Text>
+
+                        <Text style={[styles.queryBody, { color: colors.text }]} numberOfLines={2}>
+                          “{queryCard.note || "Please review this week’s times."}”
+                          {queryFieldLabel ? ` (about ${queryFieldLabel})` : ""}
+                        </Text>
+
+                        <View style={styles.queryFooterRow}>
+                          <Text style={[styles.queryFooterText, { color: colors.textMuted }]}>
+                            Tap to view preview & respond
+                          </Text>
+                          <Icon name="chevron-right" size={14} color={colors.textMuted} />
+                        </View>
+                      </View>
+                    </TouchableOpacity>
+                  )}
+
                   <TouchableOpacity
                     style={[
-                      styles.queryCard,
-                      { borderColor: "#f97316", backgroundColor: colors.surface },
+                      styles.sectionAction,
+                      styles.sectionActionPrimary,
+                      {
+                        backgroundColor: withAlpha(timesheetTone, 0.13),
+                        borderColor: withAlpha(timesheetTone, 0.4),
+                      },
                     ]}
-                    activeOpacity={0.9}
-                    onPress={() => router.push(`/(protected)/query/${queryCard.id}`)}
+                    onPress={() => router.push("/timesheet")}
                   >
-                    <View style={styles.queryIcon}>
-                      <Icon name="alert-circle" size={16} color="#f97316" />
-                    </View>
-
-                    <View style={{ flex: 1 }}>
-                      <Text style={[styles.queryTitle, { color: colors.text }]}>
-                        Manager queried your timesheet
-                      </Text>
-
-                      <Text style={[styles.querySubtitle, { color: colors.textMuted }]}>
-                        {queryWeekLabel
-                          ? `Week of ${queryWeekLabel}${queryDay ? ` – ${queryDay}` : ""}`
-                          : "Recent submission"}
-                      </Text>
-
-                      <Text style={[styles.queryBody, { color: colors.text }]} numberOfLines={2}>
-                        “{queryCard.note || "Please review this week’s times."}”
-                        {queryFieldLabel ? ` (about ${queryFieldLabel})` : ""}
-                      </Text>
-
-                      <View style={styles.queryFooterRow}>
-                        <Text style={[styles.queryFooterText, { color: colors.textMuted }]}>
-                          Tap to view preview & respond
-                        </Text>
-                        <Icon name="chevron-right" size={14} color={colors.textMuted} />
-                      </View>
-                    </View>
+                    <Icon name="clock" size={14} color={timesheetTone} />
+                    <Text style={[styles.sectionActionText, { color: timesheetTone }]}>
+                      Open Timesheet
+                    </Text>
                   </TouchableOpacity>
-                )}
-
-                <TouchableOpacity
-                  style={[
-                    styles.chip,
-                    styles.chipPrimary,
-                    {
-                      alignSelf: "center",
-                      marginTop: 10,
-                      backgroundColor: colors.accent,
-                      borderColor: colors.accent,
-                    },
-                  ]}
-                  onPress={() => router.push("/timesheet")}
-                >
-                  <Icon name="clock" size={14} color="#fff" />
-                  <Text style={[styles.chipText, { color: "#fff" }]}>Open Timesheet</Text>
-                </TouchableOpacity>
-              </>
-            )}
+                </>
+              )}
+            </View>
           </View>
 
           {/* Holidays Snapshot (CURRENT YEAR, allowance includes carryover) */}
-          <View style={[styles.block, { backgroundColor: colors.surfaceAlt, borderColor: colors.border }]}>
-            <Text style={[styles.blockTitle, { color: colors.text }]}>Holidays</Text>
-
-            {busy ? (
-              <ActivityIndicator size="small" color={colors.accent} />
-            ) : myHolidays.length === 0 ? (
-              <Text style={[styles.statusText, { color: colors.textMuted }]}>No holiday records</Text>
-            ) : (
-              <>
-                <View style={styles.statRow}>
-                  <View style={[styles.statCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-                    <Text style={[styles.statLabel, { color: colors.textMuted }]}>
-                      Allowance ({currentYear})
-                    </Text>
-                    <Text style={[styles.statValue, { color: colors.text }]}>{fmtHalf(holidayAllowance)}</Text>
-                  </View>
-
-                  <View style={[styles.statCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-                    <Text style={[styles.statLabel, { color: colors.textMuted }]}>Used</Text>
-                    <Text style={[styles.statValue, { color: colors.text }]}>{fmtHalf(holidayUsedDays)}</Text>
-                  </View>
-
-                  <View style={[styles.statCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-                    <Text style={[styles.statLabel, { color: colors.textMuted }]}>Remaining</Text>
-                    <Text style={[styles.statValue, { color: colors.text }]}>{fmtHalf(holidayRemaining)}</Text>
-                  </View>
-                </View>
-
-                <View style={styles.cardRow}>
-                  <Icon name="calendar" size={16} color={colors.textMuted} />
-                  <Text style={[styles.cardRowText, { color: colors.text }]}>
-                    Next: {formatHoliday(nextHoliday) || "—"}
-                  </Text>
-                </View>
-
-                <View style={styles.cardRow}>
-                  <Icon name="alert-circle" size={16} color={colors.textMuted} />
-                  <Text style={[styles.cardRowText, { color: colors.text }]}>
-                    Pending requests: {pendingHolidayCount}
-                  </Text>
-                </View>
-
-                <TouchableOpacity
-                  style={[
-                    styles.chip,
-                    styles.chipGhost,
-                    {
-                      alignSelf: "center",
-                      marginTop: 10,
-                      backgroundColor: colors.surfaceAlt,
-                      borderColor: colors.border,
-                    },
-                  ]}
-                  onPress={() => router.push("/holidaypage")}
-                >
-                  <Icon name="briefcase" size={14} color={colors.text} />
-                  <Text style={[styles.chipText, { color: colors.text }]}>Manage Holidays</Text>
-                </TouchableOpacity>
-              </>
-            )}
-          </View>
-
-          {/* Personal Shortcuts */}
-          <View style={{ marginBottom: 18 }}>
-            <View style={styles.groupHeader}>
-              <Text style={[styles.groupTitle, { color: colors.text }]}>My Tools</Text>
-              <View style={[styles.groupDividerLine, { backgroundColor: colors.border, opacity: 0.7 }]} />
+          <View
+            style={[
+              styles.sectionCard,
+              dashboardCards.sectionCard,
+              styles.flatSectionCard,
+            ]}
+          >
+            <View style={styles.sectionHeader}>
+              <View style={styles.sectionTitleWrap}>
+                <Text style={[styles.sectionTitle, { color: colors.text }]}>Holidays</Text>
+                <Text style={[styles.sectionSubTitle, { color: colors.textMuted }]}>
+                  Allowance, usage and requests
+                </Text>
+              </View>
+              <View
+                style={[
+                  styles.sectionCountPill,
+                  {
+                    backgroundColor: withAlpha(holidayTone, 0.13),
+                    borderColor: withAlpha(holidayTone, 0.4),
+                  },
+                ]}
+              >
+                <Text style={[styles.sectionCountText, { color: holidayTone }]}>
+                  {currentYear}
+                </Text>
+              </View>
             </View>
 
-            <View style={[styles.grid, { justifyContent: "space-between" }]}>
-              {tiles.map((t) => (
-                <TouchableOpacity
-                  key={t.label}
-                  style={[
-                    styles.button,
-                    {
-                      width: buttonWidth(3),
-                      height: buttonWidth(3),
-                      backgroundColor: colors.surfaceAlt,
-                    },
-                  ]}
-                  activeOpacity={0.85}
-                  onPress={t.onPress}
-                >
-                  <Icon name={t.icon} size={24} color={colors.text} style={{ marginBottom: 6 }} />
-                  <Text style={[styles.buttonText, { color: colors.text }]}>{t.label}</Text>
-                </TouchableOpacity>
-              ))}
+            <View
+              style={[
+                styles.sectionPanel,
+                {
+                  backgroundColor: colors.surface,
+                  borderColor: colors.border,
+                },
+              ]}
+            >
+              {busy ? (
+                <View style={styles.loadingWrap}>
+                  <ActivityIndicator size="small" color={colors.textMuted} />
+                </View>
+              ) : myHolidays.length === 0 ? (
+                <Text style={[styles.statusText, { color: colors.textMuted }]}>No holiday records</Text>
+              ) : (
+                <>
+                  <View style={styles.statRow}>
+                    <View style={[styles.statCard, styles.flatStatCard]}>
+                      <Text style={[styles.statLabel, { color: colors.textMuted }]}>
+                        Allowance ({currentYear})
+                      </Text>
+                      <Text style={[styles.statValue, { color: colors.text }]}>{fmtHalf(holidayAllowance)}</Text>
+                    </View>
+
+                    <View style={[styles.statCard, styles.flatStatCard]}>
+                      <Text style={[styles.statLabel, { color: colors.textMuted }]}>Used</Text>
+                      <Text style={[styles.statValue, { color: colors.text }]}>{fmtHalf(holidayUsedDays)}</Text>
+                    </View>
+
+                    <View style={[styles.statCard, styles.flatStatCard]}>
+                      <Text style={[styles.statLabel, { color: colors.textMuted }]}>Remaining</Text>
+                      <Text style={[styles.statValue, { color: colors.text }]}>{fmtHalf(holidayRemaining)}</Text>
+                    </View>
+                  </View>
+
+                  <View style={styles.cardRow}>
+                    <Icon name="calendar" size={16} color={colors.textMuted} />
+                    <Text style={[styles.cardRowText, { color: colors.text }]}>
+                      Next: {formatHoliday(nextHoliday) || "—"}
+                    </Text>
+                  </View>
+
+                  <View style={styles.cardRow}>
+                    <Icon name="alert-circle" size={16} color={colors.textMuted} />
+                    <Text style={[styles.cardRowText, { color: colors.text }]}>
+                      Pending requests: {pendingHolidayCount}
+                    </Text>
+                  </View>
+
+                  <TouchableOpacity
+                    style={[
+                      styles.sectionAction,
+                      {
+                        backgroundColor: withAlpha(holidayTone, 0.13),
+                        borderColor: withAlpha(holidayTone, 0.4),
+                      },
+                    ]}
+                    onPress={() => router.push("/holidaypage")}
+                  >
+                    <Icon name="briefcase" size={14} color={holidayTone} />
+                    <Text style={[styles.sectionActionText, { color: holidayTone }]}>
+                      Manage Holidays
+                    </Text>
+                  </TouchableOpacity>
+                </>
+              )}
             </View>
           </View>
 
@@ -963,40 +975,39 @@ function fieldLabel(field) {
   return "this day";
 }
 
-function buttonWidth(cols) {
-  const w = Dimensions.get("window").width;
-  return (w - buttonSpacing * (cols + 1)) / cols;
-}
-
 /* ---------- styles ---------- */
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#000000" },
+  container: { flex: 1, backgroundColor: "#0b0b0b" },
   scrollContent: {
-    paddingHorizontal: buttonSpacing,
-    paddingTop: 16,
-    paddingBottom: 90,
+    paddingHorizontal: 14,
+    paddingTop: t.spacing.md,
+    paddingBottom: t.spacing.lg,
   },
 
-  headerRow: {
+  heroCard: {
+    position: "relative",
+    borderRadius: t.radius.xl,
+    marginBottom: t.spacing.lg,
+    overflow: "hidden",
+  },
+  heroTopRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 14,
-    paddingHorizontal: 4,
+    paddingHorizontal: t.spacing.sm,
+    paddingTop: t.spacing.md,
   },
   headerRight: {
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
   },
-
   notifBtn: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
+    width: t.controls.iconButton,
+    height: t.controls.iconButton,
+    borderRadius: t.controls.iconButton / 2,
     justifyContent: "center",
     alignItems: "center",
-    borderWidth: 1,
   },
   badge: {
     position: "absolute",
@@ -1009,92 +1020,199 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 2,
-    borderColor: "#000",
   },
   badgeText: {
     color: "#0b0b0b",
     fontSize: 10,
     fontWeight: "900",
   },
-
-  logo: { width: 150, height: 50 },
-
   userIcon: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
+    width: t.controls.iconButton,
+    height: t.controls.iconButton,
+    borderRadius: t.controls.iconButton / 2,
     justifyContent: "center",
     alignItems: "center",
-    borderWidth: 1,
   },
-  userInitials: { fontSize: 16, fontWeight: "bold" },
+  userInitials: { fontSize: 15, fontWeight: "900", letterSpacing: 0.4 },
 
-  greetingCard: {
+  heroContent: {
+    paddingHorizontal: t.spacing.sm,
+    paddingBottom: t.spacing.sm,
+    paddingTop: t.spacing.sm,
+  },
+  heroEyebrow: {
+    ...t.typography.label,
+    letterSpacing: 0.6,
+  },
+  heroTitle: {
+    marginTop: 3,
+    fontSize: 25,
+    fontWeight: "900",
+    letterSpacing: 0.2,
+  },
+  heroSubTitle: {
+    marginTop: 3,
+    fontSize: 13,
+    fontWeight: "600",
+    lineHeight: 18,
+  },
+  heroMetaRow: {
+    marginTop: 12,
     flexDirection: "row",
-    gap: 12,
-    padding: 14,
-    borderRadius: 12,
-    borderWidth: 1,
-    marginBottom: 14,
+    gap: 8,
+    flexWrap: "wrap",
   },
-  greeting: { fontSize: 13, marginBottom: 2 },
-  greetingName: { fontSize: 18, fontWeight: "800" },
-  todayText: { fontSize: 12, marginTop: 2 },
-
-  chipsCol: { justifyContent: "center", alignItems: "flex-end", gap: 8 },
-  chip: {
+  heroMetaAction: {
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
-    paddingVertical: 6,
-    paddingHorizontal: 10,
+    minHeight: t.controls.chipMinHeight,
     borderRadius: 999,
-    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
   },
-  chipPrimary: { backgroundColor: "#C8102E", borderColor: "#C8102E" },
-  chipGhost: { backgroundColor: "#141414", borderColor: "#232323" },
-  chipText: { color: "#fff", fontWeight: "700", fontSize: 12 },
-
-  block: {
-    padding: 14,
-    borderRadius: 10,
-    marginBottom: 16,
-    borderWidth: 1,
-  },
-  blockTitle: {
-    fontSize: 16,
+  heroMetaActionPrimary: {},
+  heroMetaActionText: {
+    fontSize: 11,
     fontWeight: "800",
-    textAlign: "center",
-    marginBottom: 8,
   },
-  statusText: {
-    fontSize: 15,
+  heroMetaChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    minHeight: t.controls.chipMinHeight,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderWidth: 1,
+    maxWidth: "100%",
+  },
+  heroMetaText: {
+    fontSize: 11,
+    fontWeight: "700",
+    flexShrink: 1,
+  },
+
+  sectionCard: {
+    marginBottom: 16,
+    borderRadius: 16,
+    paddingHorizontal: 0,
+    paddingTop: 0,
+    paddingBottom: 0,
+  },
+  flatSectionCard: {
+    borderWidth: 0,
+    backgroundColor: "transparent",
+  },
+  panelSectionCard: {
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 14,
+  },
+  sectionTitleWrap: {
+    flex: 1,
+    paddingRight: 12,
+  },
+  sectionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+    marginBottom: 10,
+  },
+  sectionTitle: {
+    fontSize: 17,
+    fontWeight: "900",
+    letterSpacing: 0.2,
+  },
+  profileTitle: {
+    ...t.typography.pageTitle,
+    marginTop: 3,
+    letterSpacing: 0.2,
+  },
+  sectionSubTitle: {
+    marginTop: 2,
+    fontSize: 12,
     fontWeight: "600",
-    textAlign: "center",
-    marginTop: 8,
+  },
+  sectionCountPill: {
+    minHeight: 30,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 12,
+    borderWidth: 1,
+  },
+  sectionPanel: {
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 14,
+  },
+  sectionCountText: {
+    fontSize: 11,
+    fontWeight: "900",
   },
 
-  cardRow: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 6 },
-  cardRowText: { fontSize: 14 },
+  infoRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    borderRadius: 14,
+    minHeight: t.controls.buttonHeight,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginTop: 10,
+  },
+  infoIconWrap: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  profileActionRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  cardRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginTop: 14,
+    paddingHorizontal: 4,
+  },
+  cardRowText: { fontSize: 14, fontWeight: "600", flexShrink: 1 },
+  loadingWrap: {
+    paddingVertical: 16,
+    alignItems: "center",
+    justifyContent: "center",
+  },
 
-  statRow: { flexDirection: "row", gap: 8, marginTop: 6 },
+  statRow: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginTop: 0 },
   statCard: {
     flex: 1,
-    borderWidth: 1,
-    borderRadius: 10,
-    paddingVertical: 10,
+    minWidth: 94,
+    borderRadius: 14,
+    paddingVertical: 8,
+    paddingHorizontal: 4,
     alignItems: "center",
   },
-  statLabel: { fontSize: 12 },
-  statValue: { fontSize: 16, fontWeight: "800", marginTop: 2 },
+  flatStatCard: {
+    backgroundColor: "transparent",
+    borderWidth: 0,
+    paddingHorizontal: 0,
+  },
+  statLabel: { fontSize: 11, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.2 },
+  statValue: { fontSize: 16, fontWeight: "900", marginTop: 3 },
 
   queryCard: {
     flexDirection: "row",
-    padding: 10,
-    borderRadius: 10,
-    borderWidth: 1,
+    padding: t.controls.cardPadding,
+    borderRadius: 14,
     marginTop: 10,
     gap: 8,
+    borderWidth: 1,
   },
   queryIcon: {
     width: 26,
@@ -1105,7 +1223,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     marginTop: 2,
   },
-  queryTitle: { fontSize: 13, fontWeight: "700", marginBottom: 2 },
+  queryTitle: { fontSize: 13, fontWeight: "800", marginBottom: 2 },
   querySubtitle: { fontSize: 12, marginBottom: 2 },
   queryBody: { fontSize: 12, fontStyle: "italic", marginBottom: 4 },
   queryFooterRow: {
@@ -1113,29 +1231,29 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
   },
-  queryFooterText: { fontSize: 11 },
+  queryFooterText: { fontSize: 11, fontWeight: "600" },
 
-  groupHeader: { flexDirection: "row", alignItems: "center", marginBottom: 10 },
-  groupTitle: { fontSize: 18, fontWeight: "800", marginRight: 10 },
-  groupDividerLine: { height: 1, flex: 1, borderRadius: 1 },
-
-  grid: { flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between" },
-  button: {
-    borderRadius: 14,
-    justifyContent: "center",
+  sectionAction: {
+    marginTop: 18,
+    alignSelf: "center",
+    minHeight: t.controls.buttonHeight,
+    flexDirection: "row",
     alignItems: "center",
-    marginBottom: buttonSpacing,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
-    shadowRadius: 4,
-    elevation: 4,
-    padding: 10,
+    gap: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 999,
   },
-  buttonText: {
+  sectionActionPrimary: {},
+  sectionActionText: {
     fontSize: 12,
+    fontWeight: "800",
+  },
+  statusText: {
+    fontSize: 14,
     fontWeight: "700",
     textAlign: "center",
-    paddingHorizontal: 4,
+    marginTop: 8,
   },
+
 });

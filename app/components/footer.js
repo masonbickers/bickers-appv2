@@ -120,7 +120,7 @@ const styles = StyleSheet.create({
     borderTopWidth: StyleSheet.hairlineWidth,
     marginHorizontal: 0,
     borderRadius: 0,
-    paddingVertical: 10,
+    paddingVertical: 7,
     paddingHorizontal: 4,
     ...Platform.select({
       ios: {
@@ -135,6 +135,6 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 4,
+    paddingVertical: 0,
   },
 });

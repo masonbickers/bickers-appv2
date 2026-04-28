@@ -10,7 +10,6 @@ import {
   Alert,
   Image,
   SafeAreaView,
-  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -20,13 +19,28 @@ import {
 import Icon from "react-native-vector-icons/Feather";
 
 import { auth, db, storage } from "../../firebaseConfig";
-import { useAuth } from "../providers/AuthProvider"; // ✅ use shared auth context
-import { useTheme } from "../providers/ThemeProvider"; // ✅ theme
+import { useAuth } from "../providers/AuthProvider";
+import { useTheme } from "../providers/ThemeProvider";
+
+function withAlpha(hex, alpha) {
+  const safeAlpha = Math.max(0, Math.min(1, Number(alpha) || 0));
+  const raw = String(hex || "").replace("#", "");
+
+  if (!/^[0-9a-fA-F]{6}$/.test(raw)) {
+    return `rgba(255,255,255,${safeAlpha})`;
+  }
+
+  const r = parseInt(raw.slice(0, 2), 16);
+  const g = parseInt(raw.slice(2, 4), 16);
+  const b = parseInt(raw.slice(4, 6), 16);
+
+  return `rgba(${r},${g},${b},${safeAlpha})`;
+}
 
 export default function ProfilePage() {
   const router = useRouter();
-  const { user, employee, loading: authLoading, reloadSession } = useAuth(); // ✅ now includes reloadSession
-  const { colors, colorScheme } = useTheme(); // ✅ theme values
+  const { user, employee, loading: authLoading, reloadSession } = useAuth();
+  const { colors } = useTheme();
 
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -39,11 +53,9 @@ export default function ProfilePage() {
   const [saving, setSaving] = useState(false);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
 
-  // Resolve employee doc ID in a way that tolerates both shapes
   const employeeDocId = employee?.employeeId || employee?.id || null;
 
   useEffect(() => {
-    // Wait for auth to settle before loading
     if (!authLoading) {
       loadProfile();
     }
@@ -65,22 +77,19 @@ export default function ProfilePage() {
 
         if (snap.exists()) {
           const data = snap.data();
+
           setName(data.name || employee?.displayName || "");
           setPhone(data.phone || "");
           setUserCode(data.userCode || employee?.userCode || "");
           setRole(data.role || employee?.role || "");
           setEmail(user?.email ?? data.email ?? employee?.email ?? "");
-          setAvatarUrl(
-            data.avatarUrl || data.photoURL || user?.photoURL || ""
-          );
+          setAvatarUrl(data.avatarUrl || data.photoURL || user?.photoURL || "");
         } else if (user) {
-          // Employee record missing but Firebase user exists
           setName(user.displayName || employee?.displayName || "");
           setEmail(user.email || employee?.email || "");
           setAvatarUrl(user.photoURL || "");
         }
       } else if (user) {
-        // No employee session, fall back to raw Firebase user
         setName(user.displayName || employee?.displayName || "");
         setEmail(user.email || employee?.email || "");
         setAvatarUrl(user.photoURL || "");
@@ -101,6 +110,7 @@ export default function ProfilePage() {
 
     try {
       setSaving(true);
+
       const docRef = doc(db, "employees", employeeDocId);
 
       await updateDoc(docRef, {
@@ -123,6 +133,7 @@ export default function ProfilePage() {
     }
 
     const uid = user?.uid;
+
     if (!uid) {
       Alert.alert("Error", "You must be logged in to change your profile picture.");
       return;
@@ -130,6 +141,7 @@ export default function ProfilePage() {
 
     try {
       const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+
       if (status !== "granted") {
         Alert.alert(
           "Permission needed",
@@ -155,16 +167,16 @@ export default function ProfilePage() {
       const response = await fetch(asset.uri);
       const blob = await response.blob();
 
-      // Upload to storage using auth uid
       const storageRef = ref(storage, `profilePictures/${uid}.jpg`);
       await uploadBytes(storageRef, blob);
+
       const url = await getDownloadURL(storageRef);
 
-      // Save URL to Firestore
       const docRef = doc(db, "employees", employeeDocId);
       await updateDoc(docRef, { avatarUrl: url });
 
       setAvatarUrl(url);
+
       Alert.alert("Updated", "Your profile picture has been updated.");
     } catch (err) {
       console.error("Error updating profile picture:", err);
@@ -176,13 +188,20 @@ export default function ProfilePage() {
 
   const handleLogout = async () => {
     try {
-      // Clear local session keys (same as homescreen)
       await AsyncStorage.multiRemove([
         "sessionRole",
+        "sessionIsService",
+        "sessionUserAccess",
+        "sessionServiceAccess",
         "displayName",
         "employeeId",
         "employeeEmail",
         "employeeUserCode",
+        "timesheetYardStart",
+        "timesheetYardEnd",
+        "timesheetOfficeStart",
+        "timesheetOfficeEnd",
+        "timesheetDefaultType",
       ]);
 
       if (reloadSession) {
@@ -191,8 +210,7 @@ export default function ProfilePage() {
 
       await signOut(auth).catch(() => {});
 
-      // Optionally send back to login
-      router.replace("/"); // or "/login" depending on your routing
+      router.replace("/");
     } catch (err) {
       console.error("Error logging out:", err);
       Alert.alert("Error", "There was a problem logging you out.");
@@ -202,22 +220,7 @@ export default function ProfilePage() {
   const stillLoading = authLoading || loading;
 
   return (
-    <SafeAreaView
-      style={[styles.safeArea, { backgroundColor: colors.background }]}
-    >
-      {/* Header / Back */}
-      <View style={styles.headerRow}>
-        <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
-          <Icon name="arrow-left" size={22} color={colors.text} />
-          <Text style={[styles.backText, { color: colors.text }]}>Back</Text>
-        </TouchableOpacity>
-
-        <Text style={[styles.headerTitle, { color: colors.text }]}>
-          Edit Profile
-        </Text>
-        <View style={{ width: 56 }} />
-      </View>
-
+    <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>
       {stillLoading ? (
         <View style={styles.loadingWrap}>
           <ActivityIndicator size="large" color={colors.accent} />
@@ -226,107 +229,95 @@ export default function ProfilePage() {
           </Text>
         </View>
       ) : (
-        <ScrollView contentContainerStyle={styles.scrollContent}>
-          {/* Avatar + quick info */}
-          <View
-            style={[
-              styles.avatarCard,
-              { backgroundColor: colors.surfaceAlt, borderColor: colors.border },
-            ]}
-          >
-            <View style={styles.avatarLeft}>
-              <View
-                style={[
-                  styles.avatarCircle,
-                  {
-                    backgroundColor: colors.surface,
-                    borderColor: colors.border,
-                  },
-                ]}
-              >
-                {avatarUrl ? (
-                  <Image
-                    source={{ uri: avatarUrl }}
-                    style={styles.avatarImage}
-                  />
-                ) : (
-                  <Text
-                    style={[styles.avatarInitial, { color: colors.text }]}
-                  >
-                    {avatarInitial}
-                  </Text>
-                )}
-              </View>
-            </View>
+        <View style={styles.content}>
+          <View style={styles.header}>
+            <TouchableOpacity
+              style={[
+                styles.backButton,
+                {
+                  backgroundColor: withAlpha(colors.surfaceAlt, 0.6),
+                },
+              ]}
+              onPress={() => router.back()}
+            >
+              <Icon name="arrow-left" size={18} color={colors.text} />
+            </TouchableOpacity>
 
-            <View style={styles.avatarInfo}>
-              <Text style={[styles.nameText, { color: colors.text }]}>
-                {name || "Unnamed User"}
+            <View style={styles.headerTextWrap}>
+              <Text style={[styles.pageTitle, { color: colors.text }]}>
+                Edit Profile
               </Text>
-              <Text style={[styles.roleText, { color: colors.textMuted }]}>
-                {role ? role.toString() : "Employee"}
+              <Text style={[styles.pageSubtitle, { color: colors.textMuted }]}>
+                Manage your profile details.
               </Text>
-              {userCode ? (
-                <Text style={[styles.metaText, { color: colors.textMuted }]}>
-                  Code: {userCode}
-                </Text>
-              ) : null}
-
-              <TouchableOpacity
-                style={[
-                  styles.changePhotoButton,
-                  { backgroundColor: colors.accent },
-                ]}
-                onPress={handleChangePhoto}
-                disabled={uploadingAvatar}
-              >
-                {uploadingAvatar ? (
-                  <ActivityIndicator size="small" color={colors.surface} />
-                ) : (
-                  <>
-                    <Icon
-                      name="camera"
-                      size={14}
-                      color={colors.surface}
-                      style={{ marginRight: 6 }}
-                    />
-                    <Text
-                      style={[
-                        styles.changePhotoText,
-                        { color: colors.surface },
-                      ]}
-                    >
-                      Change photo
-                    </Text>
-                  </>
-                )}
-              </TouchableOpacity>
             </View>
           </View>
 
-          {/* Account info (locked) */}
-          <View
-            style={[
-              styles.section,
-              { backgroundColor: colors.surfaceAlt, borderColor: colors.border },
-            ]}
-          >
+          <View style={styles.profileTop}>
+            <TouchableOpacity
+              style={[
+                styles.avatarCircle,
+                {
+                  backgroundColor: colors.surfaceAlt,
+                },
+              ]}
+              onPress={handleChangePhoto}
+              disabled={uploadingAvatar}
+              activeOpacity={0.85}
+            >
+              {uploadingAvatar ? (
+                <ActivityIndicator size="small" color={colors.text} />
+              ) : avatarUrl ? (
+                <Image source={{ uri: avatarUrl }} style={styles.avatarImage} />
+              ) : (
+                <Text style={[styles.avatarInitial, { color: colors.text }]}>
+                  {avatarInitial}
+                </Text>
+              )}
+
+              <View
+                style={[
+                  styles.cameraBadge,
+                  {
+                    backgroundColor: colors.accent,
+                  },
+                ]}
+              >
+                <Icon name="camera" size={13} color="#fff" />
+              </View>
+            </TouchableOpacity>
+
+            <View style={styles.profileText}>
+              <Text style={[styles.nameText, { color: colors.text }]}>
+                {name || "Unnamed User"}
+              </Text>
+
+              <Text style={[styles.roleText, { color: colors.textMuted }]}>
+                {role ? role.toString() : "Employee"}
+              </Text>
+
+              {userCode ? (
+                <Text style={[styles.codeText, { color: colors.textMuted }]}>
+                  Code {userCode}
+                </Text>
+              ) : null}
+            </View>
+          </View>
+
+          <View style={styles.section}>
             <Text style={[styles.sectionTitle, { color: colors.text }]}>
-              Account
+              Account Details
             </Text>
 
             <View style={styles.fieldGroup}>
-              <Text style={[styles.label, { color: colors.textMuted }]}>
-                Name
-              </Text>
+              <Text style={[styles.label, { color: colors.textMuted }]}>Name</Text>
               <TextInput
                 style={[
                   styles.input,
                   styles.lockedInput,
                   {
-                    backgroundColor: colors.surface,
+                    backgroundColor: colors.surfaceAlt,
                     color: colors.textMuted,
-                    borderColor: colors.inputBorder,
                   },
                 ]}
                 value={name}
@@ -337,17 +328,14 @@ export default function ProfilePage() {
             </View>
 
             <View style={styles.fieldGroup}>
-              <Text style={[styles.label, { color: colors.textMuted }]}>
-                Email
-              </Text>
+              <Text style={[styles.label, { color: colors.textMuted }]}>Email</Text>
               <TextInput
                 style={[
                   styles.input,
                   styles.lockedInput,
                   {
-                    backgroundColor: colors.surface,
+                    backgroundColor: colors.surfaceAlt,
                     color: colors.textMuted,
-                    borderColor: colors.inputBorder,
                   },
                 ]}
                 value={email}
@@ -366,9 +354,8 @@ export default function ProfilePage() {
                   styles.input,
                   styles.lockedInput,
                   {
-                    backgroundColor: colors.surface,
+                    backgroundColor: colors.surfaceAlt,
                     color: colors.textMuted,
-                    borderColor: colors.inputBorder,
                   },
                 ]}
                 value={userCode}
@@ -379,18 +366,11 @@ export default function ProfilePage() {
             </View>
 
             <Text style={[styles.helperText, { color: colors.textMuted }]}>
-              For changes to your name, email, or user code, please contact your
-              manager/admin.
+              Name, email and user code are managed by your admin.
             </Text>
           </View>
 
-          {/* Contact details (editable) */}
-          <View
-            style={[
-              styles.section,
-              { backgroundColor: colors.surfaceAlt, borderColor: colors.border },
-            ]}
-          >
+          <View style={styles.section}>
             <Text style={[styles.sectionTitle, { color: colors.text }]}>
               Contact Details
             </Text>
@@ -403,9 +383,9 @@ export default function ProfilePage() {
                 style={[
                   styles.input,
                   {
-                    backgroundColor: colors.inputBackground,
+                    backgroundColor: colors.inputBackground || colors.surfaceAlt,
                     color: colors.text,
-                    borderColor: colors.inputBorder,
+                    borderColor: withAlpha(colors.border, 0.5),
                   },
                 ]}
                 value={phone}
@@ -418,254 +398,247 @@ export default function ProfilePage() {
             </View>
           </View>
 
-          {/* Save + Logout buttons */}
-          <View style={styles.buttonRow}>
-            <TouchableOpacity
-              style={[
-                styles.saveButton,
-                {
-                  backgroundColor: colors.accent,
-                },
-                saving && styles.saveButtonDisabled,
-              ]}
-              onPress={handleSave}
-              disabled={saving}
-            >
-              {saving ? (
-                <ActivityIndicator size="small" color={colors.surface} />
-              ) : (
-                <>
-                  <Icon
-                    name="save"
-                    size={18}
-                    color={colors.surface}
-                    style={{ marginRight: 8 }}
-                  />
-                  <Text
-                    style={[
-                      styles.saveButtonText,
-                      { color: colors.surface },
-                    ]}
-                  >
-                    Save Changes
-                  </Text>
-                </>
-              )}
-            </TouchableOpacity>
+          <TouchableOpacity
+            style={[
+              styles.saveButton,
+              {
+                backgroundColor: colors.accent,
+              },
+              saving && styles.disabledButton,
+            ]}
+            onPress={handleSave}
+            disabled={saving}
+          >
+            {saving ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <>
+                <Icon name="save" size={18} color="#fff" style={{ marginRight: 8 }} />
+                <Text style={styles.saveButtonText}>Save Changes</Text>
+              </>
+            )}
+          </TouchableOpacity>
 
-            <TouchableOpacity
-              style={styles.logoutButton}
-              onPress={handleLogout}
-            >
-              <Icon
-                name="log-out"
-                size={18}
-                color="#fff"
-                style={{ marginRight: 8 }}
-              />
-              <Text style={styles.logoutButtonText}>Logout</Text>
-            </TouchableOpacity>
-          </View>
+          <TouchableOpacity
+            style={[
+              styles.logoutButton,
+              {
+                backgroundColor: withAlpha(colors.surfaceAlt, 0.65),
+              },
+            ]}
+            onPress={handleLogout}
+          >
+            <Icon name="log-out" size={18} color={colors.text} style={{ marginRight: 8 }} />
+            <Text style={[styles.logoutButtonText, { color: colors.text }]}>
+              Logout
+            </Text>
+          </TouchableOpacity>
 
           <Text style={[styles.bottomNote, { color: colors.textMuted }]}>
-            Your profile details help us keep bookings, timesheets, and
-            communication accurate.
+            Your profile details help keep bookings, timesheets and communication accurate.
           </Text>
-        </ScrollView>
+        </View>
       )}
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: "#000" },
-
-  headerRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    justifyContent: "space-between",
-  },
-  backButton: { flexDirection: "row", alignItems: "center", paddingVertical: 4 },
-  backText: { color: "#fff", fontSize: 16, marginLeft: 6 },
-  headerTitle: {
-    color: "#fff",
-    fontSize: 18,
-    fontWeight: "700",
-    textAlign: "center",
+  safeArea: {
+    flex: 1,
   },
 
   loadingWrap: {
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
-    paddingHorizontal: 16,
+    paddingHorizontal: 20,
   },
+
   loadingText: {
     marginTop: 12,
-    color: "#aaa",
     fontSize: 14,
+    fontWeight: "600",
   },
 
-  scrollContent: {
-    paddingHorizontal: 16,
-    paddingBottom: 100,
+  content: {
+    flex: 1,
+    paddingHorizontal: 20,
+    paddingTop: 14,
+    paddingBottom: 18,
   },
 
-  avatarCard: {
+  header: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#121212",
-    borderRadius: 16,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: "#222",
-    marginBottom: 20,
+    marginBottom: 18,
   },
-  avatarLeft: {
-    marginRight: 16,
-  },
-  avatarCircle: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    backgroundColor: "#1f1f1f",
+
+  backButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     justifyContent: "center",
     alignItems: "center",
-    borderWidth: 1,
-    borderColor: "#333",
-    overflow: "hidden",
+    marginRight: 12,
   },
-  avatarImage: {
-    width: "100%",
-    height: "100%",
-    resizeMode: "cover",
-  },
-  avatarInitial: {
-    color: "#fff",
-    fontSize: 28,
-    fontWeight: "700",
-  },
-  avatarInfo: {
+
+  headerTextWrap: {
     flex: 1,
   },
-  nameText: {
-    color: "#fff",
-    fontSize: 18,
-    fontWeight: "600",
-    marginBottom: 4,
+
+  pageTitle: {
+    fontSize: 26,
+    fontWeight: "900",
+    letterSpacing: -0.4,
   },
-  roleText: {
-    color: "#bbb",
-    fontSize: 14,
-    marginBottom: 2,
-  },
-  metaText: {
-    color: "#777",
+
+  pageSubtitle: {
+    marginTop: 3,
     fontSize: 13,
-    marginBottom: 8,
+    fontWeight: "600",
   },
-  changePhotoButton: {
+
+  profileTop: {
     flexDirection: "row",
     alignItems: "center",
-    alignSelf: "flex-start",
-    backgroundColor: "#333",
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
+    marginBottom: 22,
   },
-  changePhotoText: {
-    color: "#fff",
-    fontSize: 12,
-    fontWeight: "500",
+
+  avatarCircle: {
+    width: 82,
+    height: 82,
+    borderRadius: 41,
+    justifyContent: "center",
+    alignItems: "center",
+    overflow: "visible",
+    marginRight: 16,
+  },
+
+  avatarImage: {
+    width: 82,
+    height: 82,
+    borderRadius: 41,
+    resizeMode: "cover",
+  },
+
+  avatarInitial: {
+    fontSize: 30,
+    fontWeight: "900",
+  },
+
+  cameraBadge: {
+    position: "absolute",
+    right: 0,
+    bottom: 0,
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+
+  profileText: {
+    flex: 1,
+  },
+
+  nameText: {
+    fontSize: 20,
+    fontWeight: "900",
+    marginBottom: 3,
+  },
+
+  roleText: {
+    fontSize: 14,
+    fontWeight: "700",
+    marginBottom: 2,
+  },
+
+  codeText: {
+    fontSize: 13,
+    fontWeight: "600",
   },
 
   section: {
-    backgroundColor: "#111",
-    borderRadius: 16,
-    padding: 16,
     marginBottom: 18,
-    borderWidth: 1,
-    borderColor: "#222",
   },
+
   sectionTitle: {
-    color: "#fff",
-    fontSize: 16,
-    fontWeight: "600",
+    fontSize: 17,
+    fontWeight: "900",
     marginBottom: 10,
   },
 
   fieldGroup: {
-    marginBottom: 14,
-  },
-  label: {
-    color: "#aaa",
-    fontSize: 13,
-    marginBottom: 4,
-  },
-  input: {
-    backgroundColor: "#1a1a1a",
-    color: "#fff",
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 15,
-    borderWidth: 1,
-    borderColor: "#333",
-  },
-  lockedInput: {
-    backgroundColor: "#191919",
-    color: "#777",
-  },
-  helperText: {
-    color: "#666",
-    fontSize: 12,
-    marginTop: 4,
+    marginBottom: 10,
   },
 
-  buttonRow: {
-    marginTop: 4,
-    marginBottom: 10,
-    gap: 10,
+  label: {
+    fontSize: 13,
+    fontWeight: "800",
+    marginBottom: 6,
   },
+
+  input: {
+    minHeight: 44,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    fontSize: 15,
+    fontWeight: "600",
+    borderWidth: 1,
+  },
+
+  lockedInput: {
+    borderWidth: 0,
+    opacity: 0.9,
+  },
+
+  helperText: {
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: "600",
+    marginTop: 0,
+  },
+
   saveButton: {
+    height: 48,
+    borderRadius: 26,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#f5f5f5",
-    paddingVertical: 12,
-    borderRadius: 999,
+    marginTop: 2,
   },
-  saveButtonDisabled: {
+
+  disabledButton: {
     opacity: 0.7,
   },
+
   saveButtonText: {
-    color: "#000",
+    color: "#fff",
     fontSize: 15,
-    fontWeight: "600",
+    fontWeight: "900",
   },
 
   logoutButton: {
-    marginTop: 4,
+    height: 48,
+    borderRadius: 26,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#f44336",
-    paddingVertical: 12,
-    borderRadius: 999,
+    marginTop: 10,
   },
+
   logoutButtonText: {
-    color: "#fff",
     fontSize: 15,
-    fontWeight: "600",
+    fontWeight: "900",
   },
 
   bottomNote: {
-    color: "#666",
     fontSize: 12,
+    lineHeight: 17,
+    fontWeight: "600",
     textAlign: "center",
-    marginTop: 8,
-    marginBottom: 20,
+    marginTop: 12,
   },
 });

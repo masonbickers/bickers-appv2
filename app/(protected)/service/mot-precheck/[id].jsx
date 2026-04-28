@@ -15,7 +15,6 @@ import { useEffect, useMemo, useState } from "react";
 import {
     ActivityIndicator,
     Alert,
-    SafeAreaView,
     ScrollView,
     StyleSheet,
     Text,
@@ -23,6 +22,7 @@ import {
     TouchableOpacity,
     View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
 import { db } from "../../../../firebaseConfig";
@@ -35,7 +35,7 @@ const COLORS = {
   textHigh: "#FFFFFF",
   textMid: "#E0E0E0",
   textLow: "#888888",
-  primaryAction: "#FF3B30",
+  primaryAction: "#ED1C25",
   inputBg: "#2a2a2a",
   lightGray: "#4a4a4a",
 };
@@ -94,6 +94,12 @@ function getNowParts() {
     date: `${yyyy}-${mm}-${dd}`,
     time: `${hh}:${min}`,
   };
+}
+
+function addPresent(target, key, value) {
+  if (value !== undefined && value !== null && value !== "") {
+    target[key] = value;
+  }
 }
 
 // 🔑 Local storage key for drafts
@@ -429,7 +435,26 @@ export default function MotPrecheckScreen() {
       const updatePayload = {
         motPrecheckStatus: precheckStatus.trim(),
         motPrecheckDate: precheckDateTime,
+        preChecks: {
+          checks,
+          checkRatings,
+          checkNA,
+        },
       };
+      addPresent(updatePayload, "preChecksSummary", summary.trim());
+      addPresent(
+        updatePayload,
+        "preChecksNotes",
+        [faultsFound.trim(), workRecommended.trim()].filter(Boolean).join(" ")
+      );
+      const canonicalName = v?.name || v?.vehicleName || "";
+      const canonicalReg = v?.registration || v?.reg || "";
+      addPresent(updatePayload, "name", canonicalName);
+      addPresent(updatePayload, "vehicleName", canonicalName);
+      addPresent(updatePayload, "registration", canonicalReg);
+      addPresent(updatePayload, "reg", canonicalReg);
+      addPresent(updatePayload, "manufacturer", v?.manufacturer || "");
+      addPresent(updatePayload, "model", v?.model || "");
       if (odoNumber && !Number.isNaN(odoNumber)) {
         updatePayload.mileage = odoNumber;
       }
@@ -521,6 +546,7 @@ export default function MotPrecheckScreen() {
 
   return (
     <SafeAreaView
+      edges={["left", "right"]}
       style={[
         styles.container,
         { backgroundColor: colors.background || COLORS.background },
@@ -991,13 +1017,30 @@ function FormField({
   multiline = false,
   keyboardType = "default",
 }) {
+  const { colors } = useTheme();
+
   return (
     <View style={styles.fieldGroup}>
-      <Text style={styles.fieldLabel}>{label}</Text>
+      <Text
+        style={[
+          styles.fieldLabel,
+          { color: colors.textMuted || COLORS.textMid },
+        ]}
+      >
+        {label}
+      </Text>
       <TextInput
-        style={[styles.input, multiline && styles.inputMultiline]}
+        style={[
+          styles.input,
+          {
+            backgroundColor: colors.inputBackground || COLORS.inputBg,
+            borderColor: colors.inputBorder || COLORS.lightGray,
+            color: colors.text || COLORS.textHigh,
+          },
+          multiline && styles.inputMultiline,
+        ]}
         placeholder={placeholder}
-        placeholderTextColor={COLORS.textLow}
+        placeholderTextColor={colors.textMuted || COLORS.textLow}
         value={value}
         onChangeText={onChangeText}
         multiline={multiline}
@@ -1040,7 +1083,15 @@ function ChecklistSection({
         </Text>
       </View>
 
-      <View style={styles.card}>
+      <View
+        style={[
+          styles.card,
+          {
+            backgroundColor: colors.surfaceAlt || COLORS.card,
+            borderColor: colors.border || COLORS.border,
+          },
+        ]}
+      >
         {items.map((item) => (
           <ChecklistRow
             key={item}
@@ -1069,6 +1120,7 @@ function ChecklistRow({
   rating,
   onChangeRating,
 }) {
+  const { colors } = useTheme();
   const disabled = na;
 
   return (
@@ -1088,7 +1140,10 @@ function ChecklistRow({
             <View
               style={[
                 styles.checkIconEmpty,
-                disabled && { borderColor: COLORS.textLow, opacity: 0.4 },
+                {
+                  borderColor: colors.textMuted || COLORS.textMid,
+                },
+                disabled && { opacity: 0.4 },
               ]}
             />
           )}
@@ -1096,7 +1151,8 @@ function ChecklistRow({
         <Text
           style={[
             styles.checkLabel,
-            checked && { color: COLORS.textHigh },
+            { color: colors.textMuted || COLORS.textLow },
+            checked && { color: colors.text || COLORS.textHigh },
             disabled && { opacity: 0.5 },
           ]}
         >
@@ -1122,6 +1178,7 @@ function ChecklistRow({
               <Text
                 style={[
                   styles.ratingText,
+                  { color: colors.textMuted || COLORS.textLow },
                   isActive && styles.ratingTextActive,
                 ]}
               >
@@ -1173,12 +1230,13 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     padding: 16,
+    paddingTop: 8,
   },
   infoCard: {
     backgroundColor: COLORS.card,
     borderRadius: 10,
     padding: 14,
-    marginBottom: 18,
+    marginBottom: 12,
     borderLeftWidth: 4,
     borderLeftColor: COLORS.primaryAction,
     borderWidth: 1,
@@ -1195,7 +1253,7 @@ const styles = StyleSheet.create({
     color: COLORS.textMid,
   },
   sectionHeaderRow: {
-    marginTop: 6,
+    marginTop: 4,
     marginBottom: 6,
     flexDirection: "row",
     justifyContent: "space-between",
@@ -1214,7 +1272,7 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.card,
     borderRadius: 10,
     padding: 12,
-    marginBottom: 14,
+    marginBottom: 10,
     borderWidth: 1,
     borderColor: COLORS.border,
   },

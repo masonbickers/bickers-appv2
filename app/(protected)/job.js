@@ -4,37 +4,25 @@ import { collection, getDocs, query, where } from "firebase/firestore";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
-  Platform,
   RefreshControl,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
+import PageHeaderCard from "../../components/PageHeaderCard";
 import { db } from "../../firebaseConfig";
+import { designTokens as t } from "../../lib/design/tokens";
 import { useAuth } from "../providers/AuthProvider";
 import { useTheme } from "../providers/ThemeProvider";
 
 /* -------------------------------------------------------------------------- */
 /*                                  CONSTANTS                                 */
 /* -------------------------------------------------------------------------- */
-
-const DAY_FORMAT_LONG = {
-  weekday: "long",
-  day: "2-digit",
-  month: "short",
-  year: "numeric",
-};
-
-const DAY_FORMAT_SHORT = {
-  weekday: "long",
-  day: "2-digit",
-  month: "short",
-};
 
 const CALL_BADGE_BG = "#FFD60A"; // keeps that punchy yellow for call time
 const RECCE_BG = "#FF453A"; // recce button accent
@@ -52,8 +40,36 @@ const BANK_HOLIDAY_REGION = "england-and-wales";
 
 const safeStr = (v) => String(v ?? "").trim().toLowerCase();
 
+const canonicalEmployeeCode = (value) => {
+  if (value === null || value === undefined) return "";
+  const raw = String(value).trim();
+  if (!raw) return "";
+  const digits = raw.replace(/\D/g, "");
+  if (digits) return digits.padStart(4, "0");
+  return safeStr(raw);
+};
+
+const codesEqual = (a, b) => {
+  const aa = canonicalEmployeeCode(a);
+  const bb = canonicalEmployeeCode(b);
+  return !!aa && !!bb && aa === bb;
+};
+
+const resolveEmployeeByCode = (allEmployees, codeValue) => {
+  const code = canonicalEmployeeCode(codeValue);
+  if (!code) return null;
+  return (allEmployees || []).find((x) => codesEqual(x?.userCode, code)) || null;
+};
+
 const toDateSafe = (val) => {
   if (!val) return null;
+  if (typeof val === "string") {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(val);
+    if (m) {
+      const [, y, mo, d] = m;
+      return new Date(Number(y), Number(mo) - 1, Number(d), 0, 0, 0, 0);
+    }
+  }
   if (val?.toDate && typeof val.toDate === "function") return val.toDate();
   const d = new Date(val);
   return isNaN(d) ? null : d;
@@ -67,6 +83,16 @@ const toISODate = (d) => {
   const dd = `${date.getDate()}`.padStart(2, "0");
   return `${y}-${m}-${dd}`;
 };
+
+function withAlpha(hex, alpha) {
+  const safeAlpha = Math.max(0, Math.min(1, Number(alpha) || 0));
+  const raw = String(hex || "").replace("#", "");
+  if (!/^[0-9a-fA-F]{6}$/.test(raw)) return `rgba(255,255,255,${safeAlpha})`;
+  const r = parseInt(raw.slice(0, 2), 16);
+  const g = parseInt(raw.slice(2, 4), 16);
+  const b = parseInt(raw.slice(4, 6), 16);
+  return `rgba(${r},${g},${b},${safeAlpha})`;
+}
 
 const isWeekend = (date) => {
   const d = date instanceof Date ? date : new Date(date);
@@ -140,21 +166,49 @@ const isRecceDay = (job, dateISO) => {
 /** Resolve employees for a specific date using employeesByDate / legacy employees */
 function getEmployeesForDate(job, isoDate, allEmployees) {
   const byDate = job.employeesByDate || job.employeeAssignmentsByDate || null;
+  const byCodeDate = job.employeeCodesByDate || job.assignedEmployeeCodesByDate || null;
 
-  const list = byDate?.[isoDate]
+  const baseList = byDate?.[isoDate]
     ? byDate[isoDate]
     : Array.isArray(job.employees)
     ? job.employees
     : [];
+  const codeList = byCodeDate?.[isoDate]
+    ? byCodeDate[isoDate]
+    : Array.isArray(job.employeeCodes)
+    ? job.employeeCodes
+    : [];
 
-  return list.map((e) => {
+  const list = [
+    ...(Array.isArray(baseList) ? baseList : []),
+    ...(Array.isArray(codeList) ? codeList.map((code) => ({ userCode: code })) : []),
+  ];
+
+  const mapped = list.map((e) => {
     if (typeof e === "string") {
-      const name = e;
-      const match = allEmployees.find((x) => safeStr(x.name) === safeStr(name));
+      const value = String(e || "").trim();
+      const matchByName = allEmployees.find((x) => safeStr(x.name) === safeStr(value));
+      if (matchByName) {
+        return {
+          code: canonicalEmployeeCode(matchByName.userCode),
+          name: safeStr(matchByName.name || matchByName.displayName || value),
+          displayName: matchByName.name || matchByName.displayName || value,
+        };
+      }
+
+      const matchByCode = resolveEmployeeByCode(allEmployees, value);
+      if (matchByCode) {
+        return {
+          code: canonicalEmployeeCode(matchByCode.userCode),
+          name: safeStr(matchByCode.name || matchByCode.displayName || value),
+          displayName: matchByCode.name || matchByCode.displayName || `Code ${value}`,
+        };
+      }
+
       return {
-        code: safeStr(match?.userCode),
-        name,
-        displayName: name,
+        code: canonicalEmployeeCode(value),
+        name: safeStr(value),
+        displayName: value,
       };
     }
 
@@ -163,17 +217,31 @@ function getEmployeesForDate(job, isoDate, allEmployees) {
       e.displayName ||
       [e.firstName, e.lastName].filter(Boolean).join(" ");
 
-    const code =
+    const rawCode =
       e.userCode ||
       e.employeeCode ||
+      e.code ||
+      resolveEmployeeByCode(allEmployees, e.userCode || e.employeeCode || e.code)?.userCode ||
       allEmployees.find((x) => safeStr(x.name) === safeStr(name))?.userCode;
 
     return {
-      code: safeStr(code),
+      code: canonicalEmployeeCode(rawCode),
       name: safeStr(name),
       displayName: name,
     };
   });
+
+  const deduped = [];
+  const seen = new Set();
+  for (const item of mapped) {
+    if (!item) continue;
+    const key = `${item.code}::${safeStr(item.displayName || item.name)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(item);
+  }
+
+  return deduped;
 }
 
 /**
@@ -212,7 +280,7 @@ function getHolidayPayType(h) {
 function getApprovedHolidayForEmployeeOnDate(holidays, employee, targetISO) {
   if (!employee || !targetISO) return null;
 
-  const meCode = safeStr(employee.userCode);
+  const meCode = canonicalEmployeeCode(employee.userCode);
   const meName = safeStr(employee.name || employee.displayName);
 
   if (!meCode && !meName) return null;
@@ -222,7 +290,7 @@ function getApprovedHolidayForEmployeeOnDate(holidays, employee, targetISO) {
     if (statusStr !== "approved") continue;
 
     const codeMatch =
-      !!meCode && [h.employeeCode, h.userCode].map(safeStr).includes(meCode);
+      !!meCode && [h.employeeCode, h.userCode].some((code) => codesEqual(code, meCode));
 
     const nameMatch =
       !!meName && [h.employee, h.name].map(safeStr).includes(meName);
@@ -672,7 +740,7 @@ export default function JobDayScreen() {
   const loadJobs = useCallback(async () => {
     if (loading || !isAuthed) return;
 
-    const meCode = safeStr(employee?.userCode);
+    const meCode = canonicalEmployeeCode(employee?.userCode);
     const meName = safeStr(employee?.name || employee?.displayName);
     if (!meCode && !meName) {
       setJobs([]);
@@ -709,7 +777,7 @@ export default function JobDayScreen() {
         const todaysEmps = getEmployeesForDate(job, dateISO, allEmployees);
 
         const isMineToday =
-          (!!meCode && todaysEmps.some((r) => r.code === meCode)) ||
+          (!!meCode && todaysEmps.some((r) => codesEqual(r.code, meCode))) ||
           (!!meName && todaysEmps.some((r) => safeStr(r.name) === meName));
 
         if (!isMineToday) continue;
@@ -747,14 +815,12 @@ export default function JobDayScreen() {
       setBusy(false);
     }
   }, [
-    employee?.userCode,
-    employee?.name,
+    employee,
     isAuthed,
     loading,
     dateISO,
     loadAllEmployees,
     loadVehicleChecksForJobs,
-    employee,
   ]);
 
   useEffect(() => {
@@ -943,72 +1009,103 @@ export default function JobDayScreen() {
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>
-      {/* Top header */}
-      <View style={styles.header}>
-        <Text style={[styles.headerTitle, { color: colors.text }]}>Today</Text>
-        <Text style={[styles.headerDate, { color: colors.textMuted }]}>
-          {selectedDate.toLocaleDateString("en-GB", DAY_FORMAT_LONG)}
-        </Text>
-      </View>
+      <PageHeaderCard
+        eyebrow="Operations"
+        title="Job Day"
+        subtitle={selectedDate.toLocaleDateString("en-GB", DAY_FORMAT_LONG)}
+        style={styles.heroCard}
+        contentStyle={styles.heroContent}
+      >
+        <View style={styles.heroMetaRow}>
+            <View
+              style={[
+                styles.datePill,
+                { backgroundColor: colors.surfaceAlt, borderColor: colors.border },
+              ]}
+            >
+              <Icon name="calendar" size={12} color={colors.textMuted} />
+              <Text style={[styles.pillDateText, { color: colors.text }]}>
+                {selectedDate.toLocaleDateString("en-GB", {
+                  weekday: "short",
+                  day: "2-digit",
+                  month: "short",
+                })}
+              </Text>
+            </View>
 
-      {/* Date status pill */}
-      <View style={styles.pillRow}>
-        <View
-          style={[
-            styles.datePill,
-            { backgroundColor: colors.surfaceAlt, borderColor: colors.border },
-          ]}
-        >
-          <Text style={[styles.pillDateText, { color: colors.textMuted }]}>
-            {selectedDate.toLocaleDateString("en-GB", {
-              weekday: "short",
-              day: "2-digit",
-              month: "short",
-            })}
-          </Text>
+            <View
+              style={[
+                styles.statusPill,
+                {
+                  borderColor: isUnpaidHoliday ? "#FFD60A" : statusColour,
+                  backgroundColor: withAlpha(colors.surfaceAlt, 0.82),
+                },
+              ]}
+            >
+              <View
+                style={[
+                  styles.statusDot,
+                  { backgroundColor: isUnpaidHoliday ? "#FFD60A" : statusColour },
+                ]}
+              />
+              <Text style={[styles.statusText, { color: colors.text }]}>{dayStatus}</Text>
+            </View>
+
+            <View
+              style={[
+                styles.countPill,
+                {
+                  backgroundColor: withAlpha(colors.surfaceAlt, 0.82),
+                  borderColor: withAlpha(colors.border, 0.82),
+                },
+              ]}
+            >
+              <Icon name="briefcase" size={12} color={colors.textMuted} />
+              <Text style={[styles.countPillText, { color: colors.text }]}>
+                Jobs: {jobs.length}
+              </Text>
+            </View>
+
+            {bankHolidayTitle && jobs.length === 0 && !holidayInfo.onHoliday && (
+              <View style={[styles.bankHolidayPill, { borderColor: "#a855f7" }]}>
+                <Icon name="flag" size={12} color="#a855f7" />
+                <Text style={styles.bankHolidayPillText} numberOfLines={1}>
+                  {bankHolidayTitle}
+                </Text>
+              </View>
+            )}
         </View>
 
-        <View
-          style={[
-            styles.statusPill,
-            {
-              borderColor: isUnpaidHoliday ? "#FFD60A" : statusColour,
-              backgroundColor: colors.surfaceAlt,
-            },
-          ]}
-        >
-          <View
-            style={[
-              styles.statusDot,
-              { backgroundColor: isUnpaidHoliday ? "#FFD60A" : statusColour },
-            ]}
-          />
-          <Text style={[styles.statusText, { color: colors.text }]}>{dayStatus}</Text>
-        </View>
-
-        {/* ✅ optional: show the bank holiday name as a tiny pill */}
-        {bankHolidayTitle && jobs.length === 0 && !holidayInfo.onHoliday && (
-          <View style={[styles.bankHolidayPill, { borderColor: "#a855f7" }]}>
-            <Icon name="flag" size={12} color="#a855f7" />
-            <Text style={styles.bankHolidayPillText} numberOfLines={1}>
-              {bankHolidayTitle}
+        <View style={styles.dayNavRow}>
+            <TouchableOpacity
+              onPress={goPrevDay}
+              disabled={busy}
+              style={[
+                styles.dayNavButton,
+                { backgroundColor: colors.surfaceAlt, borderColor: colors.border },
+              ]}
+            >
+              <Icon name="chevron-left" size={18} color={busy ? colors.textMuted : colors.text} />
+            </TouchableOpacity>
+            <Text style={[styles.dayTitle, { color: colors.text }]}>
+              {selectedDate.toLocaleDateString("en-GB", DAY_FORMAT_SHORT)}
             </Text>
-          </View>
-        )}
-      </View>
-
-      {/* Day navigation */}
-      <View style={[styles.dayHeader, { borderBottomColor: colors.border }]}>
-        <TouchableOpacity onPress={goPrevDay} disabled={busy} style={styles.dayNavButton}>
-          <Icon name="chevron-left" size={22} color={busy ? colors.textMuted : colors.text} />
-        </TouchableOpacity>
-        <Text style={[styles.dayTitle, { color: colors.text }]}>
-          {selectedDate.toLocaleDateString("en-GB", DAY_FORMAT_SHORT)}
-        </Text>
-        <TouchableOpacity onPress={goNextDay} disabled={busy} style={styles.dayNavButton}>
-          <Icon name="chevron-right" size={22} color={busy ? colors.textMuted : colors.text} />
-        </TouchableOpacity>
-      </View>
+            <TouchableOpacity
+              onPress={goNextDay}
+              disabled={busy}
+              style={[
+                styles.dayNavButton,
+                { backgroundColor: colors.surfaceAlt, borderColor: colors.border },
+              ]}
+            >
+              <Icon
+                name="chevron-right"
+                size={18}
+                color={busy ? colors.textMuted : colors.text}
+              />
+            </TouchableOpacity>
+        </View>
+      </PageHeaderCard>
 
       {/* Body */}
       <ScrollView
@@ -1142,7 +1239,7 @@ export default function JobDayScreen() {
 
                   return (
                     <View key={group.date} style={{ marginBottom: 10 }}>
-                      <Text style={styles.prepDateLabel}>{label}</Text>
+                      <Text style={[styles.prepDateLabel, { color: colors.textMuted }]}>{label}</Text>
                       {group.items.map((item) => {
                         const prepKey = `${item.date}__${item.vehicleId}`;
                         return (
@@ -1175,68 +1272,92 @@ export default function JobDayScreen() {
 const styles = StyleSheet.create({
   safeArea: { flex: 1 },
 
-  /* Header */
-  header: {
-    paddingHorizontal: 18,
-    paddingTop: Platform.OS === "android" ? 26 : 14,
-    paddingBottom: 8,
+  /* Hero */
+  heroCard: {
+    borderRadius: t.radius.xl,
+    marginHorizontal: 18,
+    marginTop: 10,
+    marginBottom: t.spacing.xs,
+    overflow: "hidden",
   },
-  headerTitle: { fontSize: 26, fontWeight: "900", letterSpacing: 0.4 },
-  headerDate: { fontSize: 13, marginTop: 4 },
-
-  /* Status pills */
-  pillRow: {
+  heroContent: {
+    paddingHorizontal: 0,
+    paddingVertical: t.spacing.sm,
+  },
+  heroEyebrow: {
+    ...t.typography.label,
+    letterSpacing: 0.6,
+  },
+  heroTitle: { ...t.typography.pageTitle, letterSpacing: 0.2, marginTop: 2 },
+  heroDate: { fontSize: 13, marginTop: 3, fontWeight: "600" },
+  heroMetaRow: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 18,
-    marginTop: 6,
-    marginBottom: 4,
+    marginTop: 10,
     gap: 8,
     flexWrap: "wrap",
   },
   datePill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    minHeight: t.controls.chipMinHeight,
     paddingHorizontal: 12,
     paddingVertical: 6,
-    borderRadius: 20,
-    borderWidth: 1,
+    borderRadius: 999,
   },
-  pillDateText: { fontSize: 13, fontWeight: "600" },
+  pillDateText: { fontSize: 12, fontWeight: "800" },
   statusPill: {
     flexDirection: "row",
     alignItems: "center",
+    minHeight: t.controls.chipMinHeight,
     paddingHorizontal: 12,
     paddingVertical: 6,
-    borderRadius: 20,
-    borderWidth: 1,
+    borderRadius: 999,
     gap: 6,
   },
-  statusDot: { width: 8, height: 8, borderRadius: 4 },
-  statusText: { fontSize: 13, fontWeight: "700" },
+  statusDot: { width: 8, height: 8, borderRadius: 999 },
+  statusText: { fontSize: 12, fontWeight: "800" },
+  countPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    minHeight: t.controls.chipMinHeight,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+  },
+  countPillText: { fontSize: 12, fontWeight: "800" },
 
   bankHolidayPill: {
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
+    minHeight: t.controls.chipMinHeight,
     paddingHorizontal: 10,
     paddingVertical: 6,
-    borderRadius: 20,
-    borderWidth: 1,
+    borderRadius: 999,
     backgroundColor: "#16091f",
     maxWidth: "55%",
   },
   bankHolidayPillText: { color: "#e9d5ff", fontSize: 12, fontWeight: "800" },
 
   /* Day navigation */
-  dayHeader: {
+  dayNavRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    paddingHorizontal: 18,
-    paddingVertical: 10,
-    borderBottomWidth: StyleSheet.hairlineWidth,
+    marginTop: 10,
+    gap: 10,
   },
-  dayNavButton: { padding: 4, borderRadius: 999 },
-  dayTitle: { fontSize: 17, fontWeight: "700" },
+  dayNavButton: {
+    width: t.controls.iconButtonSm,
+    height: t.controls.iconButtonSm,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  dayTitle: { fontSize: 15, fontWeight: "800", flex: 1, textAlign: "center" },
 
   /* Scroll content */
   scrollViewContent: { paddingHorizontal: 18, paddingTop: 12, paddingBottom: 30 },
@@ -1244,9 +1365,8 @@ const styles = StyleSheet.create({
   /* Job Card */
   jobCard: {
     borderRadius: 18,
-    padding: 16,
+    padding: t.controls.cardPaddingLg,
     marginBottom: 14,
-    borderWidth: 1,
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.35,
@@ -1301,7 +1421,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
-    paddingVertical: 10,
+    minHeight: t.controls.buttonHeight,
+    paddingVertical: 8,
     paddingHorizontal: 16,
     borderRadius: 999,
     flex: 1,
@@ -1336,18 +1457,16 @@ const styles = StyleSheet.create({
   /* VEHICLE PREP section on Yard days */
   prepSectionHeaderRow: {
     marginTop: 22,
-    marginBottom: 6,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "flex-end",
+    marginBottom: 8,
+    flexDirection: "column",
+    alignItems: "flex-start",
   },
-  prepSectionTitle: { fontSize: 15, fontWeight: "700" },
-  prepSectionSubtitle: { fontSize: 12 },
-  prepCard: { borderRadius: 10, padding: 12, marginBottom: 16, borderWidth: 1 },
+  prepSectionTitle: { fontSize: 16, fontWeight: "800" },
+  prepSectionSubtitle: { fontSize: 12, marginTop: 2 },
+  prepCard: { borderRadius: 14, padding: t.controls.cardPadding, marginBottom: 16, borderWidth: 1 },
   prepDateLabel: {
     fontSize: 12,
-    fontWeight: "700",
-    color: "#E0E0E0",
+    fontWeight: "800",
     marginBottom: 4,
   },
   prepRow: {
@@ -1411,3 +1530,15 @@ const styles = StyleSheet.create({
   },
   prepDoneText: { fontSize: 10, fontWeight: "800", color: "#0b0b0b" },
 });
+const DAY_FORMAT_LONG = {
+  weekday: "long",
+  day: "2-digit",
+  month: "short",
+  year: "numeric",
+};
+
+const DAY_FORMAT_SHORT = {
+  weekday: "long",
+  day: "2-digit",
+  month: "short",
+};

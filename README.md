@@ -1,6 +1,37 @@
-# Welcome to your Expo app 👋
+# Bickers App
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+This is an [Expo](https://expo.dev) app for Bickers operations, bookings, holidays, and timesheets.
+
+## Production Sync Layer
+
+The app now includes a production sync foundation:
+
+- `lib/sync/outbox.js`: persistent offline queue for write mutations.
+- `lib/sync/engine.js`: background sync cycle (flush queued writes + optional bridge pull/push).
+- `hooks/useSyncManager.js`: app lifecycle sync manager (startup, reconnect, foreground, interval).
+- `lib/sync/firestoreQueue.js`: helper to run writes immediately or queue on transient network failure.
+
+### Environment config
+
+Set these in Expo `extra` or `EXPO_PUBLIC_*` env vars:
+
+- `syncEnabled` / `EXPO_PUBLIC_SYNC_ENABLED`: enable background sync layer.
+- `syncIntervalMs` / `EXPO_PUBLIC_SYNC_INTERVAL_MS`: sync interval (default `120000`).
+- `syncTimeoutMs` / `EXPO_PUBLIC_SYNC_TIMEOUT_MS`: bridge request timeout (default `10000`).
+- `syncApiBaseUrl` / `EXPO_PUBLIC_SYNC_API_URL`: optional external bridge API base URL.
+- `appEnv` / `EXPO_PUBLIC_APP_ENV`: `development`, `staging`, or `production`.
+
+### Optional external software bridge
+
+If `syncApiBaseUrl` is set, the sync engine will also:
+
+- `POST /sync/mutations` with applied local mutations.
+- `GET /sync/changes?since=<checkpoint>` and apply returned Firestore-style changes.
+
+Supported remote change payloads include:
+
+- `{ "type": "firestore.set|update|delete", "docPath": "collection/doc", "data": {...} }`
+- or `{ "target": "firestore", "operation": "set|update|delete", "docPath": "...", "data": {...} }`
 
 ## Get started
 
@@ -23,7 +54,7 @@ In the output, you'll find options to open the app in a
 - [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
 - [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
 
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
+You can start developing by editing files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
 
 ## Get a fresh project
 

@@ -4,33 +4,38 @@ import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Image,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
 import { collection, onSnapshot, orderBy, query } from "firebase/firestore";
 
+import PageHeaderCard from "../../../components/PageHeaderCard";
 import { auth, db } from "../../../firebaseConfig";
+import { resolveWorkspaceAccess } from "../../../lib/access";
+import { createDashboardCardStyles } from "../../../lib/design/dashboard";
+import { designTokens as t } from "../../../lib/design/tokens";
+import { useAuth } from "../../providers/AuthProvider";
 import { useTheme } from "../../providers/ThemeProvider";
 
 /* ---------- CONSTANTS & HELPERS ---------- */
 
 const COLORS = {
-  background: "#0D0D0D",
-  card: "#1A1A1A",
-  border: "#333333",
-  textHigh: "#FFFFFF",
-  textMid: "#E0E0E0",
-  textLow: "#888888",
-  primaryAction: "#FF3B30", // 🔴 red accent
-  recceAction: "#FF3B30",
-  inputBg: "#2a2a2a",
-  lightGray: "#4a4a4a",
+  background: "#000000",
+  card: "#151517",
+  border: "#2B2B31",
+  textHigh: "#F5F5F5",
+  textMid: "#D4D4D8",
+  textLow: "#A1A1AA",
+  primaryAction: "#D94B52",
+  recceAction: "#D94B52",
+  inputBg: "#111114",
+  lightGray: "#3F3F46",
 };
 
 function toDateMaybe(value) {
@@ -85,14 +90,61 @@ function formatDateShort(value) {
   });
 }
 
+function normaliseKey(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase();
+}
+
+function isApprovedDefect(review) {
+  const status = normaliseKey(review?.status);
+  const category = normaliseKey(review?.category);
+  return (
+    status === "approved" &&
+    (category === "general" || category === "immediate")
+  );
+}
+
+function isOpenMaintenance(status) {
+  const value = normaliseKey(status);
+  return value !== "resolved" && value !== "complete" && value !== "completed";
+}
+
+function countOpenCheckDefects(checks) {
+  return checks.reduce((sum, check) => {
+    const items = Array.isArray(check.items) ? check.items : [];
+    return (
+      sum +
+      items.filter(
+        (item) =>
+          isApprovedDefect(item?.review) &&
+          isOpenMaintenance(item?.maintenance?.status)
+      ).length
+    );
+  }, 0);
+}
+
+function countOpenIssueDefects(issues) {
+  return issues.filter(
+    (issue) =>
+      isApprovedDefect(issue?.review) &&
+      isOpenMaintenance(issue?.maintenance?.status)
+  ).length;
+}
+
 /* ---------- MAIN SCREEN ---------- */
 
 export default function ServiceHomeScreen() {
   const router = useRouter();
   const { colors } = useTheme();
+  const { employee } = useAuth();
 
   const [vehicles, setVehicles] = useState([]);
+  const [vehicleChecks, setVehicleChecks] = useState([]);
+  const [vehicleIssues, setVehicleIssues] = useState([]);
   const [loading, setLoading] = useState(true);
+  const workspaceAccess = useMemo(() => resolveWorkspaceAccess(employee), [employee]);
+  const canSwitchToMainApp = workspaceAccess.user && workspaceAccess.service;
 
   useEffect(() => {
     let unsubscribeSnapshot = null;
@@ -141,6 +193,41 @@ export default function ServiceHomeScreen() {
     };
   }, []);
 
+  useEffect(() => {
+    const unsub = onSnapshot(
+      collection(db, "vehicleChecks"),
+      (snap) => {
+        setVehicleChecks(snap.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
+      },
+      (err) => {
+        console.error("Service Home vehicleChecks listener error:", err);
+      }
+    );
+
+    return () => unsub();
+  }, []);
+
+  useEffect(() => {
+    const unsub = onSnapshot(
+      collection(db, "vehicleIssues"),
+      (snap) => {
+        setVehicleIssues(snap.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
+      },
+      (err) => {
+        console.error("Service Home vehicleIssues listener error:", err);
+      }
+    );
+
+    return () => unsub();
+  }, []);
+
+  const openDefectCount = useMemo(
+    () =>
+      countOpenCheckDefects(vehicleChecks) +
+      countOpenIssueDefects(vehicleIssues),
+    [vehicleChecks, vehicleIssues]
+  );
+
   const processed = useMemo(() => {
     return vehicles.map((v) => {
       const motDateRaw =
@@ -176,10 +263,10 @@ export default function ServiceHomeScreen() {
       (v) =>
         v.motStatus.code === "due-soon" || v.serviceStatus.code === "due-soon"
     ).length;
-    const defects = processed.filter((v) => v.hasDefects).length;
+    const defects = openDefectCount;
 
     return { total, overdue, dueSoon, defects };
-  }, [processed]);
+  }, [openDefectCount, processed]);
 
   const attentionVehicles = useMemo(() => {
     const overdue = processed.filter(
@@ -196,58 +283,66 @@ export default function ServiceHomeScreen() {
 
   return (
     <SafeAreaView
+      edges={["left", "right"]}
       style={[
         styles.container,
         { backgroundColor: colors.background || COLORS.background },
       ]}
     >
-      {/* HEADER */}
-      <View
-        style={[
-          styles.header,
-          { borderBottomColor: colors.border || COLORS.border },
-        ]}
-      >
-        <View style={{ flex: 1 }}>
-          <Image
-            source={require("../../../assets/images/bickers-action-logo.png")}
-            style={styles.logo}
-            resizeMode="contain"
-          />
+      <PageHeaderCard
+        eyebrow="Workshop"
+        title="Service & Maintenance"
+        subtitle="Overview of MOT, servicing, defects and workshop activity."
+        style={styles.headerCard}
+        contentStyle={styles.headerContent}
+        topSlot={
+          <View style={styles.header}>
+            <View style={{ flex: 1 }}>
+              <Image
+                source={require("../../../assets/images/bickers-action-logo.png")}
+                style={styles.logo}
+                resizeMode="contain"
+              />
+            </View>
 
-          <Text
-            style={[
-              styles.pageTitle,
-              { color: colors.text || COLORS.textHigh },
-            ]}
-          >
-            Service & Maintenance
-          </Text>
-          <Text
-            style={[
-              styles.pageSubtitle,
-              { color: colors.textMuted || COLORS.textMid },
-            ]}
-          >
-            Overview of MOT, servicing, defects and workshop activity.
-          </Text>
-        </View>
+            {canSwitchToMainApp && (
+              <TouchableOpacity
+                style={[
+                  styles.profileButton,
+                  { borderColor: colors.border || COLORS.border },
+                ]}
+                onPress={() => router.push("/screens/homescreen")}
+                activeOpacity={0.8}
+                accessibilityRole="button"
+                accessibilityLabel="Switch to main app"
+              >
+                <Icon
+                  name="grid"
+                  size={21}
+                  color={colors.text || COLORS.textHigh}
+                />
+              </TouchableOpacity>
+            )}
 
-        <TouchableOpacity
-          style={[
-            styles.profileButton,
-            { borderColor: colors.border || COLORS.border },
-          ]}
-          onPress={() => router.push("/(protected)/service/settings")}
-          activeOpacity={0.8}
-        >
-          <Icon
-            name="user"
-            size={22}
-            color={colors.text || COLORS.textHigh}
-          />
-        </TouchableOpacity>
-      </View>
+            <TouchableOpacity
+              style={[
+                styles.profileButton,
+                { borderColor: colors.border || COLORS.border },
+              ]}
+              onPress={() => router.push("/(protected)/service/settings")}
+              activeOpacity={0.8}
+              accessibilityRole="button"
+              accessibilityLabel="Open service settings"
+            >
+              <Icon
+                name="user"
+                size={22}
+                color={colors.text || COLORS.textHigh}
+              />
+            </TouchableOpacity>
+          </View>
+        }
+      />
 
       {loading ? (
         <View style={styles.loadingContainer}>
@@ -271,7 +366,6 @@ export default function ServiceHomeScreen() {
             style={[
               styles.infoCard,
               {
-                backgroundColor: colors.surfaceAlt || COLORS.card,
                 borderLeftColor: colors.primary || COLORS.primaryAction,
               },
             ]}
@@ -297,7 +391,7 @@ export default function ServiceHomeScreen() {
                 value={summary.overdue}
                 color={
                   summary.overdue > 0
-                    ? "#FF3B30"
+                    ? "#ED1C25"
                     : colors.textMuted || COLORS.textMid
                 }
                 labelColor={colors.textMuted || COLORS.textMid}
@@ -320,7 +414,7 @@ export default function ServiceHomeScreen() {
                 value={summary.defects}
                 color={
                   summary.defects > 0
-                    ? "#FF3B30"
+                    ? "#ED1C25"
                     : colors.textMuted || COLORS.textMid
                 }
                 labelColor={colors.textMuted || COLORS.textMid}
@@ -351,7 +445,12 @@ export default function ServiceHomeScreen() {
             <QuickActionCard
               icon="alert-triangle"
               title="Defects & Issues"
-              subtitle="View reported problems"
+              subtitle={
+                openDefectCount > 0
+                  ? `${openDefectCount} open defect${openDefectCount === 1 ? "" : "s"} need attention`
+                  : "No open approved defects"
+              }
+              badgeCount={openDefectCount}
               onPress={() => router.push("/(protected)/service/defects")}
               colors={colors}
             />
@@ -367,9 +466,9 @@ export default function ServiceHomeScreen() {
             />
             <QuickActionCard
               icon="clock"
-              title="Service History"
-              subtitle="Past MOT & servicing"
-              onPress={() => router.push("/(protected)/service-history")}
+              title="History & Completed"
+              subtitle="Completed services and MOT history"
+              onPress={() => router.push("/service/service-history")}
               colors={colors}
             />
           </View>
@@ -434,7 +533,7 @@ export default function ServiceHomeScreen() {
               };
 
               let borderAccent = colors.border || COLORS.border;
-              if (worstCode === "overdue") borderAccent = "#FF3B30";
+              if (worstCode === "overdue") borderAccent = "#ED1C25";
               else if (worstCode === "due-soon") borderAccent = "#FF9500";
 
               return (
@@ -448,7 +547,7 @@ export default function ServiceHomeScreen() {
                     },
                   ]}
                   activeOpacity={0.85}
-                  onPress={() => router.push(`service/vehicles/${v.id}`)}
+                  onPress={() => router.push(`/service/vehicles/${v.id}`)}
                 >
                   <View style={styles.vehicleHeaderRow}>
                     <View style={{ flex: 1 }}>
@@ -531,15 +630,18 @@ function SummaryItem({ label, value, color, labelColor }) {
   );
 }
 
-function QuickActionCard({ icon, title, subtitle, onPress, colors }) {
+function QuickActionCard({ icon, title, subtitle, badgeCount = 0, onPress, colors }) {
+  const dashboardCards = createDashboardCardStyles({
+    surface: colors.surface || COLORS.card,
+    surfaceAlt: colors.surfaceAlt || COLORS.card,
+    border: colors.border || COLORS.border,
+  });
+
   return (
     <TouchableOpacity
       style={[
         quickStyles.card,
-        {
-          backgroundColor: colors.surfaceAlt || COLORS.card,
-          borderColor: colors.border || COLORS.border,
-        },
+        dashboardCards.quickActionCard,
       ]}
       onPress={onPress}
       activeOpacity={0.85}
@@ -547,6 +649,13 @@ function QuickActionCard({ icon, title, subtitle, onPress, colors }) {
       <View style={quickStyles.iconWrap}>
         {/* 👇 Force high-contrast icon so it’s always visible */}
         <Icon name={icon} size={18} color={COLORS.textHigh} />
+        {badgeCount > 0 && (
+          <View style={quickStyles.badge}>
+            <Text style={quickStyles.badgeText}>
+              {badgeCount > 99 ? "99+" : badgeCount}
+            </Text>
+          </View>
+        )}
       </View>
       <Text
         style={[
@@ -576,7 +685,7 @@ function StatusPill({ label, status }) {
 
   if (code === "overdue") {
     bg = "rgba(255,59,48,0.22)";
-    fg = "#FF3B30";
+    fg = "#ED1C25";
   } else if (code === "due-soon") {
     bg = "rgba(255,149,0,0.22)";
     fg = "#FF9500";
@@ -631,6 +740,26 @@ const quickStyles = StyleSheet.create({
     justifyContent: "center",
     marginBottom: 8,
   },
+  badge: {
+    position: "absolute",
+    top: -7,
+    right: -9,
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
+    paddingHorizontal: 4,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#ED1C25",
+    borderWidth: 1,
+    borderColor: "#FFFFFF",
+  },
+  badgeText: {
+    color: "#FFFFFF",
+    fontSize: 10,
+    lineHeight: 12,
+    fontWeight: "800",
+  },
   title: {
     fontSize: 14,
     fontWeight: "700",
@@ -646,18 +775,25 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: COLORS.background,
   },
+  headerCard: {
+    marginHorizontal: t.spacing.md,
+    marginTop: t.spacing.xs,
+    marginBottom: 0,
+  },
+  headerContent: {
+    paddingTop: 4,
+    paddingBottom: t.spacing.sm,
+  },
   header: {
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
+    paddingHorizontal: 0,
+    paddingVertical: t.spacing.xs,
     flexDirection: "row",
     alignItems: "center",
   },
   logo: {
     width: 140,
     height: 40,
-    marginBottom: 6,
+    marginBottom: 0,
   },
   pageTitle: {
     color: COLORS.textHigh,
@@ -665,16 +801,15 @@ const styles = StyleSheet.create({
     fontWeight: "800",
   },
   pageSubtitle: {
-    marginTop: 4,
+    marginTop: t.spacing.xxs,
     color: COLORS.textMid,
     fontSize: 13,
   },
   profileButton: {
     marginLeft: 12,
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    borderWidth: 1,
+    width: t.controls.iconButtonSm,
+    height: t.controls.iconButtonSm,
+    borderRadius: t.controls.iconButtonSm / 2,
     borderColor: COLORS.border,
     alignItems: "center",
     justifyContent: "center",
@@ -685,17 +820,18 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   loadingText: {
-    marginTop: 10,
+    marginTop: t.spacing.sm,
     color: COLORS.textMid,
   },
   scrollContent: {
-    padding: 16,
+    padding: t.spacing.md,
+    paddingTop: 0,
   },
   infoCard: {
     backgroundColor: COLORS.card,
-    padding: 15,
-    borderRadius: 10,
-    marginBottom: 20,
+    padding: t.controls.cardPadding,
+    borderRadius: t.radius.sm,
+    marginBottom: t.spacing.sm,
     borderLeftWidth: 4,
     borderLeftColor: COLORS.primaryAction,
   },
@@ -703,7 +839,7 @@ const styles = StyleSheet.create({
     color: COLORS.textHigh,
     fontSize: 18,
     fontWeight: "700",
-    marginBottom: 10,
+    marginBottom: 8,
   },
   summaryRow: {
     flexDirection: "row",
@@ -711,7 +847,8 @@ const styles = StyleSheet.create({
   sectionDivider: {
     flexDirection: "row",
     alignItems: "center",
-    marginVertical: 15,
+    marginTop: 12,
+    marginBottom: 8,
   },
   sectionTitle: {
     color: COLORS.textHigh,
@@ -726,7 +863,7 @@ const styles = StyleSheet.create({
   emptyState: {
     alignItems: "center",
     justifyContent: "center",
-    marginTop: 10,
+    marginTop: 4,
     paddingHorizontal: 24,
   },
   emptyTitle: {
@@ -741,7 +878,7 @@ const styles = StyleSheet.create({
   },
   vehicleCard: {
     backgroundColor: COLORS.card,
-    padding: 15,
+    padding: t.controls.cardPadding,
     borderRadius: 10,
     marginBottom: 12,
     borderLeftWidth: 4,

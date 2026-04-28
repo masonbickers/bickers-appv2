@@ -3,7 +3,7 @@ import { collection, getDocs } from "firebase/firestore";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
-  Alert,
+  Modal,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -263,6 +263,83 @@ function compactTags(job) {
   return tags.slice(0, 3);
 }
 
+function firstText(...values) {
+  for (const value of values) {
+    if (value == null) continue;
+    const text = String(value).trim();
+    if (text) return text;
+  }
+  return "";
+}
+
+function titleForJob(job) {
+  return firstText(job?.client, job?.production, job?.title, "Untitled Booking");
+}
+
+function formatDateLabel(iso) {
+  if (!iso) return "";
+  const d = new Date(`${iso}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString("en-GB", {
+    weekday: "short",
+    day: "2-digit",
+    month: "short",
+  });
+}
+
+function formatDateRange(dates) {
+  const clean = toArray(dates).map(getISO).filter(Boolean).sort();
+  if (!clean.length) return "";
+  if (clean.length === 1) return formatDateLabel(clean[0]);
+  return `${formatDateLabel(clean[0])} - ${formatDateLabel(clean[clean.length - 1])}`;
+}
+
+function formatObjectMap(value, formatter = (v) => String(v ?? "").trim()) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+  return Object.entries(value)
+    .map(([key, raw]) => {
+      const text = formatter(raw);
+      return text ? `${formatDateLabel(getISO(key) || key)}: ${text}` : "";
+    })
+    .filter(Boolean);
+}
+
+function formatNoteValue(raw) {
+  if (!raw) return "";
+  if (typeof raw === "string") return raw.trim();
+  if (Array.isArray(raw)) return raw.map(formatNoteValue).filter(Boolean).join(", ");
+  return firstText(raw.label, raw.value, raw.note, raw.notes, raw.text);
+}
+
+function formatTimeValue(raw) {
+  if (!raw) return "";
+  if (typeof raw === "string") return raw.trim();
+  return firstText(raw.callTime, raw.call, raw.value, raw.label);
+}
+
+function DetailRow({ icon, label, value, colors }) {
+  if (!value) return null;
+  return (
+    <View style={styles.detailRow}>
+      <View
+        style={[
+          styles.detailIcon,
+          {
+            backgroundColor: withAlpha(colors.surfaceAlt, 0.9),
+            borderColor: withAlpha(colors.border, 0.8),
+          },
+        ]}
+      >
+        <Icon name={icon} size={14} color={colors.textMuted} />
+      </View>
+      <View style={styles.detailTextWrap}>
+        <Text style={[styles.detailLabel, { color: colors.textMuted }]}>{label}</Text>
+        <Text style={[styles.detailValue, { color: colors.text }]}>{value}</Text>
+      </View>
+    </View>
+  );
+}
+
 export default function WorkDiaryBoardPage() {
   const router = useRouter();
   const { colors } = useTheme();
@@ -279,6 +356,7 @@ export default function WorkDiaryBoardPage() {
   const [loading, setLoading] = useState(() => !cachedBoardData);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
+  const [selectedJob, setSelectedJob] = useState(null);
 
   const applyBoardData = useCallback((data) => {
     setBookings(data.bookings);
@@ -360,6 +438,44 @@ export default function WorkDiaryBoardPage() {
   const boardWidth = COL_WIDTH * 7;
   const initialZoomScale = Math.min(1, Math.max(0.35, (screenWidth - 32) / boardWidth));
   const shiftWeek = (delta) => setWeekStart((prev) => addDaysISO(prev, delta * 7));
+
+  const selectedJobDetails = useMemo(() => {
+    if (!selectedJob) return null;
+
+    const dates = extractBookingDates(selectedJob);
+    const vehicles = toArray(selectedJob?.vehicles || selectedJob?.vehicle)
+      .map((vehicle) => formatVehicle(vehicle, vehicleNameById))
+      .filter(Boolean);
+    const people = formatPeople(selectedJob?.employees);
+    const callTimes = formatObjectMap(
+      selectedJob?.callTimes || selectedJob?.callTimesByDate || selectedJob?.callTimeByDate,
+      formatTimeValue
+    );
+    const crewByDate = formatObjectMap(
+      selectedJob?.employeesByDate || selectedJob?.employeeAssignmentsByDate,
+      (raw) => formatPeople(raw).join(", ")
+    );
+    const notesByDate = formatObjectMap(selectedJob?.notesByDate, formatNoteValue);
+    const dayNotes = dayNotesFor(selectedJob, dates);
+    const equipment = toArray(selectedJob?.equipment || selectedJob?.kit)
+      .map((item) =>
+        typeof item === "string"
+          ? item
+          : firstText(item?.name, item?.label, item?.title, item?.description)
+      )
+      .filter(Boolean);
+
+    return {
+      dates,
+      vehicles,
+      people,
+      callTimes,
+      crewByDate,
+      equipment,
+      notes: [...new Set([...notesByDate, ...dayNotes])],
+      generalNotes: firstText(selectedJob?.notes, selectedJob?.note, selectedJob?.description),
+    };
+  }, [selectedJob, vehicleNameById]);
 
   useEffect(() => {
     requestAnimationFrame(() => {
@@ -459,6 +575,9 @@ export default function WorkDiaryBoardPage() {
             contentContainerStyle={styles.verticalContent}
             showsVerticalScrollIndicator
             nestedScrollEnabled
+            bounces={false}
+            alwaysBounceVertical={false}
+            overScrollMode="never"
           >
             <ScrollView
               ref={scrollRef}
@@ -468,10 +587,13 @@ export default function WorkDiaryBoardPage() {
               contentContainerStyle={styles.horizontalContent}
               showsHorizontalScrollIndicator
               nestedScrollEnabled
+              bounces={false}
+              alwaysBounceHorizontal={false}
+              overScrollMode="never"
               minimumZoomScale={0.2}
               maximumZoomScale={1.5}
               zoomScale={initialZoomScale}
-              bouncesZoom
+              bouncesZoom={false}
               pinchGestureEnabled
             >
               <View style={[styles.boardWrap, { width: boardWidth, backgroundColor: colors.surface }]}>
@@ -520,7 +642,7 @@ export default function WorkDiaryBoardPage() {
                       <TouchableOpacity
                         key={job.id}
                         activeOpacity={0.9}
-                        onPress={() => Alert.alert(job.jobNumber || "Booking", job.client || job.production || "Booking")}
+                        onPress={() => setSelectedJob(job)}
                         style={[
                           styles.bookingCard,
                           {
@@ -536,7 +658,6 @@ export default function WorkDiaryBoardPage() {
                           <View style={styles.initialsWrap}>
                             <Text style={[styles.initialsText, { color: tone.text }]}>
                               {formatPeople(job?.employees)
-                                .slice(0, 2)
                                 .map((name) => String(name).trim().split(" ").map((part) => part[0]).join(""))
                                 .filter(Boolean)
                                 .join(", ") || "BK"}
@@ -600,6 +721,162 @@ export default function WorkDiaryBoardPage() {
             </ScrollView>
           </ScrollView>
         )}
+
+        <Modal
+          visible={!!selectedJob}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setSelectedJob(null)}
+        >
+          <View style={styles.modalBackdrop}>
+            <View
+              style={[
+                styles.detailModalCard,
+                {
+                  backgroundColor: colors.surface,
+                  borderColor: colors.border,
+                },
+              ]}
+            >
+              {selectedJob && selectedJobDetails ? (
+                <>
+                  <View style={styles.detailHeader}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={[styles.detailJobNumber, { color: colors.textMuted }]}>
+                        {selectedJob.jobNumber || "Booking"}
+                      </Text>
+                      <Text style={[styles.detailTitle, { color: colors.text }]}>
+                        {titleForJob(selectedJob)}
+                      </Text>
+                    </View>
+                    <TouchableOpacity
+                      onPress={() => setSelectedJob(null)}
+                      activeOpacity={0.85}
+                      style={[
+                        styles.modalCloseBtn,
+                        {
+                          backgroundColor: withAlpha(colors.surfaceAlt, 0.9),
+                          borderColor: colors.border,
+                        },
+                      ]}
+                    >
+                      <Icon name="x" size={18} color={colors.text} />
+                    </TouchableOpacity>
+                  </View>
+
+                  <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.detailModalContent}>
+                    <View style={styles.detailPillRow}>
+                      {selectedJob.status ? (
+                        <View
+                          style={[
+                            styles.detailPill,
+                            {
+                              backgroundColor: withAlpha(cardTone(selectedJob).border, 0.16),
+                              borderColor: withAlpha(cardTone(selectedJob).border, 0.45),
+                            },
+                          ]}
+                        >
+                          <Text style={[styles.detailPillText, { color: colors.text }]}>
+                            {String(selectedJob.status).toUpperCase()}
+                          </Text>
+                        </View>
+                      ) : null}
+                      {selectedJob.bookingType || selectedJob.type ? (
+                        <View
+                          style={[
+                            styles.detailPill,
+                            {
+                              backgroundColor: withAlpha(colors.surfaceAlt, 0.9),
+                              borderColor: colors.border,
+                            },
+                          ]}
+                        >
+                          <Text style={[styles.detailPillText, { color: colors.text }]}>
+                            {selectedJob.bookingType || selectedJob.type}
+                          </Text>
+                        </View>
+                      ) : null}
+                    </View>
+
+                    <DetailRow
+                      icon="calendar"
+                      label="Dates"
+                      value={formatDateRange(selectedJobDetails.dates)}
+                      colors={colors}
+                    />
+                    <DetailRow
+                      icon="clock"
+                      label="Call time"
+                      value={firstText(
+                        selectedJob.callTime,
+                        selectedJob.calltime,
+                        selectedJob.call_time,
+                        selectedJobDetails.callTimes.join("\n")
+                      )}
+                      colors={colors}
+                    />
+                    <DetailRow
+                      icon="map-pin"
+                      label="Location"
+                      value={firstText(selectedJob.location, selectedJob.address, selectedJob.site)}
+                      colors={colors}
+                    />
+                    <DetailRow
+                      icon="users"
+                      label="Crew"
+                      value={selectedJobDetails.people.join(", ")}
+                      colors={colors}
+                    />
+                    <DetailRow
+                      icon="truck"
+                      label="Vehicles"
+                      value={selectedJobDetails.vehicles.join("\n")}
+                      colors={colors}
+                    />
+                    <DetailRow
+                      icon="briefcase"
+                      label="Production"
+                      value={firstText(selectedJob.production, selectedJob.client)}
+                      colors={colors}
+                    />
+                    <DetailRow
+                      icon="user"
+                      label="Contact"
+                      value={[
+                        firstText(selectedJob.contactName, selectedJob.contact, selectedJob.booker),
+                        firstText(selectedJob.contactPhone, selectedJob.phone, selectedJob.mobile),
+                        firstText(selectedJob.contactEmail, selectedJob.email),
+                      ]
+                        .filter(Boolean)
+                        .join("\n")}
+                      colors={colors}
+                    />
+                    <DetailRow
+                      icon="calendar"
+                      label="Crew by date"
+                      value={selectedJobDetails.crewByDate.join("\n")}
+                      colors={colors}
+                    />
+                    <DetailRow
+                      icon="box"
+                      label="Equipment"
+                      value={selectedJobDetails.equipment.join("\n")}
+                      colors={colors}
+                    />
+                    <DetailRow
+                      icon="file-text"
+                      label="Notes"
+                      value={[selectedJobDetails.generalNotes, ...selectedJobDetails.notes]
+                        .filter(Boolean)
+                        .join("\n")}
+                      colors={colors}
+                    />
+                  </ScrollView>
+                </>
+              ) : null}
+            </View>
+          </View>
+        </Modal>
       </View>
     </SafeAreaView>
   );
@@ -727,12 +1004,14 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#707070",
     borderRadius: 8,
+    maxWidth: "42%",
     paddingHorizontal: 8,
     paddingVertical: 4,
   },
   initialsText: {
     fontSize: 12,
     fontWeight: "800",
+    flexWrap: "wrap",
   },
   statusWrap: {
     flex: 1,
@@ -827,5 +1106,99 @@ const styles = StyleSheet.create({
   retryText: {
     fontSize: 13,
     fontWeight: "800",
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.62)",
+    justifyContent: "center",
+    alignItems: "center",
+    paddingHorizontal: 18,
+    paddingVertical: 28,
+  },
+  detailModalCard: {
+    width: "100%",
+    maxWidth: 620,
+    maxHeight: "86%",
+    borderWidth: 1,
+    borderRadius: 20,
+    overflow: "hidden",
+  },
+  detailHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 14,
+    paddingHorizontal: 18,
+    paddingTop: 18,
+    paddingBottom: 12,
+  },
+  detailJobNumber: {
+    fontSize: 13,
+    fontWeight: "900",
+    letterSpacing: 0.6,
+  },
+  detailTitle: {
+    marginTop: 4,
+    fontSize: 24,
+    lineHeight: 29,
+    fontWeight: "900",
+  },
+  modalCloseBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  detailModalContent: {
+    paddingHorizontal: 18,
+    paddingBottom: 20,
+  },
+  detailPillRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginBottom: 8,
+  },
+  detailPill: {
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  detailPillText: {
+    fontSize: 11,
+    fontWeight: "900",
+  },
+  detailRow: {
+    flexDirection: "row",
+    gap: 11,
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "rgba(130,130,130,0.28)",
+  },
+  detailIcon: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 1,
+  },
+  detailTextWrap: {
+    flex: 1,
+  },
+  detailLabel: {
+    fontSize: 11,
+    fontWeight: "900",
+    textTransform: "uppercase",
+    letterSpacing: 0.4,
+  },
+  detailValue: {
+    marginTop: 3,
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: "700",
   },
 });

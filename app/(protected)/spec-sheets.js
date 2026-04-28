@@ -1,17 +1,20 @@
 import * as WebBrowser from "expo-web-browser";
+import { useRouter } from "expo-router";
 import { onAuthStateChanged } from "firebase/auth";
 import { getDownloadURL, getMetadata, listAll, ref } from "firebase/storage";
 import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
-  SafeAreaView,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
+import Icon from "react-native-vector-icons/Feather";
+import { SafeAreaView } from "react-native-safe-area-context";
 
 import { auth, storage } from "../../firebaseConfig";
 import { useTheme } from "../providers/ThemeProvider"; // 👈 theme
@@ -30,7 +33,18 @@ const fmtDate = (iso) =>
 const kb = (bytes) =>
   typeof bytes === "number" ? `${(bytes / 1024).toFixed(2)} KB` : "—";
 
+function withAlpha(hex, alpha) {
+  const safeAlpha = Math.max(0, Math.min(1, Number(alpha) || 0));
+  const raw = String(hex || "").replace("#", "");
+  if (!/^[0-9a-fA-F]{6}$/.test(raw)) return `rgba(255,255,255,${safeAlpha})`;
+  const r = parseInt(raw.slice(0, 2), 16);
+  const g = parseInt(raw.slice(2, 4), 16);
+  const b = parseInt(raw.slice(4, 6), 16);
+  return `rgba(${r},${g},${b},${safeAlpha})`;
+}
+
 export default function SpecSheetsScreen() {
+  const router = useRouter();
   const { colors } = useTheme();
 
   const [files, setFiles] = useState([]); // [{name,size,updated,contentType,url}]
@@ -118,7 +132,7 @@ export default function SpecSheetsScreen() {
   const renderItem = ({ item }) => (
     <TouchableOpacity
       style={[
-        styles.card,
+        styles.itemRow,
         {
           backgroundColor: colors.surfaceAlt,
           borderColor: colors.border,
@@ -129,209 +143,228 @@ export default function SpecSheetsScreen() {
     >
       <View
         style={[
-          styles.badge,
+          styles.itemIconWrap,
           {
-            borderColor: colors.border,
-            backgroundColor: colors.accentSoft,
+            backgroundColor: withAlpha(colors.accent, 0.12),
+            borderColor: withAlpha(colors.accent, 0.35),
           },
         ]}
       >
-        <Text style={[styles.badgeText, { color: colors.text }]}>PDF</Text>
+        <Text style={[styles.badgeText, { color: colors.accent }]}>PDF</Text>
       </View>
-      <View style={{ flex: 1 }}>
+
+      <View style={styles.itemTextWrap}>
         <Text
-          style={[styles.title, { color: colors.text }]}
+          style={[styles.itemText, { color: colors.text }]}
           numberOfLines={1}
         >
           {item.name.replace(/\.pdf$/i, "")}
         </Text>
-        <Text style={[styles.meta, { color: colors.textMuted }]}>
+        <Text style={[styles.itemSubText, { color: colors.textMuted }]}>
           {kb(item.size)} · {item.contentType} · {fmtDate(item.updated)}
         </Text>
       </View>
-      <View
-        style={[
-          styles.viewBtn,
-          { borderColor: colors.border, backgroundColor: colors.surface },
-        ]}
-      >
-        <Text style={[styles.viewBtnText, { color: colors.text }]}>View</Text>
+
+      <View style={styles.itemAction}>
+        <Text style={[styles.viewBtnText, { color: colors.accent }]}>View</Text>
       </View>
     </TouchableOpacity>
   );
 
   return (
     <SafeAreaView
+      edges={["top", "left", "right"]}
       style={[styles.wrap, { backgroundColor: colors.background }]}
     >
-      {/* Header + Search */}
-      <View
-        style={[
-          styles.header,
-          { borderBottomColor: colors.border, backgroundColor: colors.surface },
-        ]}
-      >
-        <Text
-          style={[
-            styles.headerTitle,
-            { color: colors.text, marginBottom: 8 },
-          ]}
-        >
-          Spec Sheets
-        </Text>
-        <TextInput
-          value={q}
-          onChangeText={setQ}
-          placeholder="Search e.g. ‘Silverado’, ‘Cheyenne’, ‘2025’…"
-          placeholderTextColor={colors.textMuted}
-          style={[
-            styles.search,
-            {
-              backgroundColor: colors.inputBackground,
-              borderColor: colors.inputBorder,
-              color: colors.text,
-            },
-          ]}
-        />
-      </View>
+      <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+        <View style={styles.heroCard}>
+          <View style={styles.heroContent}>
+            <View style={styles.heroTopRow}>
+              <TouchableOpacity
+                onPress={() => router.back()}
+                activeOpacity={0.85}
+                style={[
+                  styles.backBtn,
+                  {
+                    backgroundColor: withAlpha(colors.surfaceAlt, 0.75),
+                    borderColor: withAlpha(colors.border, 0.75),
+                  },
+                ]}
+              >
+                <Icon name="arrow-left" size={15} color={colors.text} />
+              </TouchableOpacity>
 
-      {/* Content */}
-      <View style={{ flex: 1, paddingHorizontal: 14 }}>
-        {loading ? (
-          <View style={styles.loadingBox}>
-            <ActivityIndicator color={colors.accent} />
-            <Text
-              style={[styles.loadingText, { color: colors.textMuted }]}
-            >
-              Loading spec sheets…
-            </Text>
+              <View style={styles.heroTitleWrap}>
+                <Text style={[styles.heroEyebrow, { color: colors.textMuted }]}>
+                  Technical Library
+                </Text>
+                <Text style={[styles.heroTitle, { color: colors.text }]}>Spec Sheets</Text>
+              </View>
+
+              <View style={styles.heroSpacer} />
+            </View>
           </View>
-        ) : err ? (
-          <View
+        </View>
+
+        <View style={styles.sectionCard}>
+          <TextInput
+            value={q}
+            onChangeText={setQ}
+            placeholder="Search e.g. ‘Silverado’, ‘Cheyenne’, ‘2025’…"
+            placeholderTextColor={colors.textMuted}
             style={[
-              styles.errorBox,
-              { backgroundColor: colors.danger + "22" },
-            ]}
-          >
-            <Text style={[styles.errorText, { color: colors.danger }]}>
-              {err}
-            </Text>
-          </View>
-        ) : filtered.length === 0 ? (
-          <View
-            style={[
-              styles.emptyBox,
+              styles.search,
               {
-                borderColor: colors.border,
                 backgroundColor: colors.surfaceAlt,
+                borderColor: colors.border,
+                color: colors.text,
               },
             ]}
-          >
-            <Text style={[styles.emptyText, { color: colors.textMuted }]}>
-              No spec sheets match “{q}”.
-            </Text>
-          </View>
-        ) : (
-          <FlatList
-            data={filtered}
-            keyExtractor={(i) => i.url}
-            renderItem={renderItem}
-            contentContainerStyle={{ paddingBottom: 16 }}
           />
-        )}
-      </View>
+        </View>
 
-      {/* Footer */}
-      <View
-        style={[
-          styles.footer,
-          { borderTopColor: colors.border, backgroundColor: colors.surface },
-        ]}
-      >
-        <Text style={[styles.footerText, { color: colors.textMuted }]}>
-          © {new Date().getFullYear()} Bickers Booking — Spec Sheets
-        </Text>
-        <Text style={[styles.footerSub, { color: colors.textMuted }]}>
-          Firebase Storage · Folder: {FOLDER_PATH}
-        </Text>
-      </View>
+        <View style={styles.sectionCard}>
+          {loading ? (
+            <View style={styles.loadingBox}>
+              <ActivityIndicator color={colors.accent} />
+              <Text style={[styles.loadingText, { color: colors.textMuted }]}>
+                Loading spec sheets…
+              </Text>
+            </View>
+          ) : err ? (
+            <View style={[styles.errorBox, { backgroundColor: colors.danger + "22" }]}>
+              <Text style={[styles.errorText, { color: colors.danger }]}>{err}</Text>
+            </View>
+          ) : filtered.length === 0 ? (
+            <View
+              style={[
+                styles.emptyBox,
+                {
+                  borderColor: colors.border,
+                  backgroundColor: colors.surfaceAlt,
+                },
+              ]}
+            >
+              <Text style={[styles.emptyText, { color: colors.textMuted }]}>
+                No spec sheets match “{q}”.
+              </Text>
+            </View>
+          ) : (
+            <FlatList
+              data={filtered}
+              keyExtractor={(i) => i.url}
+              renderItem={renderItem}
+              scrollEnabled={false}
+              contentContainerStyle={styles.listContent}
+            />
+          )}
+        </View>
+      </ScrollView>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  wrap: { flex: 1, backgroundColor: "#0a0a0a" },
-  header: {
-    paddingHorizontal: 14,
-    paddingTop: 10,
-    paddingBottom: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: "rgba(255,255,255,0.08)",
+  wrap: { flex: 1 },
+  scrollContent: { paddingHorizontal: 14, paddingBottom: 24, paddingTop: 8 },
+  heroCard: {
+    position: "relative",
+    marginBottom: 8,
   },
-  headerTitle: { color: "#fff", fontSize: 20, fontWeight: "800" },
-  search: {
-    backgroundColor: "rgba(255,255,255,0.06)",
+  heroContent: {
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+  },
+  heroTopRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+  },
+  backBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.12)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  heroTitleWrap: {
+    flex: 1,
+    paddingTop: 1,
+    alignItems: "center",
+  },
+  heroSpacer: {
+    width: 34,
+    height: 34,
+  },
+  heroEyebrow: {
+    fontSize: 12,
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+    fontWeight: "800",
+    textAlign: "center",
+  },
+  heroTitle: {
+    marginTop: 2,
+    fontSize: 24,
+    fontWeight: "900",
+    letterSpacing: 0.2,
+    textAlign: "center",
+  },
+  sectionCard: {
+    marginBottom: 12,
+  },
+  search: {
+    borderWidth: 1,
     borderRadius: 12,
     paddingHorizontal: 12,
     paddingVertical: 10,
-    color: "#fff",
   },
   loadingBox: { paddingTop: 24, alignItems: "center", gap: 8 },
-  loadingText: { color: "#cfcfcf" },
+  loadingText: {},
   errorBox: {
     padding: 14,
     borderRadius: 12,
-    backgroundColor: "#3a0d0d",
     marginTop: 14,
   },
-  errorText: { color: "#ffb3b3" },
+  errorText: {},
   emptyBox: {
     padding: 18,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.12)",
     alignItems: "center",
-    marginTop: 14,
   },
-  emptyText: { color: "#bdbdbd" },
-  card: {
+  emptyText: {},
+  listContent: { paddingBottom: 8 },
+  itemRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
-    padding: 12,
-    borderRadius: 14,
-    backgroundColor: "rgba(255,255,255,0.05)",
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.12)",
-    marginTop: 10,
+    marginBottom: 8,
   },
-  badge: {
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.12)",
+  itemIconWrap: {
+    width: 34,
+    height: 34,
     borderRadius: 10,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-  },
-  badgeText: { color: "#e6e6e6", fontSize: 10, fontWeight: "700" },
-  title: { color: "#fff", fontWeight: "700", fontSize: 15 },
-  meta: { color: "#bdbdbd", fontSize: 12, marginTop: 2 },
-  viewBtn: {
-    marginLeft: "auto",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.12)",
-    borderRadius: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+    alignItems: "center",
+    justifyContent: "center",
   },
-  viewBtnText: { color: "#fff", fontWeight: "700", fontSize: 12 },
-  footer: {
-    borderTopWidth: 1,
-    borderTopColor: "rgba(255,255,255,0.08)",
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+  badgeText: { fontSize: 10, fontWeight: "700" },
+  itemTextWrap: {
+    flex: 1,
+    minWidth: 0,
   },
-  footerText: { color: "#bdbdbd", fontSize: 12 },
-  footerSub: { color: "#8e8e8e", fontSize: 11, marginTop: 2 },
+  itemText: { fontSize: 14, fontWeight: "800", lineHeight: 18 },
+  itemSubText: { fontSize: 12, lineHeight: 16, marginTop: 2 },
+  itemAction: {
+    width: 52,
+    alignItems: "flex-end",
+    justifyContent: "center",
+  },
+  viewBtnText: { fontWeight: "800", fontSize: 12 },
 });

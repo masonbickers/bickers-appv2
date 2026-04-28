@@ -9,14 +9,35 @@ import React, {
   useMemo,
   useState,
 } from "react";
+import {
+  normaliseSessionRole,
+  resolveWorkspaceAccess,
+} from "../../lib/access";
 import { auth } from "../../firebaseConfig";
 
 type EmployeeSession = {
-  role?: "employee" | "manager" | "";
+  role?: string;
+  isService?: boolean;
+  appAccess?: {
+    user: boolean;
+    service: boolean;
+  };
   displayName?: string;
   email?: string;
   employeeId?: string;
   userCode?: string; // needed for filtering all user data
+  yardStartTime?: string;
+  yardEndTime?: string;
+  officeStartTime?: string;
+  officeEndTime?: string;
+  timesheetDefaultType?: "yard" | "office";
+  timesheetDefaults?: {
+    yardStart?: string;
+    yardEnd?: string;
+    officeStart?: string;
+    officeEnd?: string;
+    defaultType?: "yard" | "office";
+  };
 };
 
 type Ctx = {
@@ -69,22 +90,62 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const entries = await AsyncStorage.multiGet([
         "sessionRole",
+        "sessionIsService",
+        "sessionUserAccess",
+        "sessionServiceAccess",
         "displayName",
         "employeeId",
         "employeeEmail",
         "employeeUserCode",
+        "timesheetYardStart",
+        "timesheetYardEnd",
+        "timesheetOfficeStart",
+        "timesheetOfficeEnd",
+        "timesheetDefaultType",
       ]);
 
       const m = Object.fromEntries(entries);
-      const role = (m.sessionRole || "").trim();
+      const workspaceAccess = resolveWorkspaceAccess({
+        sessionRole: m.sessionRole,
+        sessionIsService: m.sessionIsService,
+        sessionUserAccess: m.sessionUserAccess,
+        sessionServiceAccess: m.sessionServiceAccess,
+      });
+      const role = normaliseSessionRole({
+        sessionRole: m.sessionRole,
+        appAccess: workspaceAccess,
+      });
 
-      if (role === "employee") {
+      if (m.employeeId) {
+        const yardStart = m.timesheetYardStart || "";
+        const yardEnd = m.timesheetYardEnd || "";
+        const officeStart = m.timesheetOfficeStart || "";
+        const officeEnd = m.timesheetOfficeEnd || "";
+        const defaultType =
+          String(m.timesheetDefaultType || "").trim().toLowerCase() === "office"
+            ? "office"
+            : "yard";
+
         setEmployee({
           role,
+          isService: workspaceAccess.service,
+          appAccess: workspaceAccess,
           displayName: m.displayName || "",
           employeeId: m.employeeId || "",
           email: m.employeeEmail || "",
           userCode: m.employeeUserCode || "",
+          yardStartTime: yardStart,
+          yardEndTime: yardEnd,
+          officeStartTime: officeStart,
+          officeEndTime: officeEnd,
+          timesheetDefaultType: defaultType,
+          timesheetDefaults: {
+            yardStart,
+            yardEnd,
+            officeStart,
+            officeEnd,
+            defaultType,
+          },
         });
       } else {
         setEmployee(null);
@@ -108,8 +169,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // Real Firebase user OR employee session
   const isAuthed = useMemo(() => {
     const realUser = !!user && !user.isAnonymous;
-    const employeeOK =
-      !!employee?.employeeId && employee?.role === "employee";
+    const employeeOK = !!employee?.employeeId;
     return realUser || employeeOK;
   }, [user, employee]);
 
@@ -132,4 +192,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       {children}
     </AuthCtx.Provider>
   );
+}
+
+// Expo Router treats every file inside app/ as a route.
+// Keep a noop default export here so this provider module is not warned as invalid.
+export default function AuthProviderRouteShim() {
+  return null;
 }

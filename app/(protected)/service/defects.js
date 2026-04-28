@@ -9,16 +9,17 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
 import { db } from "../../../firebaseConfig";
+import { designTokens as t } from "../../../lib/design/tokens";
 import { useTheme } from "../../providers/ThemeProvider";
 
 const COLORS = {
@@ -28,60 +29,134 @@ const COLORS = {
   textHigh: "#FFFFFF",
   textMid: "#E0E0E0",
   textLow: "#888888",
-  primaryAction: "#FF3B30",
-  recceAction: "#FF3B30",
+  primaryAction: "#ED1C25",
+  recceAction: "#ED1C25",
   inputBg: "#2a2a2a",
   lightGray: "#4a4a4a",
 };
 
 /* ---------- DEFECT HELPERS ---------- */
 
-function normaliseDefect(defect) {
-  if (!defect && defect !== "") {
-    return { text: "Issue", bucket: "general" };
+function normaliseKey(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase();
+}
+
+function isApprovedDefect(review) {
+  const status = normaliseKey(review?.status);
+  const category = normaliseKey(review?.category);
+  return (
+    status === "approved" &&
+    (category === "general" || category === "immediate")
+  );
+}
+
+function isOpenMaintenance(status) {
+  const value = normaliseKey(status);
+  return value !== "resolved" && value !== "complete" && value !== "completed";
+}
+
+function buildDefectRouteId(source, docId, itemIndex = "") {
+  return encodeURIComponent([source, docId, itemIndex].join("|"));
+}
+
+function getDateValue(value) {
+  if (!value) return 0;
+  if (typeof value?.toMillis === "function") return value.toMillis();
+  const parsed = new Date(value).getTime();
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function getVehicleLabel(record) {
+  return (
+    record?.vehicle ||
+    record?.vehicleName ||
+    record?.name ||
+    record?.registration ||
+    record?.reg ||
+    "Unknown vehicle"
+  );
+}
+
+function findVehicleForDefect(defect, vehicles) {
+  if (defect.vehicleId) {
+    const byId = vehicles.find((v) => v.id === defect.vehicleId);
+    if (byId) return byId;
   }
 
-  // If it's just a string
-  if (typeof defect === "string") {
-    const text = defect.trim() || "Issue";
-    const lower = text.toLowerCase();
-    const isImmediate =
-      lower.includes("urgent") ||
-      lower.includes("asap") ||
-      lower.includes("do not drive") ||
-      lower.includes("do not use") ||
-      lower.includes("unsafe") ||
-      lower.includes("off road") ||
-      lower.includes("off-road") ||
-      lower.includes("stop use");
+  const defectVehicle = normaliseKey(defect.vehicleName);
+  const defectReg = normaliseKey(defect.registration);
 
-    return { text, bucket: isImmediate ? "immediate" : "general" };
-  }
+  return vehicles.find((v) => {
+    const names = [
+      v.name,
+      v.vehicleName,
+      v.vehicle,
+      v.registration,
+      v.reg,
+    ].map(normaliseKey);
+    return names.includes(defectVehicle) || (!!defectReg && names.includes(defectReg));
+  });
+}
 
-  // If it's an object
-  const text =
-    defect.description ||
-    defect.summary ||
-    defect.title ||
-    "Issue";
+function buildApprovedCheckDefects(checkDocs) {
+  return checkDocs.flatMap((check) => {
+    const items = Array.isArray(check.items) ? check.items : [];
 
-  const lower = text.toLowerCase();
-  const priority = (defect.priority || "").toLowerCase();
-  const severity = (defect.severity || "").toLowerCase();
+    return items
+      .filter((item) => isApprovedDefect(item?.review))
+      .filter((item) => isOpenMaintenance(item?.maintenance?.status))
+      .map((item, index) => {
+        const label = item?.label || item?.title || item?.category || "Vehicle check";
+        const note = item?.note || item?.description || "";
+        const text = note ? `${label}: ${note}` : label;
 
-  const isImmediate =
-    defect.urgent === true ||
-    priority === "high" ||
-    priority === "urgent" ||
-    severity === "high" ||
-    severity === "critical" ||
-    lower.includes("do not drive") ||
-    lower.includes("do not use") ||
-    lower.includes("unsafe") ||
-    lower.includes("off road") ||
-    lower.includes("off-road");
+        return {
+          id: `${check.id}-${index}`,
+          routeId: buildDefectRouteId("vehicleChecks", check.id, index),
+          source: "vehicleChecks",
+          docId: check.id,
+          itemIndex: index,
+          category: normaliseKey(item.review.category),
+          text,
+          vehicleId: check.vehicleId || check.vehicleDocId || null,
+          vehicleName: getVehicleLabel(check),
+          registration: check.registration || check.reg || "",
+          reporter: check.driverName || check.reporterName || "",
+          jobNumber: check.jobNumber || "",
+          dateValue: getDateValue(check.dateISO || check.createdAt || check.date),
+          maintenanceStatus: item?.maintenance?.status || "",
+        };
+      });
+  });
+}
 
-  return { text, bucket: isImmediate ? "immediate" : "general" };
+function buildApprovedIssueDefects(issueDocs) {
+  return issueDocs
+    .filter((issue) => isApprovedDefect(issue?.review))
+    .filter((issue) => isOpenMaintenance(issue?.maintenance?.status))
+    .map((issue) => {
+      const category = issue.category || issue.title || "Issue";
+      const description = issue.description || issue.note || issue.summary || "";
+      const text = description ? `${category}: ${description}` : category;
+
+      return {
+        id: issue.id,
+        routeId: buildDefectRouteId("vehicleIssues", issue.id),
+        source: "vehicleIssues",
+        docId: issue.id,
+        category: normaliseKey(issue.review.category),
+        text,
+        vehicleId: issue.vehicleId || issue.vehicleDocId || null,
+        vehicleName: getVehicleLabel(issue),
+        registration: issue.registration || issue.reg || "",
+        reporter: issue.reporterName || issue.driverName || "",
+        jobNumber: issue.jobNumber || "",
+        dateValue: getDateValue(issue.createdAt || issue.dateISO || issue.date),
+        maintenanceStatus: issue?.maintenance?.status || "",
+      };
+    });
 }
 
 /* ---------- MAIN SCREEN ---------- */
@@ -91,9 +166,17 @@ export default function DefectsScreen() {
   const { colors } = useTheme();
 
   const [vehicles, setVehicles] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [vehicleChecks, setVehicleChecks] = useState([]);
+  const [vehicleIssues, setVehicleIssues] = useState([]);
+  const [loadingSources, setLoadingSources] = useState({
+    vehicles: true,
+    checks: true,
+    issues: true,
+  });
+  const loading =
+    loadingSources.vehicles || loadingSources.checks || loadingSources.issues;
 
-  // Live defects from vehicles collection
+  // Vehicles are used to link approved defects back to service vehicle pages.
   useEffect(() => {
     const q = query(collection(db, "vehicles"), orderBy("name", "asc"));
 
@@ -105,43 +188,109 @@ export default function DefectsScreen() {
           ...doc.data(),
         }));
         setVehicles(data);
-        setLoading(false);
+        setLoadingSources((prev) => ({ ...prev, vehicles: false }));
       },
       (err) => {
         console.error("Failed to load vehicles for defects:", err);
-        setLoading(false);
+        setLoadingSources((prev) => ({ ...prev, vehicles: false }));
       }
     );
 
     return () => unsub();
   }, []);
 
-  // Attach split defects per vehicle
+  useEffect(() => {
+    const unsub = onSnapshot(
+      collection(db, "vehicleChecks"),
+      (snap) => {
+        const data = snap.docs.map((doc) => ({
+          id: doc.id,
+          ...doc.data(),
+        }));
+        setVehicleChecks(data);
+        setLoadingSources((prev) => ({ ...prev, checks: false }));
+      },
+      (err) => {
+        console.error("Failed to load approved vehicle checks:", err);
+        setLoadingSources((prev) => ({ ...prev, checks: false }));
+      }
+    );
+
+    return () => unsub();
+  }, []);
+
+  useEffect(() => {
+    const unsub = onSnapshot(
+      collection(db, "vehicleIssues"),
+      (snap) => {
+        const data = snap.docs.map((doc) => ({
+          id: doc.id,
+          ...doc.data(),
+        }));
+        setVehicleIssues(data);
+        setLoadingSources((prev) => ({ ...prev, issues: false }));
+      },
+      (err) => {
+        console.error("Failed to load approved vehicle issues:", err);
+        setLoadingSources((prev) => ({ ...prev, issues: false }));
+      }
+    );
+
+    return () => unsub();
+  }, []);
+
+  // Attach approved split defects per vehicle/source.
   const withDefects = useMemo(() => {
-    return vehicles
-      .map((v) => {
-        const rawDefects = Array.isArray(v.defects) ? v.defects : [];
-        const immediateDefects = [];
-        const generalDefects = [];
+    const approvedDefects = [
+      ...buildApprovedCheckDefects(vehicleChecks),
+      ...buildApprovedIssueDefects(vehicleIssues),
+    ].sort((a, b) => b.dateValue - a.dateValue);
 
-        rawDefects.forEach((d) => {
-          const { text, bucket } = normaliseDefect(d);
-          if (bucket === "immediate") immediateDefects.push(text);
-          else generalDefects.push(text);
+    const grouped = new Map();
+
+    approvedDefects.forEach((defect) => {
+      const matchedVehicle = findVehicleForDefect(defect, vehicles);
+      const vehicleName =
+        matchedVehicle?.name ||
+        matchedVehicle?.vehicleName ||
+        defect.vehicleName ||
+        "Unknown vehicle";
+      const registration =
+        matchedVehicle?.registration ||
+        matchedVehicle?.reg ||
+        defect.registration ||
+        "";
+      const groupKey =
+        matchedVehicle?.id ||
+        defect.vehicleId ||
+        normaliseKey(`${vehicleName}-${registration}`) ||
+        defect.id;
+
+      if (!grouped.has(groupKey)) {
+        grouped.set(groupKey, {
+          id: groupKey,
+          vehicleId: matchedVehicle?.id || defect.vehicleId || null,
+          name: vehicleName,
+          vehicleName,
+          reg: registration,
+          registration,
+          immediateDefects: [],
+          generalDefects: [],
+          totalDefects: 0,
         });
+      }
 
-        const totalCount = immediateDefects.length + generalDefects.length;
+      const group = grouped.get(groupKey);
+      if (defect.category === "immediate") {
+        group.immediateDefects.push(defect);
+      } else {
+        group.generalDefects.push(defect);
+      }
+      group.totalDefects += 1;
+    });
 
-        return {
-          ...v,
-          defectsRaw: rawDefects,
-          immediateDefects,
-          generalDefects,
-          totalDefects: totalCount,
-        };
-      })
-      .filter((v) => v.totalDefects > 0);
-  }, [vehicles]);
+    return Array.from(grouped.values());
+  }, [vehicleChecks, vehicleIssues, vehicles]);
 
   const immediateVehicles = useMemo(
     () => withDefects.filter((v) => v.immediateDefects.length > 0),
@@ -149,12 +298,7 @@ export default function DefectsScreen() {
   );
 
   const generalVehicles = useMemo(
-    () =>
-      withDefects.filter(
-        (v) =>
-          v.immediateDefects.length === 0 &&
-          v.generalDefects.length > 0
-      ),
+    () => withDefects.filter((v) => v.generalDefects.length > 0),
     [withDefects]
   );
 
@@ -167,38 +311,31 @@ export default function DefectsScreen() {
     0
   );
 
-  const goVehicle = (id) => {
-    // align with service-list / service-home route
-    router.push(`/service/vehicles/${id}`);
+  const goDefect = (routeId) => {
+    router.push(`/service/defects/${routeId}`);
   };
 
   return (
     <SafeAreaView
+      edges={["left", "right"]}
       style={[
         styles.container,
         { backgroundColor: colors.background || COLORS.background },
       ]}
     >
-      {/* HEADER */}
       <View
         style={[
           styles.header,
           { borderBottomColor: colors.border || COLORS.border },
         ]}
       >
-        {/* 🔙 back button added */}
-        <TouchableOpacity
-          onPress={router.back}
-          style={styles.backButton}
-          activeOpacity={0.8}
-        >
+        <TouchableOpacity onPress={router.back} style={styles.backButton}>
           <Icon
             name="chevron-left"
-            size={20}
+            size={22}
             color={colors.text || COLORS.textHigh}
           />
         </TouchableOpacity>
-
         <View style={{ flex: 1 }}>
           <Text
             style={[
@@ -206,7 +343,7 @@ export default function DefectsScreen() {
               { color: colors.text || COLORS.textHigh },
             ]}
           >
-            Defects & issues
+            Defects & Issues
           </Text>
           <Text
             style={[
@@ -244,8 +381,8 @@ export default function DefectsScreen() {
               { color: colors.textMuted || COLORS.textMid },
             ]}
           >
-            When drivers or crew log issues against a vehicle, they’ll appear
-            here automatically.
+            Approved general and immediate defects from vehicle checks and
+            vehicle issues will appear here automatically.
           </Text>
         </View>
       ) : (
@@ -278,7 +415,7 @@ export default function DefectsScreen() {
             <View style={styles.summaryRow}>
               <View style={styles.summaryPill}>
                 <View
-                  style={[styles.summaryDot, { backgroundColor: "#FF3B30" }]}
+                  style={[styles.summaryDot, { backgroundColor: "#ED1C25" }]}
                 />
                 <Text style={styles.summaryText}>
                   {totalImmediate} immediate
@@ -314,7 +451,7 @@ export default function DefectsScreen() {
                 const general = v.generalDefects;
 
                 return (
-                  <TouchableOpacity
+                  <View
                     key={v.id}
                     style={[
                       styles.card,
@@ -323,8 +460,6 @@ export default function DefectsScreen() {
                         backgroundColor: colors.surfaceAlt || COLORS.card,
                       },
                     ]}
-                    activeOpacity={0.85}
-                    onPress={() => goVehicle(v.id)}
                   >
                     <View style={styles.cardHeader}>
                       <View style={{ flex: 1 }}>
@@ -341,23 +476,24 @@ export default function DefectsScreen() {
                       <View style={styles.badgeImmediate}>
                         <Text style={styles.badgeText}>Immediate</Text>
                       </View>
-                      <Icon
-                        name="chevron-right"
-                        size={18}
-                        color={COLORS.textMid}
-                      />
                     </View>
 
-                    {immediate.slice(0, 3).map((text, idx) => (
-                      <View key={`imm-${idx}`} style={styles.defectRow}>
+                    {immediate.slice(0, 3).map((defect) => (
+                      <TouchableOpacity
+                        key={defect.id}
+                        style={styles.defectRow}
+                        onPress={() => goDefect(defect.routeId)}
+                        activeOpacity={0.75}
+                      >
                         <Icon
                           name="alert-triangle"
                           size={14}
                           color={COLORS.recceAction}
                           style={{ marginRight: 6 }}
                         />
-                        <Text style={styles.defectText}>{text}</Text>
-                      </View>
+                        <Text style={styles.defectText}>{defect.text}</Text>
+                        <Icon name="chevron-right" size={14} color={COLORS.textMid} />
+                      </TouchableOpacity>
                     ))}
 
                     {general.length > 0 && (
@@ -365,10 +501,12 @@ export default function DefectsScreen() {
                         <Text style={styles.subSectionLabel}>
                           Other issues
                         </Text>
-                        {general.slice(0, 2).map((text, idx) => (
-                          <View
-                            key={`gen-${idx}`}
+                        {general.slice(0, 2).map((defect) => (
+                          <TouchableOpacity
+                            key={defect.id}
                             style={[styles.defectRow, { marginTop: 2 }]}
+                            onPress={() => goDefect(defect.routeId)}
+                            activeOpacity={0.75}
                           >
                             <Icon
                               name="minus-circle"
@@ -376,8 +514,9 @@ export default function DefectsScreen() {
                               color="#FFCC00"
                               style={{ marginRight: 6 }}
                             />
-                            <Text style={styles.defectText}>{text}</Text>
-                          </View>
+                            <Text style={styles.defectText}>{defect.text}</Text>
+                            <Icon name="chevron-right" size={14} color={COLORS.textMid} />
+                          </TouchableOpacity>
                         ))}
                         {general.length > 2 && (
                           <Text style={styles.moreText}>
@@ -392,7 +531,7 @@ export default function DefectsScreen() {
                         + {immediate.length - 3} more…
                       </Text>
                     )}
-                  </TouchableOpacity>
+                  </View>
                 );
               })}
             </>
@@ -416,7 +555,7 @@ export default function DefectsScreen() {
                 const general = v.generalDefects;
 
                 return (
-                  <TouchableOpacity
+                  <View
                     key={v.id}
                     style={[
                       styles.card,
@@ -425,8 +564,6 @@ export default function DefectsScreen() {
                         backgroundColor: colors.surfaceAlt || COLORS.card,
                       },
                     ]}
-                    activeOpacity={0.85}
-                    onPress={() => goVehicle(v.id)}
                   >
                     <View style={styles.cardHeader}>
                       <View style={{ flex: 1 }}>
@@ -442,23 +579,24 @@ export default function DefectsScreen() {
                       <View style={styles.badgeGeneral}>
                         <Text style={styles.badgeText}>General</Text>
                       </View>
-                      <Icon
-                        name="chevron-right"
-                        size={18}
-                        color={COLORS.textMid}
-                      />
                     </View>
 
-                    {general.slice(0, 3).map((text, idx) => (
-                      <View key={idx} style={styles.defectRow}>
+                    {general.slice(0, 3).map((defect) => (
+                      <TouchableOpacity
+                        key={defect.id}
+                        style={styles.defectRow}
+                        onPress={() => goDefect(defect.routeId)}
+                        activeOpacity={0.75}
+                      >
                         <Icon
                           name="minus-circle"
                           size={14}
                           color="#FFCC00"
                           style={{ marginRight: 6 }}
                         />
-                        <Text style={styles.defectText}>{text}</Text>
-                      </View>
+                        <Text style={styles.defectText}>{defect.text}</Text>
+                        <Icon name="chevron-right" size={14} color={COLORS.textMid} />
+                      </TouchableOpacity>
                     ))}
 
                     {general.length > 3 && (
@@ -466,7 +604,7 @@ export default function DefectsScreen() {
                         + {general.length - 3} more…
                       </Text>
                     )}
-                  </TouchableOpacity>
+                  </View>
                 );
               })}
             </>
@@ -483,7 +621,6 @@ export default function DefectsScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.background },
-
   header: {
     flexDirection: "row",
     alignItems: "center",
@@ -493,37 +630,28 @@ const styles = StyleSheet.create({
     borderBottomColor: COLORS.border,
   },
   backButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    alignItems: "center",
-    justifyContent: "center",
-    marginRight: 10,
+    paddingRight: 10,
   },
   pageTitle: {
-    fontSize: 18,
+    fontSize: 20,
     fontWeight: "800",
   },
   pageSubtitle: {
-    fontSize: 12,
     marginTop: 2,
+    fontSize: 12,
     color: COLORS.textMid,
   },
 
   loadingContainer: { flex: 1, justifyContent: "center", alignItems: "center" },
 
-  scrollContent: { padding: 16 },
+  scrollContent: { padding: t.spacing.md, paddingTop: 4 },
 
   /* SUMMARY CARD */
   infoCard: {
     backgroundColor: COLORS.card,
-    borderRadius: 10,
-    padding: 14,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: COLORS.border,
+    borderRadius: t.radius.sm,
+    padding: t.controls.cardPadding,
+    marginBottom: t.spacing.sm,
   },
   infoTitle: {
     fontSize: 16,
@@ -542,13 +670,12 @@ const styles = StyleSheet.create({
   summaryPill: {
     flexDirection: "row",
     alignItems: "center",
+    minHeight: t.controls.chipMinHeight,
     marginRight: 12,
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 999,
     backgroundColor: "#181818",
-    borderWidth: 1,
-    borderColor: COLORS.border,
   },
   summaryDot: {
     width: 8,
@@ -584,7 +711,7 @@ const styles = StyleSheet.create({
   card: {
     backgroundColor: COLORS.card,
     borderRadius: 10,
-    padding: 14,
+    padding: t.controls.cardPadding,
     marginBottom: 12,
     borderWidth: 1,
     borderColor: COLORS.border,
@@ -608,7 +735,7 @@ const styles = StyleSheet.create({
     marginTop: 4,
     fontSize: 12,
     fontWeight: "600",
-    color: "#FF3B30",
+    color: "#ED1C25",
   },
   countGeneral: {
     marginTop: 4,
@@ -622,7 +749,7 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     backgroundColor: "rgba(255,59,48,0.15)",
     borderWidth: 1,
-    borderColor: "#FF3B30",
+    borderColor: "#ED1C25",
     marginRight: 8,
   },
   badgeGeneral: {

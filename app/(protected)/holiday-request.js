@@ -1,9 +1,8 @@
 // app/holiday-request.js
 import { useRouter } from "expo-router";
-import { addDoc, collection, getDocs } from "firebase/firestore";
+import { collection, doc, getDocs, setDoc } from "firebase/firestore";
 import { useEffect, useMemo, useState } from "react";
 import {
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
@@ -11,12 +10,25 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { Calendar } from "react-native-calendars";
 import Icon from "react-native-vector-icons/Feather";
 
 import { db } from "../../firebaseConfig";
+import { designTokens as t } from "../../lib/design/tokens";
+import { runOrQueueFirestoreMutation } from "../../lib/sync/firestoreQueue";
 import { useAuth } from "../providers/AuthProvider";
 import { useTheme } from "../providers/ThemeProvider";
+
+function withAlpha(hex, alpha) {
+  const safeAlpha = Math.max(0, Math.min(1, Number(alpha) || 0));
+  const raw = String(hex || "").replace("#", "");
+  if (!/^[0-9a-fA-F]{6}$/.test(raw)) return `rgba(255,255,255,${safeAlpha})`;
+  const r = parseInt(raw.slice(0, 2), 16);
+  const g = parseInt(raw.slice(2, 4), 16);
+  const b = parseInt(raw.slice(4, 6), 16);
+  return `rgba(${r},${g},${b},${safeAlpha})`;
+}
 
 export default function HolidayRequestPage() {
   const router = useRouter();
@@ -34,7 +46,6 @@ export default function HolidayRequestPage() {
   // UI extras
   const [halfDay, setHalfDay] = useState(false); // single-day only
   const [halfDayPeriod, setHalfDayPeriod] = useState("AM"); // AM | PM
-  const [workedBankHoliday, setWorkedBankHoliday] = useState(false);
 
   // Resolve employee record
   const [empRecord, setEmpRecord] = useState(null);
@@ -78,15 +89,6 @@ export default function HolidayRequestPage() {
     a.getFullYear() === b.getFullYear() &&
     a.getMonth() === b.getMonth() &&
     a.getDate() === b.getDate();
-
-  const rangesOverlap = (aStart, aEnd, bStart, bEnd) => {
-    if (!aStart || !aEnd || !bStart || !bEnd) return false;
-    const as = startOfDay(aStart).getTime();
-    const ae = endOfDay(aEnd).getTime();
-    const bs = startOfDay(bStart).getTime();
-    const be = endOfDay(bEnd).getTime();
-    return as <= be && bs <= ae;
-  };
 
   const isWeekend = (d) => {
     const day = d.getDay();
@@ -132,34 +134,6 @@ export default function HolidayRequestPage() {
 
     // default: don't count unless explicitly paid
     return false;
-  };
-
-  const daysForHoliday = (h) => {
-    const hs = toDate(h.startDate);
-    const he = toDate(h.endDate) || hs;
-    if (!hs || !he) return 0;
-
-    const days = eachDateInclusive(hs, he);
-    const single = sameYMD(hs, he);
-
-    const startIsHalf = h.startHalfDay === true || norm(h.startHalfDay) === "true";
-    const endIsHalf = h.endHalfDay === true || norm(h.endHalfDay) === "true";
-
-    let total = 0;
-    for (let i = 0; i < days.length; i++) {
-      const d = days[i];
-      if (isWeekend(d)) continue;
-
-      let inc = 1;
-      if (single) {
-        if (startIsHalf || endIsHalf) inc = 0.5;
-      } else {
-        if (i === 0 && startIsHalf) inc = 0.5;
-        if (i === days.length - 1 && endIsHalf) inc = 0.5;
-      }
-      total += inc;
-    }
-    return total;
   };
 
   const requestedDays = useMemo(() => {
@@ -277,6 +251,34 @@ export default function HolidayRequestPage() {
     const yr = startDate ? toDate(startDate)?.getFullYear() : new Date().getFullYear();
     const name = empRecord?.name || employee?.name || user?.displayName || user?.email || "";
 
+    const daysForHoliday = (h) => {
+      const hs = toDate(h.startDate);
+      const he = toDate(h.endDate) || hs;
+      if (!hs || !he) return 0;
+
+      const days = eachDateInclusive(hs, he);
+      const single = sameYMD(hs, he);
+
+      const startIsHalf = h.startHalfDay === true || norm(h.startHalfDay) === "true";
+      const endIsHalf = h.endHalfDay === true || norm(h.endHalfDay) === "true";
+
+      let total = 0;
+      for (let i = 0; i < days.length; i++) {
+        const d = days[i];
+        if (isWeekend(d)) continue;
+
+        let inc = 1;
+        if (single) {
+          if (startIsHalf || endIsHalf) inc = 0.5;
+        } else {
+          if (i === 0 && startIsHalf) inc = 0.5;
+          if (i === days.length - 1 && endIsHalf) inc = 0.5;
+        }
+        total += inc;
+      }
+      return total;
+    };
+
     // allowance: holidayAllowances[year] preferred, else legacy holidayAllowance
     const yrKey = String(yr);
     const allowance =
@@ -322,6 +324,15 @@ export default function HolidayRequestPage() {
   /* ---------------- holiday overlap conflict ---------------- */
   const holidayConflict = useMemo(() => {
     setHolidayConflictMsg("");
+
+    const rangesOverlap = (aStart, aEnd, bStart, bEnd) => {
+      if (!aStart || !aEnd || !bStart || !bEnd) return false;
+      const as = startOfDay(aStart).getTime();
+      const ae = endOfDay(aEnd).getTime();
+      const bs = startOfDay(bStart).getTime();
+      const be = endOfDay(bEnd).getTime();
+      return as <= be && bs <= ae;
+    };
 
     const name = allowanceInfo.name;
     if (!name) return null;
@@ -392,64 +403,73 @@ export default function HolidayRequestPage() {
   }, [holidayConflict]);
 
   /* ---------------- booking/job conflict ---------------- */
-  const bookingIsActive = (b) => {
-    const st = norm(b.status || b.bookingStatus || b.state);
-    if (st.includes("cancel")) return false;
-    if (st.includes("declin")) return false;
-    return true;
-  };
-
-  const bookingHasEmployee = (b, empName) => {
-    const target = norm(empName);
-    if (!target) return false;
-
-    const candidates = [
-      b.employees,
-      b.crew,
-      b.staff,
-      b.assignedEmployees,
-      b.employeeNames,
-      b.people,
-    ];
-
-    for (const c of candidates) {
-      if (!c) continue;
-
-      if (Array.isArray(c)) {
-        if (c.some((x) => norm(x?.name ?? x) === target)) return true;
-      }
-
-      if (typeof c === "object" && !Array.isArray(c)) {
-        const keys = Object.keys(c);
-        if (keys.some((k) => norm(k) === target)) return true;
-        const vals = Object.values(c);
-        if (vals.some((v) => norm(v?.name ?? v) === target)) return true;
-      }
-    }
-
-    if (typeof b.employee === "string" && norm(b.employee) === target) return true;
-
-    return false;
-  };
-
-  const bookingRange = (b) => {
-    const s = toDate(b.startDate) || toDate(b.date) || null;
-    const e = toDate(b.endDate) || toDate(b.date) || null;
-
-    if (s && e) return { start: s, end: e };
-
-    if (Array.isArray(b.dates) && b.dates.length) {
-      const parsed = b.dates.map(toDate).filter(Boolean);
-      if (!parsed.length) return { start: null, end: null };
-      parsed.sort((a, b) => +a - +b);
-      return { start: parsed[0], end: parsed[parsed.length - 1] };
-    }
-
-    return { start: null, end: null };
-  };
-
   const jobConflict = useMemo(() => {
     setJobConflictMsg("");
+
+    const rangesOverlap = (aStart, aEnd, bStart, bEnd) => {
+      if (!aStart || !aEnd || !bStart || !bEnd) return false;
+      const as = startOfDay(aStart).getTime();
+      const ae = endOfDay(aEnd).getTime();
+      const bs = startOfDay(bStart).getTime();
+      const be = endOfDay(bEnd).getTime();
+      return as <= be && bs <= ae;
+    };
+
+    const bookingIsActive = (b) => {
+      const st = norm(b.status || b.bookingStatus || b.state);
+      if (st.includes("cancel")) return false;
+      if (st.includes("declin")) return false;
+      return true;
+    };
+
+    const bookingHasEmployee = (b, empName) => {
+      const target = norm(empName);
+      if (!target) return false;
+
+      const candidates = [
+        b.employees,
+        b.crew,
+        b.staff,
+        b.assignedEmployees,
+        b.employeeNames,
+        b.people,
+      ];
+
+      for (const c of candidates) {
+        if (!c) continue;
+
+        if (Array.isArray(c)) {
+          if (c.some((x) => norm(x?.name ?? x) === target)) return true;
+        }
+
+        if (typeof c === "object" && !Array.isArray(c)) {
+          const keys = Object.keys(c);
+          if (keys.some((k) => norm(k) === target)) return true;
+          const vals = Object.values(c);
+          if (vals.some((v) => norm(v?.name ?? v) === target)) return true;
+        }
+      }
+
+      if (typeof b.employee === "string" && norm(b.employee) === target) return true;
+
+      return false;
+    };
+
+    const bookingRange = (b) => {
+      const s = toDate(b.startDate) || toDate(b.date) || null;
+      const e = toDate(b.endDate) || toDate(b.date) || null;
+
+      if (s && e) return { start: s, end: e };
+
+      if (Array.isArray(b.dates) && b.dates.length) {
+        const parsed = b.dates.map(toDate).filter(Boolean);
+        if (!parsed.length) return { start: null, end: null };
+        parsed.sort((a, b) => +a - +b);
+        return { start: parsed[0], end: parsed[parsed.length - 1] };
+      }
+
+      return { start: null, end: null };
+    };
 
     const name = allowanceInfo.name;
     if (!name) return null;
@@ -503,11 +523,17 @@ export default function HolidayRequestPage() {
   /* ---------------- calendar marks ---------------- */
   const markedDates = useMemo(() => {
     const m = {};
-    if (startDate) m[startDate] = { startingDay: true, color: "#22c55e", textColor: "#fff" };
+    if (startDate) {
+      m[startDate] = {
+        startingDay: true,
+        color: colors.accent,
+        textColor: "#fff",
+      };
+    }
 
     const last = endDate || startDate;
     if (last) {
-      m[last] = { ...(m[last] || {}), endingDay: true, color: "#22c55e", textColor: "#fff" };
+      m[last] = { ...(m[last] || {}), endingDay: true, color: colors.accent, textColor: "#fff" };
     }
 
     if (startDate && last) {
@@ -515,16 +541,16 @@ export default function HolidayRequestPage() {
       const endD = new Date(last);
       while (cur <= endD) {
         const s = cur.toISOString().split("T")[0];
-        if (!m[s]) m[s] = { color: "#86efac", textColor: "#fff" };
+        if (!m[s]) m[s] = { color: withAlpha(colors.accent, 0.45), textColor: "#fff" };
         cur.setDate(cur.getDate() + 1);
       }
       if (isSingleDay && halfDay && startDate) {
-        m[startDate] = { ...(m[startDate] || {}), color: "#34d399", textColor: "#000" };
+        m[startDate] = { ...(m[startDate] || {}), color: withAlpha(colors.accent, 0.8), textColor: "#fff" };
       }
     }
 
     return m;
-  }, [startDate, endDate, isSingleDay, halfDay]);
+  }, [startDate, endDate, isSingleDay, halfDay, colors.accent]);
 
   const handleDayPress = (day) => {
     const d = day.dateString;
@@ -591,6 +617,8 @@ export default function HolidayRequestPage() {
     try {
       // ✅ Save half-day fields for single-day (so web + conflict rules stay consistent)
       const single = startStr === endStr;
+      const holidayRef = doc(collection(db, "holidays"));
+      const holidayId = holidayRef.id;
 
       const holidayData = {
         employee: name,
@@ -616,9 +644,24 @@ export default function HolidayRequestPage() {
         status: "requested",
       };
 
-      await addDoc(collection(db, "holidays"), holidayData);
+      const { queued } = await runOrQueueFirestoreMutation({
+        run: () => setDoc(holidayRef, holidayData, { merge: false }),
+        mutation: {
+          operation: "set",
+          docPath: `holidays/${holidayId}`,
+          data: holidayData,
+          options: { merge: false },
+          entityType: "holiday",
+          entityId: holidayId,
+          meta: { employeeCode: employee?.userCode || null },
+        },
+      });
 
-      alert("✅ Holiday request submitted!");
+      if (queued) {
+        alert("📥 Holiday request queued offline. It will sync automatically.");
+      } else {
+        alert("✅ Holiday request submitted!");
+      }
       router.back();
     } catch (err) {
       console.error("Holiday submit failed:", err);
@@ -631,7 +674,10 @@ export default function HolidayRequestPage() {
   /* ---------------- loading gate ---------------- */
   if (loading || empLoading) {
     return (
-      <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
+      <SafeAreaView
+        edges={["top", "left", "right"]}
+        style={[styles.container, { backgroundColor: colors.background }]}
+      >
         <View style={{ padding: 16 }}>
           <Text style={{ color: colors.textMuted }}>Loading…</Text>
         </View>
@@ -640,23 +686,67 @@ export default function HolidayRequestPage() {
   }
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
-      {/* Top bar */}
-      <View style={styles.topBar}>
-        <TouchableOpacity
-          style={[
-            styles.backButton,
-            { backgroundColor: colors.surfaceAlt, borderColor: colors.border },
-          ]}
-          onPress={() => router.back()}
-        >
-          <Icon name="arrow-left" size={18} color={colors.text} />
-          <Text style={[styles.backText, { color: colors.text }]}>Back</Text>
-        </TouchableOpacity>
-      </View>
-
+    <SafeAreaView
+      edges={["top", "left", "right"]}
+      style={[styles.container, { backgroundColor: colors.background }]}
+    >
       <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 16 }}>
-        <Text style={[styles.title, { color: colors.text }]}>📅 Request Holiday</Text>
+        <View style={styles.heroCard}>
+          <View style={styles.heroContent}>
+            <View style={styles.heroTopRow}>
+              <TouchableOpacity
+                style={[
+                  styles.heroBackButton,
+                  {
+                    backgroundColor: withAlpha(colors.surfaceAlt, 0.82),
+                    borderColor: withAlpha(colors.border, 0.82),
+                  },
+                ]}
+                onPress={() => router.back()}
+                activeOpacity={0.85}
+              >
+                <Icon name="arrow-left" size={15} color={colors.text} />
+              </TouchableOpacity>
+
+              <View style={styles.heroTitleWrap}>
+                <Text style={[styles.heroTitle, { color: colors.text }]}>Request Holiday</Text>
+              </View>
+
+              <View style={styles.heroSpacer} />
+            </View>
+
+            <View style={styles.heroMetaRow}>
+              <View
+                style={[
+                  styles.heroMetaChip,
+                  {
+                    backgroundColor: withAlpha(colors.surfaceAlt, 0.75),
+                    borderColor: withAlpha(colors.border, 0.75),
+                  },
+                ]}
+              >
+                <Icon name="clock" size={12} color={colors.textMuted} />
+                <Text style={[styles.heroMetaText, { color: colors.text }]}>
+                  {startDate ? `${requestedDays} day(s)` : "Pick dates"}
+                </Text>
+              </View>
+              <View
+                style={[
+                  styles.heroMetaChip,
+                  {
+                    backgroundColor: withAlpha(colors.surfaceAlt, 0.75),
+                    borderColor: withAlpha(colors.border, 0.75),
+                  },
+                ]}
+              >
+                <Icon name="briefcase" size={12} color={colors.textMuted} />
+                <Text style={[styles.heroMetaText, { color: colors.text }]}>
+                  {paidStatus}
+                </Text>
+              </View>
+            </View>
+          </View>
+        </View>
 
         {/* Calendar */}
         <View style={[styles.card, { backgroundColor: colors.surfaceAlt, borderColor: colors.border }]}>
@@ -669,9 +759,9 @@ export default function HolidayRequestPage() {
               dayTextColor: colors.text,
               monthTextColor: colors.text,
               arrowColor: colors.accent,
-              selectedDayBackgroundColor: "#22c55e",
+              selectedDayBackgroundColor: colors.accent,
               selectedDayTextColor: "#fff",
-              todayTextColor: "#22c55e",
+              todayTextColor: colors.accent,
             }}
           />
         </View>
@@ -706,7 +796,7 @@ export default function HolidayRequestPage() {
             </Text>
 
             {allowanceInfo.remainingPaid <= 0 ? (
-              <Text style={{ color: "#fca5a5", marginTop: 8, fontWeight: "800" }}>
+              <Text style={{ color: colors.danger || "#f87171", marginTop: 8, fontWeight: "800" }}>
                 No paid holiday remaining — you can only book unpaid holiday.
               </Text>
             ) : null}
@@ -715,15 +805,31 @@ export default function HolidayRequestPage() {
 
         {/* Conflict warnings */}
         {holidayConflictMsg ? (
-          <View style={[styles.card, { backgroundColor: colors.surfaceAlt, borderColor: "#7f1d1d" }]}>
-            <Text style={{ color: "#fca5a5", fontWeight: "900" }}>Holiday conflict</Text>
+          <View
+            style={[
+              styles.card,
+              {
+                backgroundColor: withAlpha(colors.danger || "#dc2626", 0.08),
+                borderColor: withAlpha(colors.danger || "#dc2626", 0.45),
+              },
+            ]}
+          >
+            <Text style={{ color: colors.danger || "#f87171", fontWeight: "900" }}>Holiday conflict</Text>
             <Text style={{ color: colors.textMuted, marginTop: 6 }}>{holidayConflictMsg}</Text>
           </View>
         ) : null}
 
         {jobConflictMsg ? (
-          <View style={[styles.card, { backgroundColor: colors.surfaceAlt, borderColor: "#b45309" }]}>
-            <Text style={{ color: "#fdba74", fontWeight: "900" }}>Job conflict</Text>
+          <View
+            style={[
+              styles.card,
+              {
+                backgroundColor: withAlpha("#d97706", 0.08),
+                borderColor: withAlpha("#d97706", 0.45),
+              },
+            ]}
+          >
+            <Text style={{ color: "#f59e0b", fontWeight: "900" }}>Job conflict</Text>
             <Text style={{ color: colors.textMuted, marginTop: 6 }}>{jobConflictMsg}</Text>
           </View>
         ) : null}
@@ -745,7 +851,7 @@ export default function HolidayRequestPage() {
               <Icon
                 name={paidStatus === opt.key ? "check-square" : "square"}
                 size={20}
-                color={paidStatus === opt.key ? "#22c55e" : "#777"}
+                color={paidStatus === opt.key ? colors.accent : colors.textMuted}
                 style={{ marginRight: 10 }}
               />
               <Text style={{ color: colors.text, fontSize: 16 }}>{opt.label}</Text>
@@ -753,7 +859,7 @@ export default function HolidayRequestPage() {
           ))}
 
           {paidStatus === "Paid" && paidAllowed && requestedDays > allowanceInfo.remainingPaid ? (
-            <Text style={{ color: "#fca5a5", marginTop: 8, fontWeight: "800" }}>
+            <Text style={{ color: colors.danger || "#f87171", marginTop: 8, fontWeight: "800" }}>
               Not enough paid remaining for this request — choose Unpaid or shorten/split.
             </Text>
           ) : null}
@@ -773,7 +879,7 @@ export default function HolidayRequestPage() {
             <Icon
               name={halfDay ? "check-square" : "square"}
               size={20}
-              color={halfDay ? "#22c55e" : "#777"}
+              color={halfDay ? colors.accent : colors.textMuted}
               style={{ marginRight: 10 }}
             />
             <Text style={[styles.rowText, { color: colors.text }]}>
@@ -783,8 +889,18 @@ export default function HolidayRequestPage() {
 
           {isSingleDay && halfDay && (
             <View style={styles.choiceRow}>
-              <HalfChip label="AM" active={halfDayPeriod === "AM"} onPress={() => setHalfDayPeriod("AM")} />
-              <HalfChip label="PM" active={halfDayPeriod === "PM"} onPress={() => setHalfDayPeriod("PM")} />
+              <HalfChip
+                label="AM"
+                active={halfDayPeriod === "AM"}
+                onPress={() => setHalfDayPeriod("AM")}
+                colors={colors}
+              />
+              <HalfChip
+                label="PM"
+                active={halfDayPeriod === "PM"}
+                onPress={() => setHalfDayPeriod("PM")}
+                colors={colors}
+              />
             </View>
           )}
 
@@ -811,12 +927,19 @@ export default function HolidayRequestPage() {
 
         {/* Submit */}
         <TouchableOpacity
-          style={[styles.submitButton, { backgroundColor: "#22c55e", opacity: holidayConflict || jobConflict ? 0.6 : 1 }]}
+          style={[
+            styles.submitButton,
+            {
+              backgroundColor: colors.accent,
+              borderColor: colors.accent,
+              opacity: holidayConflict || jobConflict ? 0.6 : 1,
+            },
+          ]}
           onPress={submitRequest}
           activeOpacity={0.9}
           disabled={!!holidayConflict || !!jobConflict}
         >
-          <Text style={styles.submitText}>
+          <Text style={[styles.submitText, { color: colors.surface }]}>
             {holidaysLoading || bookingsLoading ? "Loading…" : "Submit Request"}
           </Text>
         </TouchableOpacity>
@@ -826,7 +949,7 @@ export default function HolidayRequestPage() {
 }
 
 /* Small chip button for AM/PM */
-function HalfChip({ label, active, onPress }) {
+function HalfChip({ label, active, onPress, colors }) {
   return (
     <TouchableOpacity
       onPress={onPress}
@@ -839,56 +962,88 @@ function HalfChip({ label, active, onPress }) {
           borderWidth: 1,
           marginRight: 8,
         },
-        active ? { backgroundColor: "#22c55e", borderColor: "#22c55e" } : { backgroundColor: "#141414", borderColor: "#232323" },
+        active
+          ? { backgroundColor: colors.accent, borderColor: colors.accent }
+          : { backgroundColor: colors.surface, borderColor: colors.border },
       ]}
     >
-      <Text style={{ color: active ? "#000" : "#fff", fontWeight: "800", fontSize: 12 }}>{label}</Text>
+      <Text style={{ color: active ? colors.surface : colors.text, fontWeight: "800", fontSize: 12 }}>
+        {label}
+      </Text>
     </TouchableOpacity>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#000" },
+  container: { flex: 1, backgroundColor: "#0b0b0b" },
 
-  topBar: {
+  heroCard: {
+    marginHorizontal: 12,
+    marginTop: 10,
+    marginBottom: 8,
+  },
+  heroTopRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingHorizontal: 12,
-    paddingTop: 12,
-    paddingBottom: 4,
   },
-  backButton: {
+  heroBackButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    justifyContent: "center",
+    alignItems: "center",
+    borderWidth: 1,
+  },
+  heroTitleWrap: {
+    flex: 1,
+    alignItems: "center",
+    paddingHorizontal: 12,
+  },
+  heroSpacer: {
+    width: 38,
+    height: 38,
+  },
+  heroContent: {
+    paddingBottom: 4,
+    paddingTop: 2,
+  },
+  heroTitle: {
+    ...t.typography.pageTitle,
+    letterSpacing: 0.2,
+    textAlign: "center",
+  },
+  heroSubTitle: {
+    marginTop: 3,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: "600",
+    textAlign: "center",
+  },
+  heroMetaRow: {
+    marginTop: 10,
+    flexDirection: "row",
+    gap: 8,
+    flexWrap: "wrap",
+    justifyContent: "center",
+  },
+  heroMetaChip: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    borderRadius: 10,
+    gap: 6,
+    borderRadius: 999,
     borderWidth: 1,
-    borderColor: "#222",
-    backgroundColor: "#0f0f0f",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
   },
-  backText: {
-    color: "#fff",
-    fontSize: 14,
-    marginLeft: 6,
+  heroMetaText: {
+    fontSize: 11,
     fontWeight: "700",
   },
 
-  title: {
-    color: "#fff",
-    fontSize: 20,
-    fontWeight: "800",
-    marginVertical: 12,
-    paddingHorizontal: 12,
-  },
-
   card: {
-    backgroundColor: "#0f0f0f",
     borderWidth: 1,
-    borderColor: "#1f1f1f",
-    borderRadius: 12,
+    borderRadius: 14,
     marginHorizontal: 12,
     marginBottom: 12,
     padding: 12,
@@ -906,28 +1061,24 @@ const styles = StyleSheet.create({
   },
 
   notesInput: {
-    backgroundColor: "#111",
-    color: "#fff",
     padding: 12,
-    borderRadius: 8,
+    borderRadius: 10,
     minHeight: 90,
     textAlignVertical: "top",
     borderWidth: 1,
-    borderColor: "#222",
   },
 
   submitButton: {
-    backgroundColor: "#22c55e",
+    borderWidth: 1,
     padding: 14,
-    borderRadius: 10,
+    borderRadius: 999,
     alignItems: "center",
     marginHorizontal: 12,
     marginTop: 4,
     marginBottom: 20,
   },
   submitText: {
-    color: "#000",
     fontWeight: "800",
-    fontSize: 16,
+    fontSize: 14,
   },
 });

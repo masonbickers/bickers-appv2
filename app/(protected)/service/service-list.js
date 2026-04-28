@@ -4,7 +4,6 @@ import { collection, onSnapshot, orderBy, query } from "firebase/firestore";
 import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
@@ -12,9 +11,12 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
 import { db } from "../../../firebaseConfig";
+import PageHeaderCard from "../../../components/PageHeaderCard";
+import { designTokens as t } from "../../../lib/design/tokens";
 import { useTheme } from "../../providers/ThemeProvider";
 
 /* ---------- CONSTANTS & HELPERS ---------- */
@@ -26,7 +28,7 @@ const COLORS = {
   textHigh: "#FFFFFF",
   textMid: "#E0E0E0",
   textLow: "#888888",
-  primaryAction: "#FF3B30", // red accent
+  primaryAction: "#ED1C25", // red accent
   inputBg: "#1A1A1A",
   chipBg: "#1F1F1F",
   chipBorder: "#3A3A3A",
@@ -266,38 +268,22 @@ export default function ServiceListScreen() {
 
   return (
     <SafeAreaView
+      edges={["left", "right"]}
       style={[
         styles.container,
         { backgroundColor: colors.background || COLORS.background },
       ]}
     >
-      {/* HEADER */}
-      <View
-        style={[
-          styles.header,
-          { borderBottomColor: colors.border || COLORS.border },
-        ]}
-      >
-        <View style={{ flex: 1 }}>
-          <Text
-            style={[
-              styles.pageTitle,
-              { color: colors.text || COLORS.textHigh },
-            ]}
-          >
-            MOT & Service – Full List
-          </Text>
-          <Text
-            style={[
-              styles.pageSubtitle,
-              { color: colors.textMuted || COLORS.textMid },
-            ]}
-          >
-            Use the status sections to see what needs booking first, then tap a
-            vehicle to view details and book work.
-          </Text>
-        </View>
-      </View>
+      <PageHeaderCard
+        eyebrow="Workshop"
+        title="MOT & Service"
+        subtitle="Prioritise overdue vehicles, then tap to view details and book work."
+        style={styles.headerCard}
+        contentStyle={styles.headerContent}
+        eyebrowStyle={styles.headerEyebrow}
+        titleStyle={styles.headerTitle}
+        subtitleStyle={styles.headerSubtitle}
+      />
 
       {loading ? (
         <View style={styles.loadingContainer}>
@@ -455,7 +441,7 @@ export default function ServiceListScreen() {
                 const expanded = expandedStatus[section.key] ?? true;
 
                 let accentColour = colors.border || COLORS.border;
-                if (section.key === "overdue") accentColour = colors.danger || "#FF3B30";
+                if (section.key === "overdue") accentColour = colors.danger || "#ED1C25";
                 else if (section.key === "due-soon") accentColour = "#FF9500";
                 else if (section.key === "ok") accentColour = colors.success || "#34C759";
 
@@ -531,7 +517,7 @@ export default function ServiceListScreen() {
 
                         let borderAccent = colors.border || COLORS.border;
                         if (v.worstCode === "overdue")
-                          borderAccent = colors.danger || "#FF3B30";
+                          borderAccent = colors.danger || "#ED1C25";
                         else if (v.worstCode === "due-soon")
                           borderAccent = "#FF9500";
                         else if (v.worstCode === "ok")
@@ -724,7 +710,7 @@ function StatusPill({ label, status }) {
 
   if (code === "overdue") {
     bg = "rgba(255,59,48,0.22)";
-    fg = colors.danger || "#FF3B30";
+    fg = colors.danger || "#ED1C25";
   } else if (code === "due-soon") {
     bg = "rgba(255,149,0,0.22)";
     fg = "#FF9500";
@@ -747,22 +733,18 @@ function StatusPill({ label, status }) {
 
 function SummaryPill({ label, value, tone }) {
   const { colors } = useTheme();
-  let border = colors.border || COLORS.border;
   let fg = colors.textMuted || COLORS.textMid;
 
   if (tone === "danger") {
-    border = colors.danger || "#FF3B30";
-    fg = colors.danger || "#FF3B30";
+    fg = colors.danger || "#ED1C25";
   } else if (tone === "warning") {
-    border = "#FF9500";
     fg = "#FF9500";
   } else if (tone === "success") {
-    border = colors.success || "#34C759";
     fg = colors.success || "#34C759";
   }
 
   return (
-    <View style={[styles.summaryPill, { borderColor: border }]}>
+    <View style={styles.summaryPill}>
       <Text style={[styles.summaryValue, { color: fg }]}>{value}</Text>
       <Text
         style={[
@@ -783,19 +765,39 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: COLORS.background,
   },
+  headerCard: {
+    marginHorizontal: t.spacing.md,
+    marginTop: 0,
+    marginBottom: 0,
+  },
+  headerContent: {
+    paddingTop: 10,
+    paddingBottom: 8,
+  },
+  headerEyebrow: {
+    fontSize: 11,
+    lineHeight: 14,
+  },
+  headerTitle: {
+    fontSize: 22,
+    lineHeight: 27,
+    marginTop: 1,
+  },
+  headerSubtitle: {
+    marginTop: 2,
+    fontSize: 12,
+    lineHeight: 16,
+  },
   header: {
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
+    paddingHorizontal: t.spacing.md,
+    paddingVertical: t.spacing.sm,
     flexDirection: "row",
     alignItems: "center",
   },
   backButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    borderWidth: 1,
+    width: t.controls.iconButtonSm,
+    height: t.controls.iconButtonSm,
+    borderRadius: t.controls.iconButtonSm / 2,
     borderColor: COLORS.border,
     alignItems: "center",
     justifyContent: "center",
@@ -806,7 +808,7 @@ const styles = StyleSheet.create({
     fontWeight: "800",
   },
   pageSubtitle: {
-    marginTop: 3,
+    marginTop: t.spacing.xxs,
     fontSize: 12,
     color: COLORS.textMid,
   },
@@ -824,32 +826,33 @@ const styles = StyleSheet.create({
   /* SUMMARY STRIP */
   summaryStrip: {
     flexDirection: "row",
-    paddingHorizontal: 16,
-    paddingTop: 8,
-    paddingBottom: 4,
+    paddingHorizontal: t.spacing.md,
+    paddingTop: 6,
+    paddingBottom: 2,
     justifyContent: "space-between",
   },
   summaryPill: {
     flex: 1,
-    borderWidth: 1,
-    borderRadius: 8,
-    paddingVertical: 6,
-    paddingHorizontal: 8,
+    minHeight: 36,
+    paddingVertical: 4,
+    paddingHorizontal: 6,
     marginRight: 6,
   },
   summaryValue: {
-    fontSize: 14,
-    fontWeight: "700",
+    fontSize: 17,
+    lineHeight: 20,
+    fontWeight: "800",
   },
   summaryLabel: {
     fontSize: 11,
+    lineHeight: 14,
     color: COLORS.textMid,
   },
 
   controlsContainer: {
-    paddingHorizontal: 16,
-    paddingTop: 8,
-    paddingBottom: 4,
+    paddingHorizontal: t.spacing.md,
+    paddingTop: 4,
+    paddingBottom: 0,
   },
   searchBox: {
     flexDirection: "row",
@@ -857,7 +860,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderRadius: 8,
     paddingHorizontal: 10,
-    paddingVertical: 6,
+    paddingVertical: 5,
   },
   searchInput: {
     flex: 1,
@@ -866,14 +869,14 @@ const styles = StyleSheet.create({
     marginRight: 6,
   },
   filterRow: {
-    marginTop: 10,
+    marginTop: 8,
     paddingBottom: 2,
   },
   filterChip: {
+    minHeight: 30,
     paddingHorizontal: 10,
-    paddingVertical: 6,
+    paddingVertical: 5,
     borderRadius: 999,
-    borderWidth: 1,
     marginRight: 8,
   },
   filterChipText: {
@@ -883,19 +886,20 @@ const styles = StyleSheet.create({
 
   scrollContent: {
     paddingHorizontal: 16,
-    paddingTop: 8,
-    paddingBottom: 16,
+    paddingTop: 2,
+    paddingBottom: 104,
   },
 
   /* STATUS SECTIONS */
   sectionBlock: {
-    marginBottom: 14,
+    marginBottom: 8,
   },
   sectionHeaderRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingVertical: 4,
+    paddingTop: 4,
+    paddingBottom: 2,
   },
   sectionTitle: {
     fontSize: 14,
@@ -907,22 +911,20 @@ const styles = StyleSheet.create({
   sectionDescription: {
     fontSize: 11,
     color: COLORS.textMid,
-    marginBottom: 6,
+    marginBottom: 4,
   },
 
   vehicleCard: {
     backgroundColor: COLORS.card,
     borderRadius: 10,
-    marginTop: 6,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: COLORS.border,
+    marginTop: 5,
+    padding: 11,
     borderLeftWidth: 3,
   },
   vehicleHeaderRow: {
     flexDirection: "row",
     alignItems: "center",
-    marginBottom: 6,
+    marginBottom: 5,
   },
   vehicleTitle: {
     fontSize: 15,
@@ -975,7 +977,7 @@ const styles = StyleSheet.create({
   emptyState: {
     alignItems: "center",
     justifyContent: "center",
-    marginTop: 40,
+    marginTop: 12,
     paddingHorizontal: 24,
   },
   emptyTitle: {

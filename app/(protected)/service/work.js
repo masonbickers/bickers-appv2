@@ -2,34 +2,44 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useRouter } from "expo-router";
 import {
-  SafeAreaView,
+  Alert,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
+import PageHeaderCard from "../../../components/PageHeaderCard";
+import { designTokens as t } from "../../../lib/design/tokens";
 import { useTheme } from "../../providers/ThemeProvider";
 
 const COLORS = {
-  background: "#0D0D0D",
-  card: "#1A1A1A",
-  border: "#333333",
-  textHigh: "#FFFFFF",
-  textMid: "#E0E0E0",
-  textLow: "#888888",
-  primaryAction: "#FF3B30", // 🔴 match service home / book-work
-  recceAction: "#FF3B30",
-  inputBg: "#2a2a2a",
-  lightGray: "#4a4a4a",
+  background: "#000000",
+  card: "#151517",
+  border: "#2B2B31",
+  textHigh: "#F5F5F5",
+  textMid: "#D4D4D8",
+  textLow: "#A1A1AA",
+  primaryAction: "#D94B52",
+  recceAction: "#D94B52",
+  inputBg: "#111114",
+  lightGray: "#3F3F46",
 };
 
 // 🔑 must match service-form/[id].jsx + book-work.jsx
-const SERVICE_DRAFT_KEY = "serviceFormDraft_v1";
+const SERVICE_DRAFTS_KEY = "serviceFormDrafts_v1";
 // 🔑 must match mot-precheck/[id].jsx
 const MOT_PRECHECK_DRAFT_KEY = "motPrecheckDrafts_v1";
+
+const showUnavailableForm = () => {
+  Alert.alert(
+    "Coming soon",
+    "This workshop form is planned for a future update."
+  );
+};
 
 export default function WorkScreen() {
   const router = useRouter();
@@ -43,7 +53,7 @@ export default function WorkScreen() {
   const handleNewServiceJobForm = async () => {
     try {
       // clear any existing draft so this is a clean form
-      await AsyncStorage.removeItem(SERVICE_DRAFT_KEY);
+      await AsyncStorage.removeItem(SERVICE_DRAFTS_KEY);
     } catch (err) {
       console.error("Failed to clear service draft before new form:", err);
     }
@@ -74,37 +84,18 @@ export default function WorkScreen() {
 
   return (
     <SafeAreaView
+      edges={["left", "right"]}
       style={[
         styles.container,
         { backgroundColor: colors.background || COLORS.background },
       ]}
     >
-      {/* HEADER */}
-      <View
-        style={[
-          styles.header,
-          { borderBottomColor: colors.border || COLORS.border },
-        ]}
-      >
-        <View style={{ flex: 1 }}>
-          <Text
-            style={[
-              styles.pageTitle,
-              { color: colors.text || COLORS.textHigh },
-            ]}
-          >
-            Workshop Forms
-          </Text>
-          <Text
-            style={[
-              styles.pageSubtitle,
-              { color: colors.textMuted || COLORS.textMid },
-            ]}
-          >
-            Templates for servicing, MOT prep, defects and safety checks.
-          </Text>
-        </View>
-      </View>
+      <PageHeaderCard
+        eyebrow="Workshop"
+        title="Workshop Forms"
+        subtitle="Templates for servicing, MOT prep, defects and safety checks."
+        style={styles.headerCard}
+      />
 
       <ScrollView contentContainerStyle={styles.scrollContent}>
         {/* INTRO CARD */}
@@ -189,7 +180,7 @@ export default function WorkScreen() {
           icon="file-text"
           title="MOT Result / Advisory Log"
           subtitle="Record pass/fail, advisories and next actions."
-          onPress={() => go("/service/mot-result-form")}
+          onPress={showUnavailableForm}
           colors={colors}
         />
 
@@ -309,13 +300,16 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: COLORS.background,
   },
+  headerCard: {
+    marginHorizontal: t.spacing.md,
+    marginTop: t.spacing.xs,
+    marginBottom: 0,
+  },
   header: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
+    paddingHorizontal: t.spacing.md,
+    paddingVertical: t.spacing.sm,
   },
   backButton: {
     paddingRight: 10,
@@ -331,17 +325,16 @@ const styles = StyleSheet.create({
     color: COLORS.textMid,
   },
   scrollContent: {
-    padding: 16,
+    padding: t.spacing.md,
+    paddingTop: 0,
   },
   infoCard: {
     backgroundColor: COLORS.card,
-    borderRadius: 10,
-    padding: 14,
-    marginBottom: 18,
+    borderRadius: t.radius.sm,
+    padding: t.controls.cardPadding,
+    marginBottom: t.spacing.sm,
     borderLeftWidth: 4,
     borderLeftColor: COLORS.primaryAction,
-    borderWidth: 1,
-    borderColor: COLORS.border,
   },
   infoTitle: {
     fontSize: 16,
@@ -356,7 +349,8 @@ const styles = StyleSheet.create({
   sectionDivider: {
     flexDirection: "row",
     alignItems: "center",
-    marginVertical: 14,
+    marginTop: 12,
+    marginBottom: 8,
   },
   sectionTitle: {
     fontSize: 15,
@@ -372,10 +366,9 @@ const cardStyles = StyleSheet.create({
     alignItems: "center",
     backgroundColor: COLORS.card,
     borderRadius: 10,
-    padding: 14,
+    minHeight: 72,
+    padding: t.controls.cardPadding,
     marginBottom: 10,
-    borderWidth: 1,
-    borderColor: COLORS.border,
   },
   iconWrap: {
     width: 32,

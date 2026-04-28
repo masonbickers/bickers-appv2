@@ -27,8 +27,7 @@ import { auth, db, storage } from "../../firebaseConfig";
 import { useAuth } from "../providers/AuthProvider"; // if file is app/vehicle-check.js use "./providers/AuthProvider"
 import { useTheme } from "../providers/ThemeProvider"; // 🎨 theme
 
-const MediaEnum = ImagePicker?.MediaType ?? ImagePicker?.MediaTypeOptions;
-const IMAGES_ONLY = MediaEnum?.Images ?? undefined;
+const IMAGES_ONLY = ImagePicker.MediaTypeOptions.Images;
 
 const CHECK_ITEMS = [
   "Fuel / Oil / Fluid leaks",
@@ -129,6 +128,30 @@ export default function VehicleCheckPage() {
   // 🔑 One doc per job
   const checkDocId = useMemo(() => jobId || "nojob", [jobId]);
 
+  const normalizeMaintenanceBooking = useCallback((id, data) => {
+    if (!data) return null;
+    return {
+      id,
+      ...data,
+      // Compatibility adapter: maintenanceBookings is the web-canonical
+      // collection, but this screen still expects the legacy booking shape.
+      status: data.status === "Booked" ? "Confirmed" : data.status,
+      date: data.appointmentDateISO || data.startDateISO || "",
+      startDate: data.startDateISO || data.appointmentDateISO || "",
+      endDate:
+        data.endDateISO || data.startDateISO || data.appointmentDateISO || "",
+      vehicles: data.vehicleId
+        ? [
+            {
+              id: data.vehicleId,
+              name: data.vehicleLabel || "Vehicle",
+              vehicleName: data.vehicleLabel || "Vehicle",
+            },
+          ]
+        : [],
+    };
+  }, []);
+
   const loadData = useCallback(async () => {
     if (loading || !isAuthed) {
       setLoadingDoc(false);
@@ -139,9 +162,17 @@ export default function VehicleCheckPage() {
 
       // Load booking
       if (jobId) {
-        const snap = await getDoc(doc(db, "bookings", jobId));
+        let snap = await getDoc(doc(db, "bookings", jobId));
+        let j = null;
         if (snap.exists()) {
-          const j = { id: snap.id, ...snap.data() };
+          j = { id: snap.id, ...snap.data() };
+        } else {
+          snap = await getDoc(doc(db, "maintenanceBookings", jobId));
+          if (snap.exists()) {
+            j = normalizeMaintenanceBooking(snap.id, snap.data());
+          }
+        }
+        if (j) {
           setJob(j);
           const vs = Array.isArray(j.vehicles) ? j.vehicles : [];
           setVehicles(vs);
@@ -180,7 +211,16 @@ export default function VehicleCheckPage() {
     } finally {
       setLoadingDoc(false);
     }
-  }, [jobId, checkDocId, vehicle, loading, isAuthed, dateISO, timeStr]);
+  }, [
+    jobId,
+    checkDocId,
+    vehicle,
+    loading,
+    isAuthed,
+    dateISO,
+    timeStr,
+    normalizeMaintenanceBooking,
+  ]);
 
   useEffect(() => {
     loadData();

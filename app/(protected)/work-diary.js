@@ -1,7 +1,10 @@
+import { useRouter } from "expo-router";
 import { collection, getDocs } from "firebase/firestore";
 import { useEffect, useMemo, useState } from "react";
 import {
+  ActivityIndicator,
   Modal,
+  RefreshControl,
   SafeAreaView,
   ScrollView,
   StyleSheet,
@@ -11,10 +14,22 @@ import {
   View,
 } from "react-native";
 import { Calendar } from "react-native-calendars";
+import Icon from "react-native-vector-icons/Feather";
 import { db } from "../../firebaseConfig";
 import { useTheme } from "../providers/ThemeProvider";
 
+function withAlpha(hex, alpha) {
+  const safeAlpha = Math.max(0, Math.min(1, Number(alpha) || 0));
+  const raw = String(hex || "").replace("#", "");
+  if (!/^[0-9a-fA-F]{6}$/.test(raw)) return `rgba(255,255,255,${safeAlpha})`;
+  const r = parseInt(raw.slice(0, 2), 16);
+  const g = parseInt(raw.slice(2, 4), 16);
+  const b = parseInt(raw.slice(4, 6), 16);
+  return `rgba(${r},${g},${b},${safeAlpha})`;
+}
+
 export default function WorkDiaryPage() {
+  const router = useRouter();
   const { colors } = useTheme();
 
   const [selectedDate, setSelectedDate] = useState(
@@ -25,17 +40,143 @@ export default function WorkDiaryPage() {
   const [upcomingBookings, setUpcomingBookings] = useState([]);
   const [selectedJob, setSelectedJob] = useState(null);
   const [searchQuery, setSearchQuery] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [fetchError, setFetchError] = useState("");
+  const [reloadToken, setReloadToken] = useState(0);
 
   // ✅ NEW: vehicle id -> display name map
   const [vehicleNameById, setVehicleNameById] = useState({});
 
-  useEffect(() => {
-    fetchBookings();
-    fetchVehicles(); // ✅ NEW
+  const todayISO = useMemo(() => new Date().toISOString().split("T")[0], []);
+
+  const tomorrowISO = useMemo(() => {
+    const d = new Date();
+    d.setDate(d.getDate() + 1);
+    return d.toISOString().split("T")[0];
   }, []);
 
   useEffect(() => {
-    filterJobsForSelectedDate();
+    let alive = true;
+
+    const fetchData = async () => {
+      setFetchError("");
+      setLoading(true);
+      const localGetISO = (val) => {
+        if (!val) return null;
+        if (val?.toDate && typeof val.toDate === "function") {
+          return val.toDate().toISOString().split("T")[0];
+        }
+        if (val instanceof Date) {
+          return val.toISOString().split("T")[0];
+        }
+        const s = String(val).trim();
+        if (!s) return null;
+        if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.split("T")[0];
+        const d = new Date(s);
+        if (Number.isNaN(d.getTime())) return null;
+        return d.toISOString().split("T")[0];
+      };
+
+      const localNextDateOnOrAfter = (b, isoRef) => {
+        if (Array.isArray(b?.bookingDates) && b.bookingDates.length) {
+          const sorted = b.bookingDates.map(localGetISO).filter(Boolean).sort();
+          const match = sorted.find((d) => d >= isoRef);
+          return match || null;
+        }
+
+        const single = localGetISO(b?.date);
+        const start = localGetISO(b?.startDate);
+        const end = localGetISO(b?.endDate);
+
+        if (single) return single >= isoRef ? single : null;
+        if (start && end) {
+          if (end < isoRef) return null;
+          if (isoRef < start) return start;
+          return isoRef;
+        }
+        if (start) return start >= isoRef ? start : null;
+        return null;
+      };
+
+      try {
+        const [bookingsSnap, vehiclesSnap] = await Promise.all([
+          getDocs(collection(db, "bookings")),
+          getDocs(collection(db, "vehicles")),
+        ]);
+
+        if (!alive) return;
+
+        const rawBookings = bookingsSnap.docs.map((doc) => ({
+          id: doc.id,
+          ...doc.data(),
+        }));
+
+        // Upcoming: bookings that still have a date from tomorrow onwards
+        const upcomingWithNext = rawBookings
+          .map((b) => {
+            const next = localNextDateOnOrAfter(b, tomorrowISO);
+            return { booking: b, nextDate: next };
+          })
+          .filter((x) => !!x.nextDate)
+          .sort((a, b) => (a.nextDate < b.nextDate ? -1 : a.nextDate > b.nextDate ? 1 : 0));
+
+        const upcoming = upcomingWithNext.map(({ booking, nextDate }) => ({
+          ...booking,
+          _nextDate: nextDate,
+        }));
+
+        const map = {};
+        vehiclesSnap.docs.forEach((d) => {
+          const v = d.data() || {};
+          const name = v.name || v.label || v.title || "Vehicle";
+          const reg = v.reg || v.registration || v.numberPlate || "";
+          map[d.id] = reg ? `${name} (${reg})` : name;
+        });
+
+        setAllBookings(rawBookings);
+        setUpcomingBookings(upcoming);
+        setVehicleNameById(map);
+      } catch (error) {
+        if (!alive) return;
+        setFetchError("Could not load work diary data. Pull to refresh and try again.");
+        console.error("Error fetching diary data:", error);
+      } finally {
+        if (!alive) return;
+        setLoading(false);
+        setRefreshing(false);
+      }
+    };
+
+    fetchData();
+    return () => {
+      alive = false;
+    };
+  }, [tomorrowISO, reloadToken]);
+
+  useEffect(() => {
+    const day = selectedDate;
+
+    const filtered = allBookings.filter((b) => {
+      // bookingDates array (usually plain "YYYY-MM-DD" strings)
+      if (Array.isArray(b.bookingDates) && b.bookingDates.length) {
+        const dates = b.bookingDates.map(getISO).filter(Boolean);
+        if (dates.includes(day)) return true;
+      }
+
+      // single/legacy
+      const singleDate = getISO(b.date);
+      const start = getISO(b.startDate);
+      const end = getISO(b.endDate);
+
+      if (singleDate === day) return true;
+      if (start && end && day >= start && day <= end) return true;
+      if (start && !end && start === day) return true;
+
+      return false;
+    });
+
+    setJobsForSelectedDate(filtered);
   }, [selectedDate, allBookings]);
 
   /* ---------- helpers ---------- */
@@ -205,14 +346,6 @@ export default function WorkDiaryPage() {
     return maintFlag;
   };
 
-  const todayISO = useMemo(() => new Date().toISOString().split("T")[0], []);
-
-  const tomorrowISO = useMemo(() => {
-    const d = new Date();
-    d.setDate(d.getDate() + 1);
-    return d.toISOString().split("T")[0];
-  }, []);
-
   const dayChipLabel = (iso) => {
     if (!iso) return "";
     if (iso === todayISO) return "Today";
@@ -233,83 +366,6 @@ export default function WorkDiaryPage() {
   const isSameWeek = (isoA, isoB) => startOfWeekISO(isoA) === startOfWeekISO(isoB);
 
   /* ---------- data ---------- */
-
-  const fetchBookings = async () => {
-    try {
-      const snapshot = await getDocs(collection(db, "bookings"));
-      const raw = snapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-      }));
-
-      // Upcoming: bookings that still have a date from tomorrow onwards
-      const upcomingWithNext = raw
-        .map((b) => {
-          const next = nextDateOnOrAfter(b, tomorrowISO);
-          return { booking: b, nextDate: next };
-        })
-        .filter((x) => !!x.nextDate)
-        .sort((a, b) => (a.nextDate < b.nextDate ? -1 : a.nextDate > b.nextDate ? 1 : 0));
-
-      const upcoming = upcomingWithNext.map(({ booking, nextDate }) => ({
-        ...booking,
-        _nextDate: nextDate,
-      }));
-
-      setAllBookings(raw);
-      setUpcomingBookings(upcoming);
-    } catch (error) {
-      console.error("Error fetching bookings:", error);
-    }
-  };
-
-  // ✅ NEW: fetch vehicles and build id -> "Name (REG)" map
-  const fetchVehicles = async () => {
-    try {
-      const snap = await getDocs(collection(db, "vehicles"));
-      const map = {};
-
-      snap.docs.forEach((d) => {
-        const v = d.data() || {};
-        const name = v.name || v.label || v.title || "Vehicle";
-        const reg = v.reg || v.registration || v.numberPlate || "";
-        map[d.id] = reg ? `${name} (${reg})` : name;
-      });
-
-      setVehicleNameById(map);
-    } catch (e) {
-      console.error("Error fetching vehicles:", e);
-    }
-  };
-
-  // ✅ Use SAME inclusion logic as web "todaysJobs", but dynamic for selectedDate
-  const filterJobsForSelectedDate = () => {
-    const day = selectedDate;
-
-    const filtered = allBookings.filter((b) => {
-      // bookingDates array (usually plain "YYYY-MM-DD" strings)
-      if (Array.isArray(b.bookingDates) && b.bookingDates.length) {
-        const dates = b.bookingDates.map(getISO).filter(Boolean);
-        if (dates.includes(day)) return true;
-      }
-
-      // single/legacy
-      const singleDate = getISO(b.date);
-      const start = getISO(b.startDate);
-      const end = getISO(b.endDate);
-
-      if (singleDate === day) return true;
-
-      if (start && end && day >= start && day <= end) return true;
-
-      // Open-ended or start only
-      if (start && !end && start === day) return true;
-
-      return false;
-    });
-
-    setJobsForSelectedDate(filtered);
-  };
 
   /* ---------- search filter ---------- */
 
@@ -335,7 +391,7 @@ export default function WorkDiaryPage() {
 
   /* ---------- grouped upcoming (from tomorrow onwards) ---------- */
 
-  const groupedUpcoming = useMemo(() => {
+  const groupedUpcoming = (() => {
     const groups = { tomorrow: [], thisWeek: [], later: [] };
 
     for (const b of upcomingBookings) {
@@ -348,7 +404,9 @@ export default function WorkDiaryPage() {
     }
 
     return groups;
-  }, [upcomingBookings, todayISO, tomorrowISO]);
+  })();
+
+  const searchActive = searchQuery.trim().length > 0;
 
   /* ---------- UI ---------- */
 
@@ -364,7 +422,7 @@ export default function WorkDiaryPage() {
       <View style={styles.sectionHeader}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
           <Text style={[styles.sectionTitle, { color: colors.text }]}>
-            Jobs for {selectedDate}
+            Jobs for {formatDateNice(selectedDate)}
           </Text>
           <View
             style={[
@@ -545,7 +603,7 @@ export default function WorkDiaryPage() {
     if (!visibleItems.length) return null;
 
     return (
-      <View style={[styles.section, { backgroundColor: colors.surfaceAlt, borderColor: colors.border }]}>
+      <View style={styles.section}>
         <View style={styles.sectionHeader}>
           <Text style={[styles.sectionTitle, { color: colors.text }]}>{title}</Text>
           <View style={[styles.badge, { backgroundColor: colors.accent }]}>
@@ -567,59 +625,206 @@ export default function WorkDiaryPage() {
   };
 
   // ✅ UPDATED to re-filter when vehicleNameById changes (so search works immediately)
-  const visibleJobsForSelectedDate = useMemo(
-    () => jobsForSelectedDate.filter(matchesSearch),
-    [jobsForSelectedDate, searchQuery, vehicleNameById]
-  );
+  const visibleJobsForSelectedDate = jobsForSelectedDate.filter(matchesSearch);
+  const visibleUpcomingCount =
+    groupedUpcoming.tomorrow.filter(matchesSearch).length +
+    groupedUpcoming.thisWeek.filter(matchesSearch).length +
+    groupedUpcoming.later.filter(matchesSearch).length;
+
+  const calendarMarkedDates = (() => {
+    const marks = {};
+
+    allBookings.forEach((b) => {
+      const localDates = new Set();
+
+      if (Array.isArray(b.bookingDates) && b.bookingDates.length) {
+        b.bookingDates.map(getISO).filter(Boolean).forEach((d) => localDates.add(d));
+      }
+
+      const single = getISO(b.date);
+      const start = getISO(b.startDate);
+      const end = getISO(b.endDate);
+      if (single) localDates.add(single);
+
+      if (start && end) {
+        const cursor = new Date(`${start}T00:00:00`);
+        const endDate = new Date(`${end}T00:00:00`);
+        let guard = 0;
+
+        while (cursor <= endDate && guard < 90) {
+          localDates.add(cursor.toISOString().split("T")[0]);
+          cursor.setDate(cursor.getDate() + 1);
+          guard += 1;
+        }
+      } else if (start) {
+        localDates.add(start);
+      }
+
+      localDates.forEach((isoDate) => {
+        marks[isoDate] = {
+          ...(marks[isoDate] || {}),
+          marked: true,
+          dotColor: colors.accent,
+        };
+      });
+    });
+
+    if (!marks[todayISO]) {
+      marks[todayISO] = { marked: true, dotColor: colors.accent };
+    }
+
+    marks[selectedDate] = {
+      ...(marks[selectedDate] || {}),
+      selected: true,
+      selectedColor: colors.accent,
+      selectedTextColor: colors.background,
+    };
+
+    return marks;
+  })();
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>
       <View style={[styles.container, { backgroundColor: colors.background }]}>
-        <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-          {/* Header */}
-          <View style={styles.headerRow}>
-            <Text style={[styles.title, { color: colors.text }]}>Work Diary</Text>
+        <ScrollView
+          contentContainerStyle={styles.content}
+          keyboardShouldPersistTaps="handled"
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={() => {
+                setRefreshing(true);
+                setReloadToken((prev) => prev + 1);
+              }}
+              colors={[colors.accent]}
+              tintColor={colors.accent}
+            />
+          }
+        >
+          {/* Hero Header */}
+          <View style={styles.heroCard}>
+            <View style={styles.heroContent}>
+              <View style={styles.heroTopRow}>
+                <TouchableOpacity
+                  onPress={() => router.back()}
+                  activeOpacity={0.85}
+                  style={[
+                    styles.backBtn,
+                    {
+                      backgroundColor: withAlpha(colors.surfaceAlt, 0.75),
+                      borderColor: withAlpha(colors.border, 0.75),
+                    },
+                  ]}
+                >
+                  <Icon name="arrow-left" size={15} color={colors.text} />
+                </TouchableOpacity>
+
+                <View style={styles.heroTitleWrap}>
+                  <Text style={[styles.heroEyebrow, { color: colors.textMuted }]}>
+                    Operations
+                  </Text>
+                  <Text style={[styles.heroTitle, { color: colors.text }]}>Work Diary</Text>
+                </View>
+
+                <TouchableOpacity
+                  onPress={() => router.push("/work-diary-board")}
+                  activeOpacity={0.85}
+                  style={[
+                    styles.boardBtn,
+                    {
+                      backgroundColor: withAlpha(colors.surfaceAlt, 0.75),
+                      borderColor: withAlpha(colors.border, 0.75),
+                    },
+                  ]}
+                >
+                  <Icon name="columns" size={15} color={colors.text} />
+                </TouchableOpacity>
+              </View>
+            </View>
           </View>
 
           {/* Search */}
           <View style={styles.searchRow}>
-            <TextInput
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-              placeholder="Search jobs (job #, production, location, crew, vehicle, status)…"
-              placeholderTextColor={colors.textMuted}
+            <View
               style={[
-                styles.searchInput,
+                styles.searchInputWrap,
                 {
                   backgroundColor: colors.surface,
                   borderColor: colors.border,
-                  color: colors.text,
                 },
               ]}
-              autoCorrect={false}
-              autoCapitalize="none"
-            />
+            >
+              <TextInput
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+                placeholder="Search jobs (job #, production, location, crew, vehicle, status)…"
+                placeholderTextColor={colors.textMuted}
+                style={[
+                  styles.searchInput,
+                  {
+                    color: colors.text,
+                  },
+                ]}
+                autoCorrect={false}
+                autoCapitalize="none"
+              />
+
+              {searchActive ? (
+                <TouchableOpacity
+                  style={[styles.clearSearchBtn, { backgroundColor: colors.accentSoft, borderColor: colors.border }]}
+                  onPress={() => setSearchQuery("")}
+                >
+                  <Text style={[styles.clearSearchText, { color: colors.accent }]}>Clear</Text>
+                </TouchableOpacity>
+              ) : null}
+            </View>
+
+            <View style={styles.quickDateRow}>
+              <TouchableOpacity
+                style={[
+                  styles.quickDateBtn,
+                  { backgroundColor: colors.surfaceAlt, borderColor: colors.border },
+                  selectedDate === todayISO && { backgroundColor: colors.accentSoft, borderColor: colors.accent },
+                ]}
+                onPress={() => setSelectedDate(todayISO)}
+              >
+                <Text style={[styles.quickDateText, { color: selectedDate === todayISO ? colors.accent : colors.textMuted }]}>
+                  Today
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  styles.quickDateBtn,
+                  { backgroundColor: colors.surfaceAlt, borderColor: colors.border },
+                  selectedDate === tomorrowISO && { backgroundColor: colors.accentSoft, borderColor: colors.accent },
+                ]}
+                onPress={() => setSelectedDate(tomorrowISO)}
+              >
+                <Text style={[styles.quickDateText, { color: selectedDate === tomorrowISO ? colors.accent : colors.textMuted }]}>
+                  Tomorrow
+                </Text>
+              </TouchableOpacity>
+            </View>
           </View>
+
+          {fetchError ? (
+            <View style={[styles.errorCard, { backgroundColor: colors.surfaceAlt, borderColor: colors.danger }]}>
+              <Text style={[styles.errorText, { color: colors.danger }]}>{fetchError}</Text>
+              <TouchableOpacity
+                style={[styles.retryBtn, { backgroundColor: colors.accent }]}
+                onPress={() => setReloadToken((prev) => prev + 1)}
+              >
+                <Text style={[styles.retryText, { color: colors.background }]}>Retry</Text>
+              </TouchableOpacity>
+            </View>
+          ) : null}
 
           {/* Calendar Card */}
           <View style={[styles.card, { backgroundColor: colors.surfaceAlt, borderColor: colors.border }]}>
             <Calendar
               onDayPress={(day) => setSelectedDate(day.dateString)}
-              markedDates={{
-                [selectedDate]: {
-                  selected: true,
-                  selectedColor: colors.accent,
-                  selectedTextColor: colors.background,
-                },
-                [todayISO]:
-                  selectedDate === todayISO
-                    ? {
-                        selected: true,
-                        selectedColor: colors.accent,
-                        selectedTextColor: colors.background,
-                      }
-                    : { marked: true, dotColor: colors.accent },
-              }}
+              markedDates={calendarMarkedDates}
               firstDay={1}
               theme={{
                 backgroundColor: colors.surfaceAlt,
@@ -634,15 +839,45 @@ export default function WorkDiaryPage() {
             />
           </View>
 
+          <View style={styles.legendRow}>
+            <View style={styles.legendItem}>
+              <View style={[styles.legendTone, styles.leftActive]} />
+              <Text style={[styles.legendText, { color: colors.textMuted }]}>Active</Text>
+            </View>
+            <View style={styles.legendItem}>
+              <View style={[styles.legendTone, styles.leftFirstPencil]} />
+              <Text style={[styles.legendText, { color: colors.textMuted }]}>1st Pencil</Text>
+            </View>
+            <View style={styles.legendItem}>
+              <View style={[styles.legendTone, styles.leftSecondPencil]} />
+              <Text style={[styles.legendText, { color: colors.textMuted }]}>2nd Pencil</Text>
+            </View>
+            <View style={styles.legendItem}>
+              <View style={[styles.legendTone, styles.leftMaintenance]} />
+              <Text style={[styles.legendText, { color: colors.textMuted }]}>Maintenance</Text>
+            </View>
+            <View style={styles.legendItem}>
+              <View style={[styles.legendTone, styles.leftMuted]} />
+              <Text style={[styles.legendText, { color: colors.textMuted }]}>Muted</Text>
+            </View>
+          </View>
+
           {/* Jobs for Selected Day */}
-          <View style={[styles.section, { backgroundColor: colors.surfaceAlt, borderColor: colors.border }]}>
+          <View style={styles.section}>
             <SelectedHeader count={visibleJobsForSelectedDate.length} />
 
-            {visibleJobsForSelectedDate.length === 0 ? (
-              <View style={[styles.emptyCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+            {loading ? (
+              <View style={[styles.loadingCard, { backgroundColor: colors.surfaceAlt, borderColor: colors.border }]}>
+                <ActivityIndicator size="small" color={colors.accent} />
+                <Text style={[styles.loadingText, { color: colors.textMuted }]}>Loading jobs...</Text>
+              </View>
+            ) : visibleJobsForSelectedDate.length === 0 ? (
+              <View style={[styles.emptyCard, { backgroundColor: colors.surfaceAlt, borderColor: colors.border }]}>
                 <Text style={[styles.emptyTitle, { color: colors.text }]}>No jobs assigned</Text>
                 <Text style={[styles.emptySubtitle, { color: colors.textMuted }]}>
-                  Add a booking, change the date, or clear your search.
+                  {searchActive
+                    ? `No jobs matched "${searchQuery.trim()}".`
+                    : "Add a booking, change the date, or clear your search."}
                 </Text>
               </View>
             ) : (
@@ -653,6 +888,12 @@ export default function WorkDiaryPage() {
           </View>
 
           {/* Upcoming */}
+          <View style={[styles.sectionHeader, styles.upcomingHeader]}>
+            <Text style={[styles.sectionTitle, { color: colors.text }]}>Upcoming</Text>
+            <View style={[styles.badge, { backgroundColor: colors.accent }]}>
+              <Text style={[styles.badgeText, { color: colors.background }]}>{visibleUpcomingCount}</Text>
+            </View>
+          </View>
           <UpcomingSection title="Tomorrow" items={groupedUpcoming.tomorrow} />
           <UpcomingSection title="This Week" items={groupedUpcoming.thisWeek} />
           <UpcomingSection title="Later" items={groupedUpcoming.later} />
@@ -670,7 +911,7 @@ export default function WorkDiaryPage() {
           <View style={styles.modalBackdrop}>
             <View style={[styles.modalCard, { backgroundColor: colors.surfaceAlt, borderColor: colors.border }]}>
               {selectedJob && (
-                <>
+                <ScrollView showsVerticalScrollIndicator={false}>
                   <Text style={[styles.modalTitle, { color: colors.text }]}>
                     #{selectedJob.jobNumber || "N/A"} · {productionOf(selectedJob)}
                   </Text>
@@ -734,7 +975,7 @@ export default function WorkDiaryPage() {
                   >
                     <Text style={[styles.modalBtnText, { color: colors.background }]}>Close</Text>
                   </TouchableOpacity>
-                </>
+                </ScrollView>
               )}
             </View>
           </View>
@@ -749,28 +990,114 @@ const styles = StyleSheet.create({
   /* Layout */
   safeArea: { flex: 1 },
   container: { flex: 1 },
-  content: { padding: 16 },
+  content: { padding: 16, paddingTop: 10 },
 
-  /* Header (left-aligned title) */
-  headerRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "flex-start",
-    marginBottom: 10,
+  /* Hero */
+  heroCard: {
+    position: "relative",
+    marginBottom: 14,
   },
-  title: { fontSize: 20, fontWeight: "800", letterSpacing: 0.3 },
+  heroContent: {
+    paddingHorizontal: 0,
+    paddingVertical: 0,
+  },
+  heroTopRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+  },
+  backBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  heroTitleWrap: {
+    flex: 1,
+    paddingTop: 1,
+    alignItems: "center",
+  },
+  heroSpacer: {
+    width: 34,
+    height: 34,
+  },
+  boardBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  heroEyebrow: {
+    fontSize: 12,
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+    fontWeight: "800",
+    textAlign: "center",
+  },
+  heroTitle: {
+    marginTop: 3,
+    fontSize: 24,
+    fontWeight: "900",
+    letterSpacing: 0.2,
+    textAlign: "center",
+  },
 
   /* Search */
   searchRow: {
     marginBottom: 12,
   },
-  searchInput: {
+  searchInputWrap: {
     borderWidth: 1,
     borderRadius: 999,
-    paddingHorizontal: 14,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  searchInput: {
+    flex: 1,
+    paddingHorizontal: 8,
     paddingVertical: 8,
     fontSize: 14,
   },
+  clearSearchBtn: {
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  clearSearchText: { fontSize: 12, fontWeight: "800" },
+  quickDateRow: {
+    marginTop: 8,
+    flexDirection: "row",
+    gap: 8,
+  },
+  quickDateBtn: {
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  quickDateText: { fontSize: 12, fontWeight: "800" },
+  errorCard: {
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 10,
+    marginBottom: 12,
+    gap: 8,
+  },
+  errorText: { fontSize: 13, fontWeight: "600" },
+  retryBtn: {
+    alignSelf: "flex-start",
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  retryText: { fontSize: 12, fontWeight: "800" },
 
   /* Cards */
   card: {
@@ -782,9 +1109,7 @@ const styles = StyleSheet.create({
 
   /* Sections */
   section: {
-    borderWidth: 1,
-    borderRadius: 12,
-    padding: 12,
+    padding: 0,
     marginBottom: 14,
   },
   sectionHeader: {
@@ -794,6 +1119,7 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   sectionTitle: { fontSize: 16, fontWeight: "800" },
+  upcomingHeader: { marginBottom: 10, marginTop: 2 },
 
   /* Chips */
   badge: {
@@ -818,6 +1144,19 @@ const styles = StyleSheet.create({
   smallChipMuted: {},
   smallChipText: { fontSize: 11, fontWeight: "800" },
   smallChipTextMuted: {},
+  legendRow: {
+    marginBottom: 14,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+  },
+  legendItem: { flexDirection: "row", alignItems: "center", gap: 6 },
+  legendTone: {
+    width: 10,
+    height: 10,
+    borderRadius: 999,
+  },
+  legendText: { fontSize: 12, fontWeight: "600" },
 
   /* Job cards */
   jobCard: {
@@ -858,6 +1197,16 @@ const styles = StyleSheet.create({
   jobMetaMuted: {},
 
   /* Empty state */
+  loadingCard: {
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingVertical: 18,
+    paddingHorizontal: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
+  loadingText: { fontSize: 13, fontWeight: "600" },
   emptyCard: {
     borderWidth: 1,
     borderRadius: 12,
@@ -879,6 +1228,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderRadius: 14,
     padding: 16,
+    maxHeight: "84%",
   },
   modalTitle: { fontSize: 18, fontWeight: "800", marginBottom: 10 },
   modalItem: { fontSize: 14, marginTop: 4 },

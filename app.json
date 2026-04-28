@@ -3,7 +3,7 @@
     "name": "Bickers",
     "slug": "bickers-app",
     "version": "1.0.2",
-    "orientation": "portrait",
+    "orientation": "default",
     "icon": "./assets/images/icon.png",
     "scheme": "bickersapp",
     "userInterfaceStyle": "automatic",
@@ -11,7 +11,6 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.bickers.booking",
-      "buildNumber": "4",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         "NSCameraUsageDescription": "Allow camera to take recce photos.",
@@ -27,7 +26,6 @@
       "edgeToEdgeEnabled": true,
       "package": "com.bickers.bickersapp",
       "versionCode": 1,
-      "useNextNotificationsApi": true,
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.READ_MEDIA_IMAGES",
@@ -81,12 +79,11 @@
         }
       ],
       [
-        "expo-notifications",
-        {
-          "icon": "./assets/images/notification-icon.png",
-          "color": "#000000"
-        }
-      ]
+  "expo-notifications",
+  {
+    "color": "#ffffff"
+  }
+]
     ],
     "experiments": {
       "typedRoutes": true
@@ -94,6 +91,11 @@
     "extra": {
       "router": {},
       "API_URL": "http://localhost:3001",
+      "appEnv": "development",
+      "syncEnabled": true,
+      "syncIntervalMs": 120000,
+      "syncTimeoutMs": 10000,
+      "syncApiBaseUrl": "",
       "eas": {
         "projectId": "10adb241-72a5-4439-aa1a-e889302c92b3"
       }

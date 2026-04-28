@@ -11,13 +11,13 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
 import { db } from "../../../../firebaseConfig";
@@ -31,7 +31,7 @@ const COLORS = {
   textMid: "#E0E0E0",
   textLow: "#888888",
   chipBg: "#262626",
-  accent: "#FF3B30",
+  accent: "#ED1C25",
   accentSoft: "rgba(255,59,48,0.14)",
 };
 
@@ -109,6 +109,7 @@ export default function ServiceHistoryListScreen() {
       .map((f) => {
         const date =
           f.serviceDateOnly ||
+          f.completedDate ||
           f.serviceDate ||
           f.completedAt ||
           f.createdAt ||
@@ -137,13 +138,24 @@ export default function ServiceHistoryListScreen() {
   const fromEmbedded = useMemo(() => {
     if (!vehicle || !Array.isArray(vehicle.serviceHistory)) return [];
     return [...vehicle.serviceHistory]
-      .map((item, idx) => ({
-        id: item.id || `embedded-${idx}`,
-        date: item.date || null,
-        odometer: item.odometer ?? null,
-        summary: item.summary || "",
-        type: item.type || "Service",
-      }))
+      .map((item, idx) => {
+        if (typeof item === "string") {
+          return {
+            id: `embedded-${idx}`,
+            date: null,
+            odometer: null,
+            summary: item,
+            type: "Service",
+          };
+        }
+        return {
+          id: item.id || item.serviceRecordId || `embedded-${idx}`,
+          date: item.completedDate || item.date || item.recordedAt || null,
+          odometer: item.odometer ?? null,
+          summary: item.notes || item.summary || "",
+          type: item.type || "Service",
+        };
+      })
       .sort((a, b) => {
         const da = toDateMaybe(a.date)?.getTime() || 0;
         const db = toDateMaybe(b.date)?.getTime() || 0;
@@ -174,6 +186,7 @@ export default function ServiceHistoryListScreen() {
 
   return (
     <SafeAreaView
+      edges={["left", "right"]}
       style={[
         styles.container,
         { backgroundColor: colors.background || COLORS.background },

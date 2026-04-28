@@ -1,9 +1,8 @@
 // app/(protected)/screens/schedule.js
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useLocalSearchParams } from "expo-router";
 import { collection, getDocs } from "firebase/firestore";
 import { useEffect, useMemo, useState } from "react";
 import {
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
@@ -11,8 +10,12 @@ import {
   View,
 } from "react-native";
 import { Calendar } from "react-native-calendars";
+import { SafeAreaView } from "react-native-safe-area-context";
+import Icon from "react-native-vector-icons/Feather";
 
+import PageHeaderCard from "../../../components/PageHeaderCard";
 import { db } from "../../../firebaseConfig";
+import { designTokens as t } from "../../../lib/design/tokens";
 import { useAuth } from "../../providers/AuthProvider";
 import { useTheme } from "../../providers/ThemeProvider";
 
@@ -52,8 +55,36 @@ function safeStr(v) {
   return String(v ?? "").trim().toLowerCase();
 }
 
+function canonicalEmployeeCode(value) {
+  if (value === null || value === undefined) return "";
+  const raw = String(value).trim();
+  if (!raw) return "";
+  const digits = raw.replace(/\D/g, "");
+  if (digits) return digits.padStart(4, "0");
+  return safeStr(raw);
+}
+
+function codesEqual(a, b) {
+  const aa = canonicalEmployeeCode(a);
+  const bb = canonicalEmployeeCode(b);
+  return !!aa && !!bb && aa === bb;
+}
+
+function resolveEmployeeByCode(allEmployees, codeValue) {
+  const code = canonicalEmployeeCode(codeValue);
+  if (!code) return null;
+  return (allEmployees || []).find((x) => codesEqual(x?.userCode, code)) || null;
+}
+
 function toDateSafe(v) {
   if (!v) return null;
+  if (typeof v === "string") {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v);
+    if (m) {
+      const [, y, mo, d] = m;
+      return new Date(Number(y), Number(mo) - 1, Number(d), 0, 0, 0, 0);
+    }
+  }
   if (v.toDate && typeof v.toDate === "function") return v.toDate();
   const d = new Date(v);
   return isNaN(d) ? null : d;
@@ -68,20 +99,62 @@ function toISODate(d) {
   return `${y}-${m}-${dd}`;
 }
 
+function withAlpha(hex, alpha) {
+  const safeAlpha = Math.max(0, Math.min(1, Number(alpha) || 0));
+  const raw = String(hex || "").replace("#", "");
+  if (!/^[0-9a-fA-F]{6}$/.test(raw)) return `rgba(255,255,255,${safeAlpha})`;
+  const r = parseInt(raw.slice(0, 2), 16);
+  const g = parseInt(raw.slice(2, 4), 16);
+  const b = parseInt(raw.slice(4, 6), 16);
+  return `rgba(${r},${g},${b},${safeAlpha})`;
+}
+
 function getEmployeesForDate(job, isoDate, allEmployees) {
   const byDate = job.employeesByDate || job.employeeAssignmentsByDate || null;
+  const byCodeDate = job.employeeCodesByDate || job.assignedEmployeeCodesByDate || null;
 
-  const list = byDate?.[isoDate]
+  const baseList = byDate?.[isoDate]
     ? byDate[isoDate]
     : Array.isArray(job.employees)
     ? job.employees
     : [];
+  const codeList = byCodeDate?.[isoDate]
+    ? byCodeDate[isoDate]
+    : Array.isArray(job.employeeCodes)
+    ? job.employeeCodes
+    : [];
 
-  return list.map((e) => {
+  const list = [
+    ...(Array.isArray(baseList) ? baseList : []),
+    ...(Array.isArray(codeList) ? codeList.map((code) => ({ userCode: code })) : []),
+  ];
+
+  const mapped = list.map((e) => {
     if (typeof e === "string") {
-      const name = e;
-      const match = allEmployees.find((x) => safeStr(x.name) === safeStr(name));
-      return { code: safeStr(match?.userCode), name, displayName: name };
+      const value = String(e || "").trim();
+      const matchByName = allEmployees.find((x) => safeStr(x.name) === safeStr(value));
+      if (matchByName) {
+        return {
+          code: canonicalEmployeeCode(matchByName.userCode),
+          name: safeStr(matchByName.name || matchByName.displayName || value),
+          displayName: matchByName.name || matchByName.displayName || value,
+        };
+      }
+
+      const matchByCode = resolveEmployeeByCode(allEmployees, value);
+      if (matchByCode) {
+        return {
+          code: canonicalEmployeeCode(matchByCode.userCode),
+          name: safeStr(matchByCode.name || matchByCode.displayName || value),
+          displayName: matchByCode.name || matchByCode.displayName || `Code ${value}`,
+        };
+      }
+
+      return {
+        code: canonicalEmployeeCode(value),
+        name: safeStr(value),
+        displayName: value,
+      };
     }
 
     const name =
@@ -89,13 +162,27 @@ function getEmployeesForDate(job, isoDate, allEmployees) {
       e.displayName ||
       [e.firstName, e.lastName].filter(Boolean).join(" ");
 
-    const code =
+    const rawCode =
       e.userCode ||
       e.employeeCode ||
+      e.code ||
+      resolveEmployeeByCode(allEmployees, e.userCode || e.employeeCode || e.code)?.userCode ||
       allEmployees.find((x) => safeStr(x.name) === safeStr(name))?.userCode;
 
-    return { code: safeStr(code), name: safeStr(name), displayName: name };
+    return { code: canonicalEmployeeCode(rawCode), name: safeStr(name), displayName: name };
   });
+
+  const deduped = [];
+  const seen = new Set();
+  for (const item of mapped) {
+    if (!item) continue;
+    const key = `${item.code}::${safeStr(item.displayName || item.name)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(item);
+  }
+
+  return deduped;
 }
 
 function buildVehicleLookup(allVehicles) {
@@ -191,7 +278,6 @@ function isApprovedHoliday(h) {
 /* -------------------------------------------------------------------------- */
 
 export default function SchedulePage() {
-  const router = useRouter();
   const params = useLocalSearchParams();
   const { employee, isAuthed, loading } = useAuth();
   const { colors } = useTheme();
@@ -244,7 +330,7 @@ export default function SchedulePage() {
         return;
       }
 
-      const meCode = safeStr(employee?.userCode);
+      const meCode = canonicalEmployeeCode(employee?.userCode);
       const meName = safeStr(employee?.name || employee?.displayName);
 
       if (!meCode && !meName) {
@@ -284,7 +370,7 @@ export default function SchedulePage() {
           const todaysEmps = getEmployeesForDate(job, dateStr, allEmployees);
 
           const isMineToday =
-            (!!meCode && todaysEmps.some((r) => r.code === meCode)) ||
+            (!!meCode && todaysEmps.some((r) => codesEqual(r.code, meCode))) ||
             (!!meName && todaysEmps.some((r) => safeStr(r.name) === meName));
 
           if (!isMineToday) continue;
@@ -312,7 +398,7 @@ export default function SchedulePage() {
       /* ------------------------------- HOLIDAYS ------------------------------- */
       for (const h of holidays) {
         const codeMatch =
-          !!meCode && [h.employeeCode, h.userCode].map(safeStr).includes(meCode);
+          !!meCode && [h.employeeCode, h.userCode].some((code) => codesEqual(code, meCode));
 
         const nameMatch =
           !!meName && [h.employee, h.name].map(safeStr).includes(meName);
@@ -418,7 +504,7 @@ export default function SchedulePage() {
     };
 
     loadData();
-  }, [employee?.userCode, employee?.name, isAuthed, loading, bankHolidayMap]);
+  }, [employee?.userCode, employee?.name, employee?.displayName, isAuthed, loading, bankHolidayMap]);
 
   const handleDayPress = (day) => {
     setSelectedDay(day.dateString);
@@ -431,6 +517,14 @@ export default function SchedulePage() {
     setSelectedDay(t);
     setCalendarCurrent(t);
   };
+
+  const selectedDayLabel = selectedDay
+    ? new Date(selectedDay).toLocaleDateString("en-GB", {
+        weekday: "short",
+        day: "2-digit",
+        month: "short",
+      })
+    : "None";
 
   /* ---------------------------- SELECTED MARKING ---------------------------- */
   const computedMarked = useMemo(() => {
@@ -462,10 +556,45 @@ export default function SchedulePage() {
           contentContainerStyle={styles.scrollContainer}
           keyboardShouldPersistTaps="handled"
         >
-          {/* HEADER */}
-          <View style={styles.headerBlock}>
-            <Text style={[styles.headerTitle, { color: colors.text }]}>Schedule</Text>
-          </View>
+          <PageHeaderCard
+            eyebrow="Operations"
+            title="Schedule"
+            subtitle="Pick a date to view jobs, leave, and availability."
+            style={styles.heroCard}
+            contentStyle={styles.heroContent}
+          >
+            <View style={styles.heroMetaRow}>
+                <View
+                  style={[
+                    styles.heroMetaChip,
+                    {
+                      backgroundColor: withAlpha(colors.surfaceAlt, 0.8),
+                      borderColor: withAlpha(colors.border, 0.8),
+                    },
+                  ]}
+                >
+                  <Icon name="calendar" size={12} color={colors.textMuted} />
+                  <Text style={[styles.heroMetaText, { color: colors.text }]}>
+                    Selected: {selectedDayLabel}
+                  </Text>
+                </View>
+
+                <View
+                  style={[
+                    styles.heroMetaChip,
+                    {
+                      backgroundColor: withAlpha(colors.surfaceAlt, 0.8),
+                      borderColor: withAlpha(colors.border, 0.8),
+                    },
+                  ]}
+                >
+                  <Icon name="layers" size={12} color={colors.textMuted} />
+                  <Text style={[styles.heroMetaText, { color: colors.text }]}>
+                    Marked: {Object.keys(markedDates || {}).length}
+                  </Text>
+                </View>
+            </View>
+          </PageHeaderCard>
 
           {/* QUICK ACTIONS */}
           <View style={styles.quickRow}>
@@ -476,7 +605,8 @@ export default function SchedulePage() {
               ]}
               onPress={jumpToToday}
             >
-              <Text style={[styles.quickText, { color: "#fff" }]}>Today</Text>
+              <Icon name="crosshair" size={14} color="#fff" />
+              <Text style={[styles.quickText, { color: "#fff" }]}>Jump to Today</Text>
             </TouchableOpacity>
 
             <TouchableOpacity
@@ -486,6 +616,7 @@ export default function SchedulePage() {
               ]}
               onPress={clearSelected}
             >
+              <Icon name="x-circle" size={14} color={colors.textMuted} />
               <Text style={[styles.quickText, { color: colors.text }]}>Clear</Text>
             </TouchableOpacity>
           </View>
@@ -540,12 +671,17 @@ export default function SchedulePage() {
 
           {/* LEGEND */}
           <View style={styles.legendRow}>
-            <LegendPill color="#1C3C7A" label="On Set" />
-            <LegendPill color="#126536" label="Holiday (Paid)" />
-            <LegendPill color="#126536" label="Holiday (Unpaid)" borderColor="#FFD60A" />
-            <LegendPill color={BANK_HOLIDAY_COLOR} label="Bank Holiday" />
-            <LegendPill color="#262626" label="Weekend" />
-            <LegendPill color="#999" label="Yard" />
+            <LegendPill color="#1C3C7A" label="On Set" colors={colors} />
+            <LegendPill color="#126536" label="Holiday (Paid)" colors={colors} />
+            <LegendPill
+              color="#126536"
+              label="Holiday (Unpaid)"
+              borderColor="#FFD60A"
+              colors={colors}
+            />
+            <LegendPill color={BANK_HOLIDAY_COLOR} label="Bank Holiday" colors={colors} />
+            <LegendPill color="#262626" label="Weekend" colors={colors} />
+            <LegendPill color="#999" label="Yard" colors={colors} />
           </View>
 
           <View style={{ height: 40 }} />
@@ -761,9 +897,9 @@ function renderDetails(selectedDay, dayInfo, colors) {
   );
 }
 
-function LegendPill({ color, label, borderColor }) {
+function LegendPill({ color, label, borderColor, colors }) {
   return (
-    <View style={styles.pill}>
+    <View style={[styles.pill, { backgroundColor: colors.surfaceAlt, borderColor: colors.border }]}>
       <View
         style={[
           styles.dot,
@@ -774,7 +910,7 @@ function LegendPill({ color, label, borderColor }) {
           },
         ]}
       />
-      <Text style={[styles.pillText, { color: "#EEE" }]}>{label}</Text>
+      <Text style={[styles.pillText, { color: colors.text }]}>{label}</Text>
     </View>
   );
 }
@@ -786,27 +922,78 @@ function LegendPill({ color, label, borderColor }) {
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: "#000" },
   container: { flex: 1, backgroundColor: "#000" },
-  scrollContainer: { paddingHorizontal: 20, paddingTop: 6 },
+  scrollContainer: {
+    paddingHorizontal: t.spacing.md,
+    paddingTop: 10,
+    paddingBottom: t.spacing.lg,
+  },
 
-  headerBlock: { paddingVertical: 12, alignItems: "flex-start" },
-  headerTitle: { fontSize: 26, fontWeight: "800", letterSpacing: 0.4 },
+  heroCard: {
+    position: "relative",
+    borderRadius: t.radius.xl,
+    marginBottom: t.spacing.lg,
+    overflow: "hidden",
+  },
+  heroContent: {
+    paddingHorizontal: 0,
+    paddingVertical: 15,
+  },
+  heroEyebrow: {
+    ...t.typography.label,
+    letterSpacing: 0.6,
+  },
+  heroTitle: {
+    marginTop: 3,
+    ...t.typography.pageTitle,
+    letterSpacing: 0.2,
+  },
+  heroSubTitle: {
+    marginTop: 3,
+    fontSize: 13,
+    fontWeight: "600",
+    lineHeight: 18,
+  },
+  heroMetaRow: {
+    marginTop: 12,
+    flexDirection: "row",
+    gap: 8,
+    flexWrap: "wrap",
+  },
+  heroMetaChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    minHeight: t.controls.chipMinHeight,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  heroMetaText: {
+    fontSize: 11,
+    fontWeight: "700",
+  },
 
   quickRow: {
     flexDirection: "row",
-    justifyContent: "center",
+    justifyContent: "space-between",
+    alignItems: "center",
+    flexWrap: "wrap",
     gap: 12,
-    marginTop: 8,
-    marginBottom: 10,
+    marginTop: 2,
+    marginBottom: 12,
   },
   quickBtn: {
+    minHeight: t.controls.buttonHeight,
     paddingVertical: 8,
-    paddingHorizontal: 16,
-    borderRadius: 12,
-    borderWidth: 1,
+    paddingHorizontal: 14,
+    borderRadius: 999,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
   },
-  quickText: { fontWeight: "700" },
+  quickText: { fontWeight: "800", fontSize: 12, letterSpacing: 0.2 },
 
-  card: { borderRadius: 16, borderWidth: 1, overflow: "hidden" },
+  card: { borderRadius: 16, overflow: "hidden" },
 
   dayHeader: {
     marginTop: 14,
@@ -814,11 +1001,10 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     paddingHorizontal: 14,
     borderRadius: 14,
-    borderWidth: 1,
   },
   dayText: { fontSize: 15, fontWeight: "700" },
 
-  infoCard: { marginTop: 14, padding: 16, borderRadius: 16, borderWidth: 1 },
+  infoCard: { marginTop: 14, padding: t.controls.cardPaddingLg, borderRadius: 16 },
   infoHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -830,7 +1016,7 @@ const styles = StyleSheet.create({
   badge: { paddingVertical: 2, paddingHorizontal: 10, borderRadius: 12 },
   badgeText: { fontWeight: "800", fontSize: 12 },
 
-  jobCard: { marginTop: 12, borderRadius: 14, borderWidth: 1, padding: 14 },
+  jobCard: { marginTop: 12, borderRadius: 14, padding: t.controls.cardPadding },
   jobRow: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -851,11 +1037,11 @@ const styles = StyleSheet.create({
   pill: {
     flexDirection: "row",
     alignItems: "center",
+    minHeight: t.controls.chipMinHeight,
     paddingVertical: 6,
     paddingHorizontal: 12,
     backgroundColor: "#111",
     borderColor: "#222",
-    borderWidth: 1,
     borderRadius: 20,
   },
   dot: { width: 10, height: 10, borderRadius: 5, marginRight: 6 },

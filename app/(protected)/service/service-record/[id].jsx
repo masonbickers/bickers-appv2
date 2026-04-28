@@ -6,13 +6,13 @@ import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Image,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 
 import { db } from "../../../../firebaseConfig";
 import { useTheme } from "../../../providers/ThemeProvider";
@@ -25,7 +25,7 @@ const COLORS = {
   textMid: "#E0E0E0",
   textLow: "#888888",
   chipBg: "#262626",
-  primaryAction: "#FF3B30",
+  primaryAction: "#ED1C25",
 };
 
 function toDateMaybe(value) {
@@ -101,7 +101,7 @@ export default function ServiceRecordViewScreen() {
     const ratings = record.checkRatings || {};
     const na = record.checkNA || {};
     const notes = record.checkNotes || {};
-    const checkPhotoURIs = record.checkPhotoURIs || {};
+    const checkPhotoURIs = record.checkPhotoURIs || record.checkPhotoURLs || {};
 
     const labelsSet = new Set([
       ...Object.keys(checks),
@@ -129,6 +129,7 @@ export default function ServiceRecordViewScreen() {
 
   return (
     <SafeAreaView
+      edges={["left", "right"]}
       style={[
         styles.container,
         { backgroundColor: colors.background || COLORS.background },
@@ -177,6 +178,24 @@ export default function ServiceRecordViewScreen() {
             {vehicleName}
           </Text>
         </View>
+        {record && (
+          <TouchableOpacity
+            style={styles.editButton}
+            onPress={() =>
+              router.push({
+                pathname: "/service/service-form/[id]",
+                params: {
+                  id: `edit-${record.id}`,
+                  recordId: record.id,
+                },
+              })
+            }
+            activeOpacity={0.85}
+          >
+            <Feather name="edit-3" size={15} color={COLORS.textHigh} />
+            <Text style={styles.editButtonText}>Edit</Text>
+          </TouchableOpacity>
+        )}
       </View>
 
       {loading ? (
@@ -249,7 +268,7 @@ export default function ServiceRecordViewScreen() {
             <Field label="Service date" value={fullDate} />
             <Field
               label="Next service due"
-              value={record.nextServiceDate || "—"}
+              value={record.nextService || record.nextServiceDate || "—"}
             />
             <Field
               label="Technician"
@@ -366,7 +385,8 @@ export default function ServiceRecordViewScreen() {
           </View>
 
           {/* PHOTOS — OVERALL */}
-          {Array.isArray(record.photoURIs) && record.photoURIs.length > 0 && (
+          {Array.isArray(record.photoURIs || record.photoURLs) &&
+            (record.photoURIs || record.photoURLs).length > 0 && (
             <View
               style={[
                 styles.card,
@@ -382,7 +402,7 @@ export default function ServiceRecordViewScreen() {
                 showsHorizontalScrollIndicator={false}
                 style={{ marginTop: 8 }}
               >
-                {record.photoURIs.map((uri) => (
+                {(record.photoURIs || record.photoURLs).map((uri) => (
                   <View key={uri} style={styles.photoThumbWrapper}>
                     <Image source={{ uri }} style={styles.photoThumb} />
                   </View>
@@ -433,6 +453,21 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     marginRight: 10,
+  },
+  editButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    borderRadius: 999,
+    backgroundColor: COLORS.primaryAction,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    marginLeft: 8,
+  },
+  editButtonText: {
+    color: COLORS.textHigh,
+    fontSize: 12,
+    fontWeight: "700",
+    marginLeft: 5,
   },
   title: {
     fontSize: 18,

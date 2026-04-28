@@ -3,12 +3,12 @@ import { useMemo } from "react";
 import {
     ActivityIndicator,
     Image,
-    SafeAreaView,
     StyleSheet,
     Text,
     TouchableOpacity,
     View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 import { WebView } from "react-native-webview";
 
@@ -53,6 +53,7 @@ export default function FileViewerScreen() {
   if (!url) {
     return (
       <SafeAreaView
+      edges={["left", "right"]}
         style={[
           styles.container,
           { backgroundColor: colors.background || COLORS.background },
@@ -76,6 +77,7 @@ export default function FileViewerScreen() {
 
   return (
     <SafeAreaView
+      edges={["left", "right"]}
       style={[
         styles.container,
         { backgroundColor: colors.background || COLORS.background },
@@ -139,7 +141,7 @@ export default function FileViewerScreen() {
             startInLoadingState
             renderLoading={() => (
               <View style={styles.center}>
-                <ActivityIndicator size="large" color="#FF3B30" />
+                <ActivityIndicator size="large" color="#ED1C25" />
                 <Text style={styles.loadingText}>Loading file…</Text>
               </View>
             )}
