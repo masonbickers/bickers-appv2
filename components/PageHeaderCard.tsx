@@ -3,7 +3,7 @@ import { StyleProp, StyleSheet, Text, TextStyle, View, ViewStyle } from "react-n
 
 import { createDashboardCardStyles } from "../lib/design/dashboard";
 import { designTokens as t } from "../lib/design/tokens";
-import { useTheme } from "../app/providers/ThemeProvider";
+import { useTheme } from "../providers/ThemeProvider";
 
 type Props = {
   eyebrow?: string;

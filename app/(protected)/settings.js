@@ -1,6 +1,7 @@
 import { useRouter } from "expo-router";
 import { useState } from "react";
 import {
+  Alert,
   SafeAreaView,
   ScrollView,
   StyleSheet,
@@ -12,7 +13,7 @@ import {
 import Icon from "react-native-vector-icons/Feather";
 
 import { NOTIFICATIONS_ENABLED } from "../../lib/notifications";
-import { useTheme } from "../providers/ThemeProvider";
+import { useTheme } from "../../providers/ThemeProvider";
 
 function withAlpha(hex, alpha) {
   const safeAlpha = Math.max(0, Math.min(1, Number(alpha) || 0));
@@ -45,7 +46,11 @@ export default function SettingsPage() {
           label: "Change Password",
           icon: "lock",
           subLabel: "Update your login credentials",
-          onPress: () => router.push("/change-password"),
+          onPress: () =>
+            Alert.alert(
+              "Coming soon",
+              "Password changes are not available in-app yet."
+            ),
         },
       ],
     },

@@ -20,8 +20,8 @@ import { auth, db } from "../../../firebaseConfig";
 import { resolveWorkspaceAccess } from "../../../lib/access";
 import { createDashboardCardStyles } from "../../../lib/design/dashboard";
 import { designTokens as t } from "../../../lib/design/tokens";
-import { useAuth } from "../../providers/AuthProvider";
-import { useTheme } from "../../providers/ThemeProvider";
+import { useAuth } from "../../../providers/AuthProvider";
+import { useTheme } from "../../../providers/ThemeProvider";
 
 /* ---------- CONSTANTS & HELPERS ---------- */
 
@@ -132,6 +132,83 @@ function countOpenIssueDefects(issues) {
   ).length;
 }
 
+function countOpenManualDefects(reports) {
+  return reports.filter((report) => isOpenMaintenance(report?.status)).length;
+}
+
+function getActivityDate(item) {
+  return (
+    item?.completedAt ||
+    item?.updatedAt ||
+    item?.createdAt ||
+    item?.serviceDateOnly ||
+    item?.serviceDate ||
+    item?.completedDate ||
+    item?.precheckDateOnly ||
+    item?.precheckDateTime ||
+    item?.prepDate ||
+    item?.date ||
+    null
+  );
+}
+
+function getVehicleText(item) {
+  return [item?.vehicleName || item?.vehicle || item?.name, item?.registration || item?.reg]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+function buildActivityItems({ serviceRecords, defectReports, vehiclePrepRecords, motPreChecks }) {
+  const services = serviceRecords.map((record) => {
+    const serviceType = record.serviceType || record.type || "Service";
+    const isRepair =
+      record.recordType === "repair" || normaliseKey(serviceType).includes("repair");
+    return {
+      id: `service-${record.id}`,
+      icon: isRepair ? "tool" : "clipboard",
+      title: serviceType,
+      subtitle: record.workSummary || record.repairSummary || record.extraNotes || "Service record completed",
+      vehicle: getVehicleText(record),
+      date: getActivityDate(record),
+      route: record.id ? `/service/service-record/${record.id}` : null,
+    };
+  });
+
+  const defects = defectReports.map((report) => ({
+    id: `defect-${report.id}`,
+    icon: report.status === "resolved" ? "check-circle" : "alert-triangle",
+    title: report.status === "resolved" ? "Defect resolved" : "Defect reported",
+    subtitle: report.description || report.category || report.notes || "Defect report logged",
+    vehicle: getVehicleText(report),
+    date: getActivityDate(report),
+    route: "/service/defects",
+  }));
+
+  const prep = vehiclePrepRecords.map((record) => ({
+    id: `prep-${record.id}`,
+    icon: record.completed ? "check-square" : "save",
+    title: record.completed ? "Vehicle prep completed" : "Vehicle prep saved",
+    subtitle: record.notes || "Vehicle prep record saved",
+    vehicle: getVehicleText(record),
+    date: getActivityDate(record),
+    route: null,
+  }));
+
+  const mot = motPreChecks.map((record) => ({
+    id: `mot-${record.id}`,
+    icon: "file-text",
+    title: "MOT pre-check",
+    subtitle: record.status || record.motPrecheckStatus || record.summary || "MOT pre-check completed",
+    vehicle: getVehicleText(record),
+    date: getActivityDate(record),
+    route: null,
+  }));
+
+  return [...services, ...defects, ...prep, ...mot]
+    .map((item) => ({ ...item, dateObj: toDateMaybe(item.date) }))
+    .sort((a, b) => (b.dateObj?.getTime() || 0) - (a.dateObj?.getTime() || 0));
+}
+
 /* ---------- MAIN SCREEN ---------- */
 
 export default function ServiceHomeScreen() {
@@ -142,6 +219,10 @@ export default function ServiceHomeScreen() {
   const [vehicles, setVehicles] = useState([]);
   const [vehicleChecks, setVehicleChecks] = useState([]);
   const [vehicleIssues, setVehicleIssues] = useState([]);
+  const [serviceRecords, setServiceRecords] = useState([]);
+  const [defectReports, setDefectReports] = useState([]);
+  const [vehiclePrepRecords, setVehiclePrepRecords] = useState([]);
+  const [motPreChecks, setMotPreChecks] = useState([]);
   const [loading, setLoading] = useState(true);
   const workspaceAccess = useMemo(() => resolveWorkspaceAccess(employee), [employee]);
   const canSwitchToMainApp = workspaceAccess.user && workspaceAccess.service;
@@ -221,11 +302,79 @@ export default function ServiceHomeScreen() {
     return () => unsub();
   }, []);
 
+  useEffect(() => {
+    const unsub = onSnapshot(
+      collection(db, "serviceRecords"),
+      (snap) => {
+        setServiceRecords(snap.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
+      },
+      (err) => {
+        console.error("Service Home serviceRecords listener error:", err);
+      }
+    );
+
+    return () => unsub();
+  }, []);
+
+  useEffect(() => {
+    const unsub = onSnapshot(
+      collection(db, "defectReports"),
+      (snap) => {
+        setDefectReports(snap.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
+      },
+      (err) => {
+        console.error("Service Home defectReports listener error:", err);
+      }
+    );
+
+    return () => unsub();
+  }, []);
+
+  useEffect(() => {
+    const unsub = onSnapshot(
+      collection(db, "vehiclePrepRecords"),
+      (snap) => {
+        setVehiclePrepRecords(snap.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
+      },
+      (err) => {
+        console.error("Service Home vehiclePrepRecords listener error:", err);
+      }
+    );
+
+    return () => unsub();
+  }, []);
+
+  useEffect(() => {
+    const unsub = onSnapshot(
+      collection(db, "motPreChecks"),
+      (snap) => {
+        setMotPreChecks(snap.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
+      },
+      (err) => {
+        console.error("Service Home motPreChecks listener error:", err);
+      }
+    );
+
+    return () => unsub();
+  }, []);
+
   const openDefectCount = useMemo(
     () =>
       countOpenCheckDefects(vehicleChecks) +
-      countOpenIssueDefects(vehicleIssues),
-    [vehicleChecks, vehicleIssues]
+      countOpenIssueDefects(vehicleIssues) +
+      countOpenManualDefects(defectReports),
+    [defectReports, vehicleChecks, vehicleIssues]
+  );
+
+  const recentActivity = useMemo(
+    () =>
+      buildActivityItems({
+        serviceRecords,
+        defectReports,
+        vehiclePrepRecords,
+        motPreChecks,
+      }).slice(0, 20),
+    [defectReports, motPreChecks, serviceRecords, vehiclePrepRecords]
   );
 
   const processed = useMemo(() => {
@@ -465,10 +614,15 @@ export default function ServiceHomeScreen() {
               colors={colors}
             />
             <QuickActionCard
-              icon="clock"
-              title="History & Completed"
-              subtitle="Completed services and MOT history"
-              onPress={() => router.push("/service/service-history")}
+              icon="activity"
+              title="Activity History"
+              subtitle={
+                recentActivity.length > 0
+                  ? `${recentActivity.length} recent update${recentActivity.length === 1 ? "" : "s"}`
+                  : "Services, repairs and defects"
+              }
+              badgeCount={recentActivity.length}
+              onPress={() => router.push("/service/activity-history")}
               colors={colors}
             />
           </View>

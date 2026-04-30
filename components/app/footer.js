@@ -1,12 +1,12 @@
-// app/components/footer.jsx
+// components/app/footer.jsx
 import { usePathname, useRouter } from "expo-router";
 import { Platform, StyleSheet, TouchableOpacity, View } from "react-native";
 import Ionicons from "react-native-vector-icons/Ionicons";
 
 import { resolveWorkspaceAccess } from "../../lib/access";
-import { useAuth } from "../providers/AuthProvider";
+import { useAuth } from "../../providers/AuthProvider";
 // ✅ Use ThemeProvider hook instead of custom useColorScheme
-import { useTheme } from "../providers/ThemeProvider";
+import { useTheme } from "../../providers/ThemeProvider";
 
 export default function Footer() {
   const router = useRouter();

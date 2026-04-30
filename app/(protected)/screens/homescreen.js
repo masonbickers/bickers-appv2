@@ -26,8 +26,8 @@ import { resolveWorkspaceAccess } from "../../../lib/access";
 import { createDashboardCardStyles } from "../../../lib/design/dashboard";
 import { designTokens as t } from "../../../lib/design/tokens";
 
-import { useAuth } from "../../providers/AuthProvider";
-import { useTheme } from "../../providers/ThemeProvider";
+import { useAuth } from "../../../providers/AuthProvider";
+import { useTheme } from "../../../providers/ThemeProvider";
 
 
 import {

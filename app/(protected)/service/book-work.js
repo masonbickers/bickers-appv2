@@ -18,7 +18,7 @@ import PageHeaderCard from "../../../components/PageHeaderCard";
 import { db } from "../../../firebaseConfig";
 
 import { designTokens as t } from "../../../lib/design/tokens";
-import { useTheme } from "../../providers/ThemeProvider";
+import { useTheme } from "../../../providers/ThemeProvider";
 
 const COLORS = {
   background: "#0D0D0D",
@@ -856,7 +856,7 @@ export default function BookWorkScreen() {
                     );
                     const isDraftVehicle = !!existingDraft;
 
-                    const isTopRecommended = idx === overdueServices.length - 1;
+                    const isTopRecommended = idx === 0;
 
                     return (
                       <TouchableOpacity

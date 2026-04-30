@@ -24,8 +24,8 @@ import { doc, getDoc, serverTimestamp, setDoc } from "firebase/firestore";
 import { getDownloadURL, ref, uploadBytesResumable } from "firebase/storage";
 
 import { auth, db, storage } from "../../firebaseConfig";
-import { useAuth } from "../providers/AuthProvider";
-import { useTheme } from "../providers/ThemeProvider";
+import { useAuth } from "../../providers/AuthProvider";
+import { useTheme } from "../../providers/ThemeProvider";
 
 /* ---------- CONSTANTS AND UTILS ---------- */
 

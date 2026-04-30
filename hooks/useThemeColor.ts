@@ -1,5 +1,5 @@
 // hooks/useThemeColor.ts
-import { useTheme } from "../app/providers/ThemeProvider";
+import { useTheme } from "../providers/ThemeProvider";
 
 // Match the props signature Expo expects
 type ThemeProps = {

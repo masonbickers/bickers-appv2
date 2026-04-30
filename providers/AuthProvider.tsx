@@ -1,4 +1,4 @@
-// app/providers/AuthProvider.tsx
+// providers/AuthProvider.tsx
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import type { User } from "firebase/auth";
 import { onAuthStateChanged } from "firebase/auth";
@@ -12,8 +12,8 @@ import React, {
 import {
   normaliseSessionRole,
   resolveWorkspaceAccess,
-} from "../../lib/access";
-import { auth } from "../../firebaseConfig";
+} from "../lib/access";
+import { auth } from "../firebaseConfig";
 
 type EmployeeSession = {
   role?: string;
@@ -192,10 +192,4 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       {children}
     </AuthCtx.Provider>
   );
-}
-
-// Expo Router treats every file inside app/ as a route.
-// Keep a noop default export here so this provider module is not warned as invalid.
-export default function AuthProviderRouteShim() {
-  return null;
 }

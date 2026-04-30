@@ -17,7 +17,7 @@ import Icon from "react-native-vector-icons/Feather";
 import { collection, onSnapshot, orderBy, query } from "firebase/firestore";
 
 import { db } from "../../../firebaseConfig";
-import { useTheme } from "../../providers/ThemeProvider";
+import { useTheme } from "../../../providers/ThemeProvider";
 
 /* ---------- CONSTANTS & HELPERS ---------- */
 

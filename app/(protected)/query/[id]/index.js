@@ -26,8 +26,8 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
 import { db } from "../../../../firebaseConfig";
-import { useAuth } from "../../../providers/AuthProvider";
-import { useTheme } from "../../../providers/ThemeProvider";
+import { useAuth } from "../../../../providers/AuthProvider";
+import { useTheme } from "../../../../providers/ThemeProvider";
 
 const DAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
 

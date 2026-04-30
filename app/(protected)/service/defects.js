@@ -20,7 +20,7 @@ import Icon from "react-native-vector-icons/Feather";
 
 import { db } from "../../../firebaseConfig";
 import { designTokens as t } from "../../../lib/design/tokens";
-import { useTheme } from "../../providers/ThemeProvider";
+import { useTheme } from "../../../providers/ThemeProvider";
 
 const COLORS = {
   background: "#0D0D0D",
@@ -159,6 +159,36 @@ function buildApprovedIssueDefects(issueDocs) {
     });
 }
 
+function buildManualDefectReports(reports) {
+  return reports
+    .filter((report) => isOpenMaintenance(report?.status))
+    .map((report) => {
+      const severity = normaliseKey(report.severity);
+      const priority = normaliseKey(report.priority);
+      const isImmediate =
+        severity === "immediate" || priority === "high" || !!report.offRoad;
+      const title = report.category || report.title || report.severity || "Defect report";
+      const description = report.description || report.note || report.summary || "";
+      const text = description ? `${title}: ${description}` : title;
+
+      return {
+        id: report.id,
+        routeId: buildDefectRouteId("defectReports", report.id),
+        source: "defectReports",
+        docId: report.id,
+        category: isImmediate ? "immediate" : "general",
+        text,
+        vehicleId: report.vehicleId || report.vehicleDocId || null,
+        vehicleName: getVehicleLabel(report),
+        registration: report.registration || report.reg || "",
+        reporter: report.reportedBy || report.reporterName || report.driverName || "",
+        jobNumber: report.jobNumber || "",
+        dateValue: getDateValue(report.createdAt || report.dateISO || report.date),
+        maintenanceStatus: report.status || "open",
+      };
+    });
+}
+
 /* ---------- MAIN SCREEN ---------- */
 
 export default function DefectsScreen() {
@@ -168,13 +198,18 @@ export default function DefectsScreen() {
   const [vehicles, setVehicles] = useState([]);
   const [vehicleChecks, setVehicleChecks] = useState([]);
   const [vehicleIssues, setVehicleIssues] = useState([]);
+  const [defectReports, setDefectReports] = useState([]);
   const [loadingSources, setLoadingSources] = useState({
     vehicles: true,
     checks: true,
     issues: true,
+    reports: true,
   });
   const loading =
-    loadingSources.vehicles || loadingSources.checks || loadingSources.issues;
+    loadingSources.vehicles ||
+    loadingSources.checks ||
+    loadingSources.issues ||
+    loadingSources.reports;
 
   // Vehicles are used to link approved defects back to service vehicle pages.
   useEffect(() => {
@@ -239,11 +274,32 @@ export default function DefectsScreen() {
     return () => unsub();
   }, []);
 
+  useEffect(() => {
+    const unsub = onSnapshot(
+      collection(db, "defectReports"),
+      (snap) => {
+        const data = snap.docs.map((doc) => ({
+          id: doc.id,
+          ...doc.data(),
+        }));
+        setDefectReports(data);
+        setLoadingSources((prev) => ({ ...prev, reports: false }));
+      },
+      (err) => {
+        console.error("Failed to load manual defect reports:", err);
+        setLoadingSources((prev) => ({ ...prev, reports: false }));
+      }
+    );
+
+    return () => unsub();
+  }, []);
+
   // Attach approved split defects per vehicle/source.
   const withDefects = useMemo(() => {
     const approvedDefects = [
       ...buildApprovedCheckDefects(vehicleChecks),
       ...buildApprovedIssueDefects(vehicleIssues),
+      ...buildManualDefectReports(defectReports),
     ].sort((a, b) => b.dateValue - a.dateValue);
 
     const grouped = new Map();
@@ -290,7 +346,7 @@ export default function DefectsScreen() {
     });
 
     return Array.from(grouped.values());
-  }, [vehicleChecks, vehicleIssues, vehicles]);
+  }, [defectReports, vehicleChecks, vehicleIssues, vehicles]);
 
   const immediateVehicles = useMemo(
     () => withDefects.filter((v) => v.immediateDefects.length > 0),

@@ -1,10 +1,10 @@
 // app/(protected)/service/minor-service/[id].jsx
 import { Feather } from "@expo/vector-icons"; // ✅ use Expo Feather
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useLocalSearchParams, useNavigation, useRouter } from "expo-router";
 import {
-  addDoc,
   arrayUnion,
   collection,
   doc,
@@ -12,13 +12,16 @@ import {
   orderBy,
   query,
   serverTimestamp,
+  setDoc,
   updateDoc,
 } from "firebase/firestore";
-import { useEffect, useMemo, useState } from "react";
+import { getDownloadURL, ref, uploadBytesResumable } from "firebase/storage";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
   Image,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -28,8 +31,8 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { db } from "../../../../firebaseConfig";
-import { useTheme } from "../../../providers/ThemeProvider";
+import { db, storage } from "../../../../firebaseConfig";
+import { useTheme } from "../../../../providers/ThemeProvider";
 
 const COLORS = {
   background: "#0D0D0D",
@@ -140,6 +143,85 @@ function isDownloadUrl(uri) {
   return typeof uri === "string" && /^https?:\/\//i.test(uri);
 }
 
+function sanitizeStorageSegment(value) {
+  return String(value || "item")
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || "item";
+}
+
+async function ensureUploadableImageUri(uri) {
+  if (!uri || isDownloadUrl(uri)) return uri;
+
+  try {
+    const manip = await ImageManipulator.manipulateAsync(
+      uri,
+      [{ resize: { width: 1600 } }],
+      { compress: 0.8, format: ImageManipulator.SaveFormat.JPEG }
+    );
+    return manip?.uri || uri;
+  } catch {
+    return uri;
+  }
+}
+
+async function uploadImageUri(uri, path) {
+  if (isDownloadUrl(uri)) return uri;
+
+  const uploadableUri = await ensureUploadableImageUri(uri);
+  const response = await fetch(uploadableUri);
+  if (!response.ok) {
+    throw new Error("Could not read selected photo for upload.");
+  }
+
+  const blob = await response.blob();
+  const storageRef = ref(storage, path);
+
+  await new Promise((resolve, reject) => {
+    const task = uploadBytesResumable(storageRef, blob, {
+      contentType: blob.type || "image/jpeg",
+    });
+    task.on("state_changed", undefined, reject, resolve);
+  });
+
+  return getDownloadURL(storageRef);
+}
+
+async function uploadPhotoList(photoItems, basePath) {
+  const uris = photoItems
+    .map((p) => (typeof p === "string" ? p : p?.uri))
+    .filter(Boolean);
+
+  const uploaded = [];
+  for (const [index, uri] of uris.entries()) {
+    if (isDownloadUrl(uri)) {
+      uploaded.push(uri);
+      continue;
+    }
+
+    const filename = `${Date.now()}-${index}.jpg`;
+    uploaded.push(await uploadImageUri(uri, `${basePath}/${filename}`));
+  }
+
+  return uploaded;
+}
+
+async function uploadCheckPhotoMap(checkPhotosMap, basePath) {
+  const uploadedMap = {};
+
+  for (const [label, photoItems] of Object.entries(checkPhotosMap || {})) {
+    if (!Array.isArray(photoItems) || photoItems.length === 0) continue;
+    const safeLabel = sanitizeStorageSegment(label);
+    const uploaded = await uploadPhotoList(photoItems, `${basePath}/${safeLabel}`);
+    if (uploaded.length > 0) {
+      uploadedMap[label] = uploaded;
+    }
+  }
+
+  return uploadedMap;
+}
+
 function addPresent(target, key, value) {
   if (value !== undefined && value !== null && value !== "") {
     target[key] = value;
@@ -151,8 +233,10 @@ const MINOR_SERVICE_DRAFTS_KEY = "minorServiceFormDrafts_v1";
 
 export default function MinorServiceFormScreen() {
   const router = useRouter();
+  const navigation = useNavigation();
   const { id } = useLocalSearchParams();
   const formId = Array.isArray(id) ? id[0] : id;
+  const allowLeaveRef = useRef(false);
 
   const { colors } = useTheme();
 
@@ -243,6 +327,97 @@ export default function MinorServiceFormScreen() {
     () => vehicles.find((v) => v.id === selectedVehicleId) || null,
     [vehicles, selectedVehicleId]
   );
+
+  const hasUnsavedChanges = useMemo(
+    () =>
+      !!selectedVehicleId ||
+      !!vehicleSearch.trim() ||
+      !!odometer.trim() ||
+      serviceType !== "Interim / minor service" ||
+      !!workSummary.trim() ||
+      !!partsUsed.trim() ||
+      !!extraNotes.trim() ||
+      !!signedBy.trim() ||
+      Object.keys(checks || {}).length > 0 ||
+      Object.keys(checkRatings || {}).length > 0 ||
+      Object.keys(checkNA || {}).length > 0 ||
+      photos.length > 0,
+    [
+      checkNA,
+      checkRatings,
+      checks,
+      extraNotes,
+      odometer,
+      partsUsed,
+      photos.length,
+      selectedVehicleId,
+      serviceType,
+      signedBy,
+      vehicleSearch,
+      workSummary,
+    ]
+  );
+
+  const confirmLeave = (onLeave) => {
+    if (!hasUnsavedChanges || allowLeaveRef.current) {
+      onLeave();
+      return;
+    }
+
+    Alert.alert(
+      "Leave minor service?",
+      "You have unsaved service details. Leave without saving?",
+      [
+        { text: "Stay", style: "cancel" },
+        {
+          text: "Leave",
+          style: "destructive",
+          onPress: () => {
+            allowLeaveRef.current = true;
+            onLeave();
+          },
+        },
+      ]
+    );
+  };
+
+  useEffect(() => {
+    const unsubscribe = navigation.addListener("beforeRemove", (event) => {
+      if (!hasUnsavedChanges || allowLeaveRef.current) return;
+
+      event.preventDefault();
+      Alert.alert(
+        "Leave minor service?",
+        "You have unsaved service details. Leave without saving?",
+        [
+          { text: "Stay", style: "cancel" },
+          {
+            text: "Leave",
+            style: "destructive",
+            onPress: () => {
+              allowLeaveRef.current = true;
+              navigation.dispatch(event.data.action);
+            },
+          },
+        ]
+      );
+    });
+
+    return unsubscribe;
+  }, [hasUnsavedChanges, navigation]);
+
+  useEffect(() => {
+    if (Platform.OS !== "web" || typeof window === "undefined") return;
+
+    const handleBeforeUnload = (event) => {
+      if (!hasUnsavedChanges || allowLeaveRef.current) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [hasUnsavedChanges]);
 
   /* ---------------- LOAD DRAFT FOR THIS FORM ID ---------------- */
 
@@ -526,6 +701,7 @@ export default function MinorServiceFormScreen() {
   /* ---------------- SUBMIT ---------------- */
 
   const handleSubmit = async () => {
+    if (submitting) return;
     if (!validate()) return;
 
     setSubmitting(true);
@@ -534,8 +710,28 @@ export default function MinorServiceFormScreen() {
       const odoNumber = odometer ? Number(odometer) : null;
       const nextServiceDate = nextServiceComputed || null;
       const serviceDateTime = `${serviceDate} ${serviceTime}`;
-      const photoURIs = photos.map((p) => p.uri);
-      const photoURLs = photoURIs.filter(isDownloadUrl);
+      const serviceRecordRef = doc(collection(db, "serviceRecords"));
+      const storageBasePath = `serviceRecords/${serviceRecordRef.id}`;
+
+      let photoURLs = [];
+      let checkPhotoURLs = {};
+      try {
+        photoURLs = await uploadPhotoList(
+          photos,
+          `${storageBasePath}/overall`
+        );
+        checkPhotoURLs = await uploadCheckPhotoMap(
+          {},
+          `${storageBasePath}/checks`
+        );
+      } catch (uploadErr) {
+        console.error("Failed to upload minor service photos:", uploadErr);
+        Alert.alert(
+          "Photo upload failed",
+          "Could not upload the service photos. Please check your connection and try again."
+        );
+        return;
+      }
 
       const record = {
         vehicleId: selectedVehicleId,
@@ -558,14 +754,14 @@ export default function MinorServiceFormScreen() {
         checkNA,
         checkNotes: {},
         checkPhotoURIs: {},
-        checkPhotoURLs: {},
-        photoURIs,
+        checkPhotoURLs,
+        photoURIs: [],
         photoURLs,
         signedBy: signedBy.trim(),
         createdAt: serverTimestamp(),
       };
 
-      const serviceRecordRef = await addDoc(collection(db, "serviceRecords"), record);
+      await setDoc(serviceRecordRef, record);
 
       const vehicleRef = doc(db, "vehicles", selectedVehicleId);
       const historyNotes = [workSummary.trim(), extraNotes.trim()]
@@ -625,7 +821,15 @@ export default function MinorServiceFormScreen() {
       Alert.alert(
         "Minor service saved",
         "Service record saved and vehicle updated.",
-        [{ text: "OK", onPress: () => router.back() }]
+        [
+          {
+            text: "OK",
+            onPress: () => {
+              allowLeaveRef.current = true;
+              router.back();
+            },
+          },
+        ]
       );
     } catch (err) {
       console.error("Failed to save minor service record:", err);
@@ -652,7 +856,10 @@ export default function MinorServiceFormScreen() {
           { borderBottomColor: colors.border || COLORS.border },
         ]}
       >
-        <TouchableOpacity onPress={router.back} style={styles.backButton}>
+        <TouchableOpacity
+          onPress={() => confirmLeave(() => router.back())}
+          style={styles.backButton}
+        >
           <Feather
             name="chevron-left"
             size={22}

@@ -1,4 +1,4 @@
-// app/providers/ThemeProvider.tsx
+// providers/ThemeProvider.tsx
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, {
     createContext,
@@ -10,7 +10,7 @@ import React, {
     useState,
 } from "react";
 import { Appearance } from "react-native";
-import { designTokens, type DesignTokens } from "../../lib/design/tokens";
+import { designTokens, type DesignTokens } from "../lib/design/tokens";
 
 const THEME_STORAGE_KEY = "bickers-theme-preference";
 
@@ -180,9 +180,3 @@ export function ThemeProvider({ children }: ThemeProviderProps) {
 /* ---------- Hook ---------- */
 
 export const useTheme = () => useContext(ThemeContext);
-
-// Expo Router treats every file inside app/ as a route.
-// Keep a noop default export here so this provider module is not warned as invalid.
-export default function ThemeProviderRouteShim() {
-  return null;
-}

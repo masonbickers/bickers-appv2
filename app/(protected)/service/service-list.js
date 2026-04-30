@@ -17,7 +17,7 @@ import Icon from "react-native-vector-icons/Feather";
 import { db } from "../../../firebaseConfig";
 import PageHeaderCard from "../../../components/PageHeaderCard";
 import { designTokens as t } from "../../../lib/design/tokens";
-import { useTheme } from "../../providers/ThemeProvider";
+import { useTheme } from "../../../providers/ThemeProvider";
 
 /* ---------- CONSTANTS & HELPERS ---------- */
 

@@ -31,8 +31,8 @@ import Icon from "react-native-vector-icons/Feather";
 
 import { db } from "../../../../firebaseConfig";
 import { runOrQueueFirestoreMutation } from "../../../../lib/sync/firestoreQueue";
-import { useAuth } from "../../../providers/AuthProvider";
-import { useTheme } from "../../../providers/ThemeProvider";
+import { useAuth } from "../../../../providers/AuthProvider";
+import { useTheme } from "../../../../providers/ThemeProvider";
 
 /* ───────────────────────────────
    BANK HOLIDAYS (UK via GOV.UK)
@@ -334,7 +334,7 @@ function ensureYardSegments(entry) {
 function ensureYardLunch(entry) {
   const e = { ...(entry || {}) };
   if (String(e.mode || "yard").toLowerCase() === "yard") {
-    if (typeof e.lunchSup !== "boolean") e.lunchSup = true;
+    if (typeof e.lunchSup !== "boolean") e.lunchSup = false;
   } else {
     if (typeof e.lunchSup !== "boolean") e.lunchSup = false;
   }
@@ -1345,7 +1345,7 @@ export default function WeekTimesheet() {
             dayNotes: "",
             precallDuration: null,
             yardSegments: [{ start: yardDefaultStart, end: yardDefaultEnd }],
-            lunchSup: true,
+            lunchSup: false,
             yardTravelEnabled: false,
             yardTravelLeaveTime: null,
             yardTravelArriveTime: null,
@@ -1543,7 +1543,7 @@ export default function WeekTimesheet() {
                     dayNotes: "",
                     precallDuration: null,
                     yardSegments: [{ start: yardDefaultStart, end: yardDefaultEnd }],
-                    lunchSup: true,
+                    lunchSup: false,
                     isTurnaround: false,
                     turnaroundJob: null,
                   };
@@ -1651,7 +1651,7 @@ export default function WeekTimesheet() {
           mode: "yard",
           leaveTime: base.leaveTime || yardDefaultStart,
           arriveBack: base.arriveBack || yardDefaultEnd,
-          lunchSup: true,
+          lunchSup: false,
         });
         if (!ensured.leaveTime) ensured.leaveTime = yardDefaultStart;
         if (!ensured.arriveBack && !ensured.arriveTime) ensured.arriveBack = yardDefaultEnd;
@@ -2170,7 +2170,7 @@ export default function WeekTimesheet() {
                 leaveTime: yardDefaultStart,
                 arriveBack: yardDefaultEnd,
                 yardSegments: [{ start: yardDefaultStart, end: yardDefaultEnd, note: "" }],
-                lunchSup: true,
+                lunchSup: false,
                 bankHolidayWorked: false,
               })
             : ensureModeDefaults({
@@ -2207,7 +2207,7 @@ export default function WeekTimesheet() {
           base.mode = "yard";
           base.leaveTime = base.leaveTime || yardDefaultStart;
           base.arriveBack = base.arriveBack || yardDefaultEnd;
-          base.lunchSup = true;
+          base.lunchSup = false;
           base.yardSegments = [];
 
           // clear non-yard time fields
@@ -2235,7 +2235,7 @@ export default function WeekTimesheet() {
               ...prev.days,
               [day]: {
                 ...e,
-                lunchSup: true,
+                lunchSup: false,
                 ...(isBankHolidayDay ? { bankHolidayWorked: true } : {}),
                 yardSegments: [firstSeg],
               },
@@ -2251,7 +2251,7 @@ export default function WeekTimesheet() {
               ...prev.days,
               [day]: {
                 ...e,
-                lunchSup: true,
+                lunchSup: false,
                 ...(isBankHolidayDay ? { bankHolidayWorked: true } : {}),
                 yardSegments: [firstSeg],
               },
@@ -2544,7 +2544,7 @@ export default function WeekTimesheet() {
           if (nextMode === "yard") {
             updated.leaveTime = updated.leaveTime || yardDefaultStart;
             updated.arriveBack = updated.arriveBack || yardDefaultEnd;
-            updated.lunchSup = true;
+            updated.lunchSup = false;
             if (!updated.isTurnaround && (!Array.isArray(updated.yardSegments) || updated.yardSegments.length === 0)) {
               updated.yardSegments = [{ start: yardDefaultStart, end: yardDefaultEnd }];
             }
@@ -2599,7 +2599,7 @@ export default function WeekTimesheet() {
           updated.mode = "yard";
           updated.leaveTime = updated.leaveTime || yardDefaultStart;
           updated.arriveBack = updated.arriveBack || yardDefaultEnd;
-          updated.lunchSup = true;
+          updated.lunchSup = false;
           if (!updated.isTurnaround && (!Array.isArray(updated.yardSegments) || updated.yardSegments.length === 0)) {
             updated.yardSegments = [{ start: yardDefaultStart, end: yardDefaultEnd }];
           }
@@ -3181,7 +3181,7 @@ export default function WeekTimesheet() {
                         Hours hidden while enabled.
                       </Text>
                     </View>
-                    {renderDayNotesField(day, entry.dayNotes, controlsDisabled)}
+                    {renderDayNotesField(day, entry.dayNotes, isLocked)}
                   </>
                 )}
 

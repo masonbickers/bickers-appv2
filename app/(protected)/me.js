@@ -20,8 +20,8 @@ import { designTokens as t } from "../../lib/design/tokens";
 
 // 🔑 Provider + Firebase
 import { auth, db } from "../../firebaseConfig";
-import { useAuth } from "../providers/AuthProvider";
-import { useTheme } from "../providers/ThemeProvider";
+import { useAuth } from "../../providers/AuthProvider";
+import { useTheme } from "../../providers/ThemeProvider";
 
 function withAlpha(hex, alpha) {
   const safeAlpha = Math.max(0, Math.min(1, Number(alpha) || 0));
@@ -372,8 +372,10 @@ export default function MePage() {
   const queryFieldLabel = fieldLabel(queryCard?.field);
   const queryDay = queryCard?.day;
   const profileTone = "#64748B";
+  const stravaTone = "#FC4C02";
   const timesheetTone = "#CA8A04";
   const holidayTone = "#16A34A";
+  const strava = getStravaSummary(employee);
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
       <View style={{ flex: 1 }}>
@@ -467,6 +469,91 @@ export default function MePage() {
                 <Icon name="hash" size={14} color={colors.textMuted} />
               </View>
               <Text style={[styles.cardRowText, { color: colors.text }]}>Code: {account.userCode}</Text>
+            </View>
+          </View>
+
+          {/* Strava Snapshot */}
+          <View
+            style={[
+              styles.sectionCard,
+              dashboardCards.sectionCard,
+              styles.flatSectionCard,
+            ]}
+          >
+            <View style={styles.sectionHeader}>
+              <View style={styles.sectionTitleWrap}>
+                <Text style={[styles.sectionTitle, { color: colors.text }]}>Strava</Text>
+                <Text style={[styles.sectionSubTitle, { color: colors.textMuted }]}>
+                  Connection and activity summary
+                </Text>
+              </View>
+              <View
+                style={[
+                  styles.sectionCountPill,
+                  {
+                    backgroundColor: withAlpha(stravaTone, 0.13),
+                    borderColor: withAlpha(stravaTone, 0.4),
+                  },
+                ]}
+              >
+                <Text style={[styles.sectionCountText, { color: stravaTone }]}>
+                  {strava.connected ? "Connected" : "Empty"}
+                </Text>
+              </View>
+            </View>
+
+            <View
+              style={[
+                styles.sectionPanel,
+                {
+                  backgroundColor: colors.surface,
+                  borderColor: colors.border,
+                },
+              ]}
+            >
+              {strava.connected ? (
+                <>
+                  <View style={styles.statRow}>
+                    <View style={[styles.statCard, styles.flatStatCard]}>
+                      <Text style={[styles.statLabel, { color: colors.textMuted }]}>Activities</Text>
+                      <Text style={[styles.statValue, { color: colors.text }]}>
+                        {strava.activityCount ?? "--"}
+                      </Text>
+                    </View>
+
+                    <View style={[styles.statCard, styles.flatStatCard]}>
+                      <Text style={[styles.statLabel, { color: colors.textMuted }]}>Distance</Text>
+                      <Text style={[styles.statValue, { color: colors.text }]}>
+                        {strava.distanceLabel || "--"}
+                      </Text>
+                    </View>
+
+                    <View style={[styles.statCard, styles.flatStatCard]}>
+                      <Text style={[styles.statLabel, { color: colors.textMuted }]}>Updated</Text>
+                      <Text style={[styles.statValue, { color: colors.text }]}>
+                        {formatDateShort(strava.updatedAt) || "--"}
+                      </Text>
+                    </View>
+                  </View>
+
+                  <View style={styles.cardRow}>
+                    <Icon name="activity" size={16} color={colors.textMuted} />
+                    <Text style={[styles.cardRowText, { color: colors.text }]}>
+                      Athlete: {strava.athleteName || "Connected account"}
+                    </Text>
+                  </View>
+                </>
+              ) : (
+                <View style={styles.emptyState}>
+                  <Icon name="activity" size={18} color={colors.textMuted} />
+                  <Text style={[styles.emptyStateTitle, { color: colors.text }]}>
+                    Strava not connected
+                  </Text>
+                  <Text style={[styles.emptyStateText, { color: colors.textMuted }]}>
+                    No Strava data is available for this profile.
+                  </Text>
+                </View>
+              )}
             </View>
           </View>
 
@@ -975,6 +1062,83 @@ function fieldLabel(field) {
   return "this day";
 }
 
+function getStravaSummary(employee) {
+  const source =
+    employee?.strava ||
+    employee?.stravaProfile ||
+    employee?.integrations?.strava ||
+    employee?.connectedAccounts?.strava ||
+    null;
+
+  const athleteId = source?.athleteId || source?.athlete_id || source?.id;
+  const connected =
+    source?.connected === true ||
+    source?.isConnected === true ||
+    source?.accessToken ||
+    source?.refreshToken ||
+    athleteId;
+
+  if (!connected) {
+    return {
+      connected: false,
+      athleteName: "",
+      activityCount: null,
+      distanceLabel: "",
+      updatedAt: null,
+    };
+  }
+
+  const stats = source?.stats || source?.summary || {};
+  const athleteName =
+    source?.athleteName ||
+    source?.displayName ||
+    source?.name ||
+    [source?.firstname, source?.lastname].filter(Boolean).join(" ");
+  const activityCount =
+    firstFiniteNumber(
+      stats.activityCount,
+      stats.activities,
+      stats.totalActivities,
+      source?.activityCount
+    ) ?? null;
+  const distanceMeters = firstFiniteNumber(
+    stats.distanceMeters,
+    stats.totalDistanceMeters,
+    stats.distance,
+    source?.distanceMeters
+  );
+  const distanceKm = firstFiniteNumber(stats.distanceKm, stats.totalDistanceKm, source?.distanceKm);
+
+  return {
+    connected: true,
+    athleteName,
+    activityCount,
+    distanceLabel: formatDistance(distanceKm, distanceMeters),
+    updatedAt: source?.updatedAt || source?.lastSyncAt || stats.updatedAt || stats.lastSyncAt || null,
+  };
+}
+
+function firstFiniteNumber(...values) {
+  for (const value of values) {
+    const n = Number(value);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
+function formatDistance(distanceKm, distanceMeters) {
+  const km =
+    Number.isFinite(Number(distanceKm))
+      ? Number(distanceKm)
+      : Number.isFinite(Number(distanceMeters))
+      ? Number(distanceMeters) / 1000
+      : null;
+
+  if (km === null) return "";
+  if (km >= 100) return `${Math.round(km)}km`;
+  return `${Math.round(km * 10) / 10}km`;
+}
+
 /* ---------- styles ---------- */
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#0b0b0b" },
@@ -1254,6 +1418,25 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     textAlign: "center",
     marginTop: 8,
+  },
+  emptyState: {
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 18,
+    paddingHorizontal: 10,
+  },
+  emptyStateTitle: {
+    marginTop: 8,
+    fontSize: 14,
+    fontWeight: "800",
+    textAlign: "center",
+  },
+  emptyStateText: {
+    marginTop: 4,
+    fontSize: 12,
+    fontWeight: "600",
+    lineHeight: 17,
+    textAlign: "center",
   },
 
 });

@@ -14,7 +14,7 @@ import {
 import DropDownPicker from 'react-native-dropdown-picker';
 import Icon from 'react-native-vector-icons/Feather';
 import { db } from '../../firebaseConfig';
-import { useTheme } from '../providers/ThemeProvider';
+import { useTheme } from '../../providers/ThemeProvider';
 
 const LUNCH_DEDUCTION_MINUTES = 30;
 

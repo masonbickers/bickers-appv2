@@ -2,7 +2,7 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as ImagePicker from "expo-image-picker";
 import * as ImageManipulator from "expo-image-manipulator";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useLocalSearchParams, useNavigation, useRouter } from "expo-router";
 import {
   arrayUnion,
   collection,
@@ -16,12 +16,13 @@ import {
   updateDoc,
 } from "firebase/firestore";
 import { getDownloadURL, ref, uploadBytesResumable } from "firebase/storage";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
   Image,
   Modal,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -33,7 +34,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
 import { db, storage } from "../../../../firebaseConfig";
-import { useTheme } from "../../../providers/ThemeProvider";
+import { useTheme } from "../../../../providers/ThemeProvider";
 
 const COLORS = {
   background: "#0D0D0D",
@@ -56,6 +57,32 @@ const SERVICE_TYPE_OPTIONS = [
   "Other",
 ];
 
+const CHECK_STATUS_OPTIONS = [
+  { value: "green", label: "Green", color: "#22C55E" },
+  { value: "amber", label: "Amber", color: "#F59E0B" },
+  { value: "red", label: "Red", color: "#EF4444" },
+];
+
+const NOTE_REQUIRED_STATUSES = new Set(["amber", "red"]);
+
+const DEFECT_ACTION_OPTIONS = [
+  { value: "repaired", label: "Repaired" },
+  { value: "replaced", label: "Replaced" },
+  { value: "not_repaired", label: "Not repaired" },
+];
+
+const WHEEL_POSITIONS = [
+  { key: "frontLeft", label: "Front left", shortLabel: "FL" },
+  { key: "frontRight", label: "Front right", shortLabel: "FR" },
+  { key: "rearLeft", label: "Rear left", shortLabel: "RL" },
+  { key: "rearRight", label: "Rear right", shortLabel: "RR" },
+];
+
+const EMPTY_WHEEL_INSPECTION = WHEEL_POSITIONS.reduce((acc, wheel) => {
+  acc[wheel.key] = { tread: "", pressure: "", brakeWear: "", note: "" };
+  return acc;
+}, {});
+
 /* ------------------------------------------------------------------ */
 /*  FULL SERVICE CHECKLIST                                            */
 /* ------------------------------------------------------------------ */
@@ -72,13 +99,11 @@ const CHECK_ENGINE_FLUIDS = [
 ];
 
 const CHECK_SAFETY_CHASSIS = [
-  "Front brake pads & discs inspected",
-  "Rear brake pads & discs / drums inspected",
-  "Tyre tread depth & wear pattern checked",
-  "Tyre pressures set to spec (incl. spare)",
+  "Brake system checked for leaks / damage",
+  "Tyres checked for visible damage / sidewall condition",
+  "Wheel bearings checked for play / noise",
   "Steering joints & rack inspected",
   "Suspension arms, bushes & shocks inspected",
-  "Brake hoses & lines inspected for leaks / corrosion",
 ];
 
 const CHECK_ELECTRICAL_TEST = [
@@ -178,9 +203,191 @@ function splitServiceDateTime(record) {
   };
 }
 
+function normalizeCheckStatus(value) {
+  if (typeof value === "string") {
+    const status = value.trim().toLowerCase();
+    if (status === "green" || status === "amber" || status === "red") return status;
+  }
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    if (value >= 4) return "green";
+    if (value >= 2) return "amber";
+    return "red";
+  }
+
+  return "";
+}
+
+function getCheckStatusOption(value) {
+  const status = normalizeCheckStatus(value);
+  return CHECK_STATUS_OPTIONS.find((option) => option.value === status) || null;
+}
+
+function normalizeWheelInspection(value) {
+  return WHEEL_POSITIONS.reduce((acc, wheel) => {
+    const source = value?.[wheel.key] || {};
+    acc[wheel.key] = {
+      tread: source.tread !== undefined && source.tread !== null ? String(source.tread) : "",
+      pressure:
+        source.pressure !== undefined && source.pressure !== null ? String(source.pressure) : "",
+      brakeWear:
+        source.brakeWear !== undefined && source.brakeWear !== null
+          ? String(source.brakeWear)
+          : "",
+      note: source.note !== undefined && source.note !== null ? String(source.note) : "",
+    };
+    return acc;
+  }, {});
+}
+
+function hasWheelInspectionData(value) {
+  return WHEEL_POSITIONS.some((wheel) => {
+    const item = value?.[wheel.key] || {};
+    return ["tread", "pressure", "brakeWear", "note"].some((field) =>
+      String(item[field] || "").trim()
+    );
+  });
+}
+
+function parseMetricNumber(value) {
+  const cleaned = String(value || "").replace(/[^\d.]/g, "");
+  const parsed = Number(cleaned);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function getTreadStatus(value) {
+  const tread = parseMetricNumber(value);
+  if (tread === null) return "";
+  if (tread >= 4) return "green";
+  if (tread >= 2) return "amber";
+  return "red";
+}
+
+function getBrakeWearStatus(value) {
+  const wear = parseMetricNumber(value);
+  if (wear === null) return "";
+  if (wear < 60) return "green";
+  if (wear < 80) return "amber";
+  return "red";
+}
+
+function buildRedWheelDefects(wheelInspection) {
+  const data = normalizeWheelInspection(wheelInspection);
+  return WHEEL_POSITIONS.flatMap((wheel) => {
+    const item = data[wheel.key] || {};
+    const treadValue = String(item.tread || "").trim();
+    const brakeWearValue = String(item.brakeWear || "").trim();
+    const defects = [];
+
+    if (treadValue && getTreadStatus(treadValue) === "red") {
+      defects.push({
+        key: `${wheel.key}:tread`,
+        wheelKey: wheel.key,
+        wheelLabel: wheel.label,
+        metric: "tread",
+        title: `${wheel.label} tyre tread red`,
+        value: treadValue,
+        unit: "mm",
+        description: `${wheel.label} tyre tread is ${treadValue}mm.`,
+      });
+    }
+
+    if (brakeWearValue && getBrakeWearStatus(brakeWearValue) === "red") {
+      defects.push({
+        key: `${wheel.key}:brakeWear`,
+        wheelKey: wheel.key,
+        wheelLabel: wheel.label,
+        metric: "brakeWear",
+        title: `${wheel.label} brake wear red`,
+        value: brakeWearValue,
+        unit: "%",
+        description: `${wheel.label} brake wear is ${brakeWearValue}%.`,
+      });
+    }
+
+    return defects;
+  });
+}
+
+function buildRedChecklistDefects(checkRatings = {}, checkNotes = {}) {
+  return Object.entries(checkRatings)
+    .filter(([, value]) => normalizeCheckStatus(value) === "red")
+    .map(([label]) => ({
+      key: `check:${label}`,
+      metric: "checklist",
+      title: `${label} red`,
+      value: "Red",
+      unit: "",
+      description: checkNotes[label]
+        ? `${label}: ${checkNotes[label]}`
+        : `${label} was marked red on the service checklist.`,
+    }));
+}
+
+function buildAmberWheelMonitorItems(wheelInspection) {
+  const data = normalizeWheelInspection(wheelInspection);
+  return WHEEL_POSITIONS.flatMap((wheel) => {
+    const item = data[wheel.key] || {};
+    const monitorItems = [];
+
+    if (getTreadStatus(item.tread) === "amber") {
+      monitorItems.push({
+        key: `${wheel.key}:tread`,
+        source: "wheel",
+        title: `${wheel.label} tyre tread monitor`,
+        value: item.tread,
+        unit: "mm",
+        details: `${wheel.label} tyre tread is ${item.tread}mm.`,
+      });
+    }
+
+    if (getBrakeWearStatus(item.brakeWear) === "amber") {
+      monitorItems.push({
+        key: `${wheel.key}:brakeWear`,
+        source: "wheel",
+        title: `${wheel.label} brake wear monitor`,
+        value: item.brakeWear,
+        unit: "%",
+        details: `${wheel.label} brake wear is ${item.brakeWear}%.`,
+      });
+    }
+
+    return monitorItems;
+  });
+}
+
+function buildAmberChecklistMonitorItems(checkRatings = {}, checkNotes = {}) {
+  return Object.entries(checkRatings)
+    .filter(([, value]) => normalizeCheckStatus(value) === "amber")
+    .map(([label]) => ({
+      key: `check:${label}`,
+      source: "checklist",
+      title: `${label} monitor`,
+      value: "Amber",
+      unit: "",
+      details: checkNotes[label]
+        ? `${label}: ${checkNotes[label]}`
+        : `${label} was marked amber on the service checklist.`,
+    }));
+}
+
+function buildServiceDefectActions(redDefects, currentActions = {}) {
+  return redDefects.reduce((acc, defect) => {
+    const existing = currentActions?.[defect.key] || {};
+    acc[defect.key] = {
+      ...defect,
+      action: existing.action || "",
+      note: existing.note || "",
+      defectReportId: existing.defectReportId || "",
+    };
+    return acc;
+  }, {});
+}
+
 function buildVehicleServiceHistoryItem({
   completedDate,
   serviceRecordId,
+  serviceFormNumber,
   notes,
   odometer,
   partsUsed,
@@ -189,6 +396,7 @@ function buildVehicleServiceHistoryItem({
     completedDate,
     bookingId: null,
     serviceRecordId,
+    serviceFormNumber,
     provider: "",
     bookingRef: "",
     notes,
@@ -282,15 +490,43 @@ function addPresent(target, key, value) {
   }
 }
 
+function parseServiceFormNumber(value) {
+  const parsed = Number(String(value || "").replace(/\D/g, ""));
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function formatServiceFormNumber(value) {
+  const parsed = parseServiceFormNumber(value);
+  return parsed ? String(parsed).padStart(3, "0") : "";
+}
+
+async function getNextServiceFormNumberValue(currentRecordId = null) {
+  const snap = await getDocs(collection(db, "serviceRecords"));
+  let max = 0;
+
+  snap.docs.forEach((entry) => {
+    if (currentRecordId && entry.id === String(currentRecordId)) return;
+    const data = entry.data() || {};
+    const parsed =
+      parseServiceFormNumber(data.serviceFormNumberValue) ||
+      parseServiceFormNumber(data.serviceFormNumber);
+    if (parsed && parsed > max) max = parsed;
+  });
+
+  return max + 1;
+}
+
 // 🔑 MUST match book-work.jsx
 const SERVICE_DRAFTS_KEY = "serviceFormDrafts_v1";
 
 export default function ServiceFormScreen() {
   const router = useRouter();
+  const navigation = useNavigation();
   const { id, recordId } = useLocalSearchParams();
   const formId = Array.isArray(id) ? id[0] : id; // ensure string
   const editRecordId = Array.isArray(recordId) ? recordId[0] : recordId;
   const isEditingRecord = !!editRecordId;
+  const allowLeaveRef = useRef(false);
 
   const { colors } = useTheme();
 
@@ -323,10 +559,14 @@ export default function ServiceFormScreen() {
 
   // CHECKLIST STATE
   const [checks, setChecks] = useState({}); // { label: true }
-  const [checkRatings, setCheckRatings] = useState({}); // { label: 0–5 }
+  const [checkRatings, setCheckRatings] = useState({}); // { label: "green" | "amber" | "red" }
   const [checkNA, setCheckNA] = useState({}); // { label: true if N/A }
   const [checkNotes, setCheckNotes] = useState({}); // { label: "note text" }
   const [checkPhotos, setCheckPhotos] = useState({}); // { label: [{ uri }] }
+  const [wheelInspection, setWheelInspection] = useState(() =>
+    normalizeWheelInspection(EMPTY_WHEEL_INSPECTION)
+  );
+  const [serviceDefectActions, setServiceDefectActions] = useState({});
 
   // GLOBAL PHOTOS
   const [photos, setPhotos] = useState([]); // [{ uri }]
@@ -385,6 +625,135 @@ export default function ServiceFormScreen() {
     [vehicles, selectedVehicleId]
   );
 
+  const redWheelDefects = useMemo(
+    () => buildRedWheelDefects(wheelInspection),
+    [wheelInspection]
+  );
+
+  const redChecklistDefects = useMemo(
+    () => buildRedChecklistDefects(checkRatings, checkNotes),
+    [checkNotes, checkRatings]
+  );
+
+  const redServiceDefects = useMemo(
+    () => [...redWheelDefects, ...redChecklistDefects],
+    [redChecklistDefects, redWheelDefects]
+  );
+
+  const monitorReport = useMemo(
+    () => [
+      ...buildAmberWheelMonitorItems(wheelInspection),
+      ...buildAmberChecklistMonitorItems(checkRatings, checkNotes),
+    ],
+    [checkNotes, checkRatings, wheelInspection]
+  );
+
+  const activeServiceDefectActions = useMemo(
+    () => buildServiceDefectActions(redServiceDefects, serviceDefectActions),
+    [redServiceDefects, serviceDefectActions]
+  );
+
+  const hasUnsavedChanges = useMemo(
+    () =>
+      !!selectedVehicleId ||
+      !!vehicleSearch.trim() ||
+      !!odometer.trim() ||
+      serviceType !== "Full service" ||
+      !!workSummary.trim() ||
+      !!partsUsed.trim() ||
+      !!extraNotes.trim() ||
+      !!signedBy.trim() ||
+      Object.keys(checks || {}).length > 0 ||
+      Object.keys(checkRatings || {}).length > 0 ||
+      Object.keys(checkNA || {}).length > 0 ||
+      Object.values(checkNotes || {}).some((value) => String(value || "").trim()) ||
+      Object.values(checkPhotos || {}).some(
+        (items) => Array.isArray(items) && items.length > 0
+      ) ||
+      hasWheelInspectionData(wheelInspection) ||
+      Object.values(serviceDefectActions || {}).some((item) => item?.action || item?.note) ||
+      photos.length > 0,
+    [
+      checkNA,
+      checkNotes,
+      checkPhotos,
+      checkRatings,
+      checks,
+      extraNotes,
+      odometer,
+      partsUsed,
+      photos.length,
+      selectedVehicleId,
+      serviceDefectActions,
+      serviceType,
+      signedBy,
+      vehicleSearch,
+      wheelInspection,
+      workSummary,
+    ]
+  );
+
+  const confirmLeave = (onLeave) => {
+    if (!hasUnsavedChanges || allowLeaveRef.current) {
+      onLeave();
+      return;
+    }
+
+    Alert.alert(
+      "Leave service form?",
+      "Your progress has been saved as a draft. You can continue it from Workshop Forms.",
+      [
+        { text: "Stay", style: "cancel" },
+        {
+          text: "Leave",
+          style: "destructive",
+          onPress: () => {
+            allowLeaveRef.current = true;
+            onLeave();
+          },
+        },
+      ]
+    );
+  };
+
+  useEffect(() => {
+    const unsubscribe = navigation.addListener("beforeRemove", (event) => {
+      if (!hasUnsavedChanges || allowLeaveRef.current) return;
+
+      event.preventDefault();
+      Alert.alert(
+        "Leave service form?",
+        "Your progress has been saved as a draft. You can continue it from Workshop Forms.",
+        [
+          { text: "Stay", style: "cancel" },
+          {
+            text: "Leave",
+            style: "destructive",
+            onPress: () => {
+              allowLeaveRef.current = true;
+              navigation.dispatch(event.data.action);
+            },
+          },
+        ]
+      );
+    });
+
+    return unsubscribe;
+  }, [hasUnsavedChanges, navigation]);
+
+  useEffect(() => {
+    if (Platform.OS !== "web" || typeof window === "undefined") return;
+
+    const handleBeforeUnload = (event) => {
+      if (!hasUnsavedChanges || allowLeaveRef.current) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [hasUnsavedChanges]);
+
   const nextServiceComputed = useMemo(
     () => computeNextServiceFromDate(serviceDate),
     [serviceDate]
@@ -421,6 +790,8 @@ export default function ServiceFormScreen() {
         if (draft.checkRatings) setCheckRatings(draft.checkRatings);
         if (draft.checkNA) setCheckNA(draft.checkNA);
         if (draft.checkNotes) setCheckNotes(draft.checkNotes);
+        setWheelInspection(normalizeWheelInspection(draft.wheelInspection));
+        setServiceDefectActions(draft.serviceDefectActions || {});
 
         if (draft.checkPhotoURIs && typeof draft.checkPhotoURIs === "object") {
           const built = {};
@@ -480,6 +851,8 @@ export default function ServiceFormScreen() {
         setCheckRatings(record.checkRatings || {});
         setCheckNA(record.checkNA || {});
         setCheckNotes(record.checkNotes || {});
+        setWheelInspection(normalizeWheelInspection(record.wheelInspection));
+        setServiceDefectActions(record.serviceDefectActions || {});
 
         const builtCheckPhotos = {};
         Object.entries(record.checkPhotoURIs || record.checkPhotoURLs || {}).forEach(
@@ -534,6 +907,8 @@ export default function ServiceFormScreen() {
           Object.keys(checkRatings).length > 0 ||
           Object.keys(checkNA).length > 0 ||
           Object.keys(checkNotes).length > 0 ||
+          hasWheelInspectionData(wheelInspection) ||
+          Object.keys(serviceDefectActions).length > 0 ||
           photos.length > 0 ||
           hasCheckPhotos;
 
@@ -580,6 +955,9 @@ export default function ServiceFormScreen() {
           checkRatings,
           checkNA,
           checkNotes,
+          wheelInspection,
+          serviceDefectActions: activeServiceDefectActions,
+          monitorReport,
           checkPhotoURIs,
           photoURIs: photos.map((p) => p.uri),
         };
@@ -605,6 +983,8 @@ export default function ServiceFormScreen() {
     serviceType,
     serviceDate,
     serviceTime,
+    serviceDefectActions,
+    monitorReport,
     workSummary,
     partsUsed,
     extraNotes,
@@ -613,6 +993,8 @@ export default function ServiceFormScreen() {
     checkRatings,
     checkNA,
     checkNotes,
+    wheelInspection,
+    activeServiceDefectActions,
     checkPhotos,
     photos,
   ]);
@@ -620,10 +1002,26 @@ export default function ServiceFormScreen() {
   /* ---------------- HELPERS ---------------- */
 
   const toggleCheck = (label) => {
-    setChecks((prev) => ({
-      ...prev,
-      [label]: !prev[label],
-    }));
+    setCheckNA((prev) => ({ ...prev, [label]: false }));
+    setChecks((prev) => {
+      const nextChecked = !prev[label];
+      if (nextChecked) {
+        setCheckRatings((prevRatings) => ({
+          ...prevRatings,
+          [label]: normalizeCheckStatus(prevRatings[label]) || "green",
+        }));
+      } else {
+        setCheckRatings((prevRatings) => {
+          const { [label]: _omit, ...rest } = prevRatings;
+          return rest;
+        });
+      }
+
+      return {
+        ...prev,
+        [label]: nextChecked,
+      };
+    });
   };
 
   const toggleNA = (label) => {
@@ -652,7 +1050,7 @@ export default function ServiceFormScreen() {
     setCheckNA((prev) => ({ ...prev, [label]: false }));
     setCheckRatings((prev) => ({
       ...prev,
-      [label]: value,
+      [label]: normalizeCheckStatus(value) || "green",
     }));
     setChecks((prev) => ({
       ...prev,
@@ -664,6 +1062,26 @@ export default function ServiceFormScreen() {
     setCheckNotes((prev) => ({
       ...prev,
       [label]: text,
+    }));
+  };
+
+  const updateWheelInspection = (wheelKey, field, value) => {
+    setWheelInspection((prev) => ({
+      ...normalizeWheelInspection(prev),
+      [wheelKey]: {
+        ...normalizeWheelInspection(prev)[wheelKey],
+        [field]: value,
+      },
+    }));
+  };
+
+  const updateServiceDefectAction = (defectKey, action) => {
+    setServiceDefectActions((prev) => ({
+      ...prev,
+      [defectKey]: {
+        ...(activeServiceDefectActions[defectKey] || {}),
+        action,
+      },
     }));
   };
 
@@ -712,12 +1130,31 @@ export default function ServiceFormScreen() {
 
     for (const label of allChecklistLabels) {
       if (checkNA[label]) continue;
-      const completed =
-        checks[label] || typeof checkRatings[label] === "number";
+      const status = normalizeCheckStatus(checkRatings[label]);
+      const completed = checks[label] || !!status;
       if (!completed) {
         Alert.alert(
           "Checklist incomplete",
           `Please complete or mark N/A: "${label}".`
+        );
+        return false;
+      }
+
+      if (NOTE_REQUIRED_STATUSES.has(status) && !String(checkNotes[label] || "").trim()) {
+        Alert.alert(
+          "Notes required",
+          `Please add notes for the ${status} check: "${label}".`
+        );
+        return false;
+      }
+    }
+
+    for (const defect of redServiceDefects) {
+      const action = activeServiceDefectActions[defect.key]?.action || "";
+      if (!action) {
+        Alert.alert(
+          "Defect action required",
+          `Please mark "${defect.title}" as repaired, replaced or not repaired.`
         );
         return false;
       }
@@ -886,6 +1323,7 @@ export default function ServiceFormScreen() {
           onPress: async () => {
             try {
               if (!formId) {
+                allowLeaveRef.current = true;
                 router.back();
                 return;
               }
@@ -911,6 +1349,7 @@ export default function ServiceFormScreen() {
                 "Could not delete draft. Please try again."
               );
             } finally {
+              allowLeaveRef.current = true;
               router.back();
             }
           },
@@ -939,6 +1378,13 @@ export default function ServiceFormScreen() {
         ? doc(db, "serviceRecords", String(editRecordId))
         : doc(collection(db, "serviceRecords"));
       const storageBasePath = `serviceRecords/${serviceRecordRef.id}`;
+      const existingServiceFormNumberValue =
+        parseServiceFormNumber(editingRecord?.serviceFormNumberValue) ||
+        parseServiceFormNumber(editingRecord?.serviceFormNumber);
+      const serviceFormNumberValue =
+        existingServiceFormNumberValue ||
+        (await getNextServiceFormNumberValue(isEditingRecord ? editRecordId : null));
+      const serviceFormNumber = formatServiceFormNumber(serviceFormNumberValue);
 
       const photoURLs = await uploadPhotoList(
         photos,
@@ -949,12 +1395,67 @@ export default function ServiceFormScreen() {
         `${storageBasePath}/checks`
       );
 
+      const serviceDefectActionsForRecord = { ...activeServiceDefectActions };
+      const embeddedOpenDefects = [];
+      for (const action of Object.values(serviceDefectActionsForRecord)) {
+        if (action.action !== "not_repaired" || action.defectReportId) continue;
+
+        const defectRef = doc(collection(db, "defectReports"));
+        const description = `${action.title}. ${action.description} Marked not repaired on service form.`;
+        const payload = {
+          vehicleId: selectedVehicleId,
+          vehicleName: recordVehicleName,
+          registration: recordRegistration,
+          location: "Service form",
+          description,
+          severity: "Immediate",
+          priority: "high",
+          offRoad: false,
+          reportedBy: signedBy.trim(),
+          notes: action.note || "",
+          status: "open",
+          source: "serviceForm",
+          sourceRecordId: serviceRecordRef.id,
+          sourceDefectKey: action.key,
+          photoURIs: [],
+          photoURLs: [],
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        };
+
+        await setDoc(defectRef, payload);
+        serviceDefectActionsForRecord[action.key] = {
+          ...action,
+          defectReportId: defectRef.id,
+        };
+        embeddedOpenDefects.push({
+          description,
+          severity: "Immediate",
+          priority: "high",
+          offRoad: false,
+          reportedBy: signedBy.trim() || null,
+          notes: action.note || null,
+          status: "open",
+          location: "Service form",
+          source: "serviceForm",
+          sourceRecordId: serviceRecordRef.id,
+          sourceDefectKey: action.key,
+          defectReportId: defectRef.id,
+          photoURIs: [],
+          photoURLs: [],
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        });
+      }
+
       const record = {
         vehicleId: selectedVehicleId,
         vehicleName: recordVehicleName,
         registration: recordRegistration,
         manufacturer: v?.manufacturer || editingRecord?.manufacturer || "",
         model: v?.model || editingRecord?.model || "",
+        serviceFormNumber,
+        serviceFormNumberValue,
         serviceDate: serviceDateTime,
         serviceDateOnly: serviceDate,
         serviceTime: serviceTime,
@@ -969,6 +1470,9 @@ export default function ServiceFormScreen() {
         checkRatings,
         checkNA,
         checkNotes,
+        wheelInspection,
+        monitorReport,
+        serviceDefectActions: serviceDefectActionsForRecord,
         checkPhotoURIs: checkPhotoURLs,
         checkPhotoURLs,
         photoURIs: photoURLs,
@@ -997,11 +1501,15 @@ export default function ServiceFormScreen() {
           buildVehicleServiceHistoryItem({
             completedDate: serviceDate,
             serviceRecordId: serviceRecordRef.id,
+            serviceFormNumber,
             notes: historyNotes,
             odometer: odoNumber,
             partsUsed: partsUsed.trim(),
           })
         );
+      }
+      if (embeddedOpenDefects.length > 0) {
+        updatePayload.defects = arrayUnion(...embeddedOpenDefects);
       }
       const canonicalName = recordVehicleName;
       const canonicalReg = recordRegistration;
@@ -1050,7 +1558,10 @@ export default function ServiceFormScreen() {
         [
           {
             text: "OK",
-            onPress: () => router.back(),
+            onPress: () => {
+              allowLeaveRef.current = true;
+              router.back();
+            },
           },
         ]
       );
@@ -1079,7 +1590,10 @@ export default function ServiceFormScreen() {
           { borderBottomColor: colors.border || COLORS.border },
         ]}
       >
-        <TouchableOpacity onPress={router.back} style={styles.backButton}>
+        <TouchableOpacity
+          onPress={() => confirmLeave(() => router.back())}
+          style={styles.backButton}
+        >
           <Icon
             name="chevron-left"
             size={22}
@@ -1102,8 +1616,8 @@ export default function ServiceFormScreen() {
             ]}
           >
             {isEditingRecord
-              ? "Update missed details, condition scores, notes and photos."
-              : "Record full service, 0–5 condition scores and photos."}
+              ? "Update missed details, check status, notes and photos."
+              : "Record full service, check status and photos."}
           </Text>
         </View>
       </View>
@@ -1141,8 +1655,9 @@ export default function ServiceFormScreen() {
               { color: colors.textMuted || COLORS.textMid },
             ]}
           >
-            0–5 scale on every item (5 = good, 0 = issue). Date/time taken
-            automatically; next service set 12 months ahead.
+            Mark every item green, amber, red or N/A. Amber and red checks
+            require notes. Date/time taken automatically; next service set 12
+            months ahead.
           </Text>
         </View>
 
@@ -1469,10 +1984,15 @@ export default function ServiceFormScreen() {
           </View>
         </View>
 
+        <WheelFootprintSection
+          wheelInspection={wheelInspection}
+          updateWheelInspection={updateWheelInspection}
+        />
+
         {/* CHECKLISTS */}
         <ChecklistSection
           title="Engine & fluids"
-          hint="Tick, 0–5, add notes & photos for each line."
+          hint="Mark green, amber, red or N/A. Notes required for amber/red."
           items={CHECK_ENGINE_FLUIDS}
           checks={checks}
           checkNA={checkNA}
@@ -1489,7 +2009,7 @@ export default function ServiceFormScreen() {
 
         <ChecklistSection
           title="Safety & chassis"
-          hint="Use 0–5 for pad / tyre wear. Add quick photos per item."
+          hint="Condition/security checks. Wheel measurements are recorded in the footprint."
           items={CHECK_SAFETY_CHASSIS}
           checks={checks}
           checkNA={checkNA}
@@ -1506,7 +2026,7 @@ export default function ServiceFormScreen() {
 
         <ChecklistSection
           title="Electrical & test drive"
-          hint="0–5 condition, N/A if not fitted. Photo icon on each row."
+          hint="Mark green, amber, red or N/A. Notes required for amber/red."
           items={CHECK_ELECTRICAL_TEST}
           checks={checks}
           checkNA={checkNA}
@@ -1689,6 +2209,14 @@ export default function ServiceFormScreen() {
           )}
         </View>
 
+        <MonitorReportSection monitorItems={monitorReport} />
+
+        <RedDefectReportSection
+          redDefects={redServiceDefects}
+          actions={activeServiceDefectActions}
+          updateAction={updateServiceDefectAction}
+        />
+
         {/* SUBMIT */}
         <TouchableOpacity
           style={[styles.submitButton, submitting && { opacity: 0.6 }]}
@@ -1836,6 +2364,325 @@ function FormField({
   );
 }
 
+function WheelFootprintSection({ wheelInspection, updateWheelInspection }) {
+  const { colors } = useTheme();
+  const wheelData = normalizeWheelInspection(wheelInspection);
+  const renderWheelCard = (wheel) => {
+    const item = wheelData[wheel.key] || {};
+
+    return (
+      <View
+        key={wheel.key}
+        style={[
+          styles.wheelCard,
+          {
+            backgroundColor: colors.surface || COLORS.background,
+            borderColor: colors.border || COLORS.border,
+          },
+        ]}
+      >
+        <View style={styles.wheelCardHeader}>
+          <View style={styles.wheelBadge}>
+            <Text style={styles.wheelBadgeText}>{wheel.shortLabel}</Text>
+          </View>
+          <Text style={[styles.wheelTitle, { color: colors.text || COLORS.textHigh }]}>
+            {wheel.label}
+          </Text>
+        </View>
+
+        <WheelMetricInput
+          label="Tread"
+          suffix="mm"
+          value={item.tread}
+          status={getTreadStatus(item.tread)}
+          onChangeText={(text) => updateWheelInspection(wheel.key, "tread", text)}
+        />
+        <WheelMetricInput
+          label="Pressure"
+          suffix="psi"
+          value={item.pressure}
+          onChangeText={(text) => updateWheelInspection(wheel.key, "pressure", text)}
+        />
+        <WheelMetricInput
+          label="Brake wear"
+          suffix="%"
+          value={item.brakeWear}
+          status={getBrakeWearStatus(item.brakeWear)}
+          onChangeText={(text) => updateWheelInspection(wheel.key, "brakeWear", text)}
+        />
+        <TextInput
+          style={[
+            styles.wheelNoteInput,
+            {
+              backgroundColor: colors.inputBackground || COLORS.inputBg,
+              borderColor: colors.inputBorder || COLORS.lightGray,
+              color: colors.text || COLORS.textHigh,
+            },
+          ]}
+          value={item.note}
+          onChangeText={(text) => updateWheelInspection(wheel.key, "note", text)}
+          placeholder="Wheel note..."
+          placeholderTextColor={colors.textMuted || COLORS.textLow}
+          multiline
+        />
+      </View>
+    );
+  };
+
+  return (
+    <>
+      <View style={styles.sectionHeaderRow}>
+        <Text
+          style={[
+            styles.sectionTitle,
+            { color: colors.text || COLORS.textHigh },
+          ]}
+        >
+          Tyres & brakes footprint
+        </Text>
+        <Text
+          style={[
+            styles.sectionHint,
+            { color: colors.textMuted || COLORS.textMid },
+          ]}
+        >
+          Record tread depth, tyre pressure and brake wear at each wheel.
+        </Text>
+      </View>
+
+      <View
+        style={[
+          styles.card,
+          {
+            backgroundColor: colors.surfaceAlt || COLORS.card,
+            borderColor: colors.border || COLORS.border,
+          },
+        ]}
+      >
+        <View style={styles.vehicleFootprint}>
+          <View style={styles.wheelColumn}>
+            {renderWheelCard(WHEEL_POSITIONS[0])}
+            {renderWheelCard(WHEEL_POSITIONS[2])}
+          </View>
+
+          <View style={styles.vehicleBody}>
+            <Text style={styles.vehicleBodyText}>FRONT</Text>
+            <View style={styles.vehicleBodyLine} />
+            <Text style={styles.vehicleBodyText}>REAR</Text>
+          </View>
+
+          <View style={styles.wheelColumn}>
+            {renderWheelCard(WHEEL_POSITIONS[1])}
+            {renderWheelCard(WHEEL_POSITIONS[3])}
+          </View>
+        </View>
+      </View>
+    </>
+  );
+}
+
+function WheelMetricInput({ label, suffix, value, status, onChangeText }) {
+  const { colors } = useTheme();
+  const statusOption = getCheckStatusOption(status);
+
+  return (
+    <View style={styles.wheelMetricRow}>
+      <View style={styles.wheelMetricHeader}>
+        <Text style={[styles.wheelMetricLabel, { color: colors.textMuted || COLORS.textLow }]}>
+          {label}
+        </Text>
+        {statusOption ? (
+          <View style={[styles.wheelStatusDot, { backgroundColor: statusOption.color }]} />
+        ) : null}
+      </View>
+      <View
+        style={[
+          styles.wheelMetricInputWrap,
+          {
+            backgroundColor: colors.inputBackground || COLORS.inputBg,
+            borderColor: statusOption?.color || colors.inputBorder || COLORS.lightGray,
+          },
+        ]}
+      >
+        <TextInput
+          style={[styles.wheelMetricInput, { color: colors.text || COLORS.textHigh }]}
+          value={value}
+          onChangeText={onChangeText}
+          keyboardType="decimal-pad"
+          placeholder="--"
+          placeholderTextColor={colors.textMuted || COLORS.textLow}
+        />
+        <Text style={[styles.wheelMetricSuffix, { color: colors.textMuted || COLORS.textLow }]}>
+          {suffix}
+        </Text>
+      </View>
+    </View>
+  );
+}
+
+function MonitorReportSection({ monitorItems }) {
+  const { colors } = useTheme();
+  if (!monitorItems.length) return null;
+
+  return (
+    <>
+      <View style={styles.sectionHeaderRow}>
+        <Text
+          style={[
+            styles.sectionTitle,
+            { color: colors.text || COLORS.textHigh },
+          ]}
+        >
+          Monitor report
+        </Text>
+        <Text
+          style={[
+            styles.sectionHint,
+            { color: colors.textMuted || COLORS.textMid },
+          ]}
+        >
+          Amber checklist, tyre or brake items to monitor.
+        </Text>
+      </View>
+
+      <View
+        style={[
+          styles.card,
+          {
+            backgroundColor: colors.surfaceAlt || COLORS.card,
+            borderColor: "#F59E0B",
+          },
+        ]}
+      >
+        {monitorItems.map((item) => (
+          <View key={item.key} style={styles.monitorReportRow}>
+            <View style={styles.monitorReportBadge}>
+              <Text style={styles.monitorReportBadgeText}>M</Text>
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.monitorReportTitle, { color: colors.text || COLORS.textHigh }]}>
+                {item.title}
+              </Text>
+              <Text
+                style={[
+                  styles.monitorReportDetails,
+                  { color: colors.textMuted || COLORS.textMid },
+                ]}
+              >
+                {item.details}
+              </Text>
+            </View>
+          </View>
+        ))}
+      </View>
+    </>
+  );
+}
+
+function RedDefectReportSection({ redDefects, actions, updateAction }) {
+  const { colors } = useTheme();
+  if (!redDefects.length) return null;
+  const hasWheelDefects = redDefects.some((item) => item.metric === "tread" || item.metric === "brakeWear");
+
+  return (
+    <>
+      <View style={styles.sectionHeaderRow}>
+        <Text
+          style={[
+            styles.sectionTitle,
+            { color: colors.text || COLORS.textHigh },
+          ]}
+        >
+          Defect report
+        </Text>
+        <Text
+          style={[
+            styles.sectionHint,
+            { color: colors.textMuted || COLORS.textMid },
+          ]}
+        >
+          {hasWheelDefects
+            ? "Red checklist, tyre or brake items must be marked before saving."
+            : "Red checklist items must be marked before saving."}
+        </Text>
+      </View>
+
+      <View
+        style={[
+          styles.card,
+          {
+            backgroundColor: colors.surfaceAlt || COLORS.card,
+            borderColor: COLORS.primaryAction,
+          },
+        ]}
+      >
+        {redDefects.map((defect) => {
+          const selectedAction = actions?.[defect.key]?.action || "";
+
+          return (
+            <View key={defect.key} style={styles.redDefectRow}>
+              <View style={styles.redDefectHeader}>
+                <View style={styles.redDefectIcon}>
+                  <Icon name="alert-triangle" size={15} color={COLORS.textHigh} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.redDefectTitle, { color: colors.text || COLORS.textHigh }]}>
+                    {defect.title}
+                  </Text>
+                  <Text
+                    style={[
+                      styles.redDefectMeta,
+                      { color: colors.textMuted || COLORS.textMid },
+                    ]}
+                  >
+                    {defect.value}
+                    {defect.unit} recorded
+                  </Text>
+                </View>
+              </View>
+
+              <View style={styles.defectActionRow}>
+                {DEFECT_ACTION_OPTIONS.map((option) => {
+                  const active = selectedAction === option.value;
+                  return (
+                    <TouchableOpacity
+                      key={option.value}
+                      style={[
+                        styles.defectActionPill,
+                        {
+                          borderColor: active ? COLORS.primaryAction : COLORS.lightGray,
+                          backgroundColor: active
+                            ? "rgba(237,28,37,0.16)"
+                            : "transparent",
+                        },
+                      ]}
+                      onPress={() => updateAction(defect.key, option.value)}
+                      activeOpacity={0.8}
+                    >
+                      <Text
+                        style={[
+                          styles.defectActionText,
+                          {
+                            color: active
+                              ? COLORS.primaryAction
+                              : colors.textMuted || COLORS.textLow,
+                          },
+                        ]}
+                      >
+                        {option.label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </View>
+          );
+        })}
+      </View>
+    </>
+  );
+}
+
 function ChecklistSection({
   title,
   hint,
@@ -1890,9 +2737,7 @@ function ChecklistSection({
             label={item}
             checked={!!checks[item]}
             na={!!checkNA[item]}
-            rating={
-              typeof checkRatings[item] === "number" ? checkRatings[item] : null
-            }
+            rating={normalizeCheckStatus(checkRatings[item])}
             note={checkNotes[item] || ""}
             photos={checkPhotos[item] || []}
             onToggle={() => toggleCheck(item)}
@@ -1923,26 +2768,34 @@ function ChecklistRow({
   onRemovePhoto,
 }) {
   const { colors } = useTheme();
-  const disabled = na;
+  const selectedStatus = normalizeCheckStatus(rating);
+  const selectedStatusOption = getCheckStatusOption(selectedStatus);
+  const requiresNote = NOTE_REQUIRED_STATUSES.has(selectedStatus);
+  const noteMissing = requiresNote && !String(note || "").trim();
 
   return (
     <View style={styles.checkRowWrapper}>
       {/* Left: tick + label */}
       <TouchableOpacity
         style={styles.checkRowLeft}
-        onPress={disabled ? undefined : onToggle}
-        activeOpacity={disabled ? 1 : 0.8}
+        onPress={onToggle}
+        activeOpacity={0.8}
       >
         <View style={styles.checkIconWrap}>
           {checked ? (
-            <View style={styles.checkIconFilled}>
+            <View
+              style={[
+                styles.checkIconFilled,
+                selectedStatusOption && { backgroundColor: selectedStatusOption.color },
+              ]}
+            >
               <Icon name="check" size={18} color={COLORS.textHigh} />
             </View>
           ) : (
             <View
               style={[
                 styles.checkIconEmpty,
-                disabled && { borderColor: COLORS.textLow, opacity: 0.4 },
+                na && { borderColor: COLORS.textLow, opacity: 0.4 },
               ]}
             />
           )}
@@ -1952,36 +2805,40 @@ function ChecklistRow({
             styles.checkLabel,
             { color: colors.textMuted || COLORS.textLow },
             checked && { color: colors.text || COLORS.textHigh },
-            disabled && { opacity: 0.5 },
+            na && { opacity: 0.5 },
           ]}
         >
           {label}
         </Text>
       </TouchableOpacity>
 
-      {/* Right: rating 0–5 + N/A + photo icon */}
+      {/* Right: condition + N/A + photo icon */}
       <View style={styles.ratingRow}>
-        {[0, 1, 2, 3, 4, 5].map((n) => {
-          const isActive = rating === n;
+        {CHECK_STATUS_OPTIONS.map((option) => {
+          const isActive = selectedStatus === option.value;
           return (
             <TouchableOpacity
-              key={n}
+              key={option.value}
               style={[
-                styles.ratingDot,
-                isActive && styles.ratingDotActive,
-                disabled && { opacity: 0.25 },
+                styles.conditionPill,
+                { borderColor: option.color },
+                isActive && {
+                  backgroundColor: option.color,
+                  borderColor: option.color,
+                },
+                na && { opacity: 0.6 },
               ]}
-              onPress={disabled ? undefined : () => onChangeRating(n)}
-              activeOpacity={disabled ? 1 : 0.7}
+              onPress={() => onChangeRating(option.value)}
+              activeOpacity={0.7}
             >
               <Text
                 style={[
-                  styles.ratingText,
-                  { color: colors.textMuted || COLORS.textLow },
-                  isActive && styles.ratingTextActive,
+                  styles.conditionText,
+                  { color: option.color },
+                  isActive && styles.conditionTextActive,
                 ]}
               >
-                {n}
+                {option.label}
               </Text>
             </TouchableOpacity>
           );
@@ -2008,13 +2865,16 @@ function ChecklistRow({
       <TextInput
         style={[
           styles.checkNoteInput,
+          noteMissing && styles.checkNoteInputRequired,
           {
             backgroundColor: colors.inputBackground || COLORS.inputBg,
-            borderColor: colors.inputBorder || COLORS.lightGray,
+            borderColor: noteMissing
+              ? selectedStatusOption?.color || COLORS.primaryAction
+              : colors.inputBorder || COLORS.lightGray,
             color: colors.text || COLORS.textHigh,
           },
         ]}
-        placeholder="Notes for this check…"
+        placeholder={requiresNote ? "Notes required for amber/red..." : "Notes for this check..."}
         placeholderTextColor={colors.textMuted || COLORS.textLow}
         value={note}
         onChangeText={onChangeNote}
@@ -2212,6 +3072,201 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: COLORS.textMid,
   },
+  vehicleFootprint: {
+    flexDirection: "row",
+    gap: 14,
+    alignItems: "stretch",
+    justifyContent: "space-between",
+  },
+  wheelColumn: {
+    flex: 1,
+    gap: 14,
+    minWidth: 0,
+  },
+  vehicleBody: {
+    width: 74,
+    minHeight: 520,
+    alignSelf: "center",
+    borderRadius: 28,
+    borderWidth: 1,
+    borderColor: COLORS.lightGray,
+    backgroundColor: "rgba(255,255,255,0.03)",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: 18,
+    ...Platform.select({
+      ios: { display: "none" },
+      android: { display: "none" },
+    }),
+  },
+  vehicleBodyText: {
+    color: COLORS.textLow,
+    fontSize: 10,
+    fontWeight: "800",
+  },
+  vehicleBodyLine: {
+    width: 1,
+    flex: 1,
+    marginVertical: 12,
+    backgroundColor: COLORS.border,
+  },
+  wheelCard: {
+    borderRadius: 12,
+    borderWidth: 1,
+    padding: 10,
+    ...Platform.select({
+      ios: { minWidth: "100%" },
+      android: { minWidth: "100%" },
+    }),
+  },
+  wheelCardHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+    marginBottom: 8,
+  },
+  wheelBadge: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: COLORS.primaryAction,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  wheelBadgeText: {
+    color: COLORS.textHigh,
+    fontSize: 11,
+    fontWeight: "900",
+  },
+  wheelTitle: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  wheelMetricRow: {
+    marginTop: 7,
+  },
+  wheelMetricHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 3,
+  },
+  wheelMetricLabel: {
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  wheelStatusDot: {
+    width: 9,
+    height: 9,
+    borderRadius: 5,
+  },
+  wheelMetricInputWrap: {
+    minHeight: 34,
+    borderRadius: 8,
+    borderWidth: 1,
+    paddingHorizontal: 8,
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  wheelMetricInput: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: "800",
+    paddingVertical: 6,
+    minWidth: 0,
+  },
+  wheelMetricSuffix: {
+    marginLeft: 4,
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  wheelNoteInput: {
+    marginTop: 8,
+    minHeight: 48,
+    borderRadius: 8,
+    borderWidth: 1,
+    paddingHorizontal: 8,
+    paddingVertical: 7,
+    fontSize: 13,
+    textAlignVertical: "top",
+  },
+  redDefectRow: {
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(255,255,255,0.06)",
+  },
+  redDefectHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 9,
+  },
+  redDefectIcon: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: COLORS.primaryAction,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  redDefectTitle: {
+    fontSize: 13,
+    fontWeight: "900",
+  },
+  redDefectMeta: {
+    marginTop: 2,
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  defectActionRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 10,
+  },
+  defectActionPill: {
+    minHeight: 34,
+    borderRadius: 999,
+    borderWidth: 1.5,
+    paddingHorizontal: 11,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  defectActionText: {
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  monitorReportRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+    paddingVertical: 9,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(255,255,255,0.06)",
+  },
+  monitorReportBadge: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: "#F59E0B",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  monitorReportBadgeText: {
+    color: COLORS.textHigh,
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  monitorReportTitle: {
+    fontSize: 13,
+    fontWeight: "900",
+  },
+  monitorReportDetails: {
+    marginTop: 2,
+    fontSize: 12,
+    fontWeight: "600",
+    lineHeight: 17,
+  },
   checkRowWrapper: {
     paddingVertical: 10,
     borderBottomWidth: 1,
@@ -2254,27 +3309,21 @@ const styles = StyleSheet.create({
     gap: 6,
     marginBottom: 6,
   },
-  ratingDot: {
-    minWidth: 32,
-    height: 32,
-    borderRadius: 16,
+  conditionPill: {
+    minHeight: 32,
+    borderRadius: 999,
     borderWidth: 2,
-    borderColor: COLORS.lightGray,
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
   },
-  ratingDotActive: {
-    backgroundColor: "rgba(255,59,48,0.16)",
-    borderColor: COLORS.primaryAction,
+  conditionText: {
+    fontSize: 12,
+    fontWeight: "800",
   },
-  ratingText: {
-    fontSize: 13,
-    color: COLORS.textLow,
-  },
-  ratingTextActive: {
-    color: COLORS.primaryAction,
-    fontWeight: "700",
+  conditionTextActive: {
+    color: COLORS.textHigh,
   },
   naPill: {
     paddingHorizontal: 12,
@@ -2317,6 +3366,9 @@ const styles = StyleSheet.create({
     color: COLORS.textHigh,
     textAlignVertical: "top",
     minHeight: 48,
+  },
+  checkNoteInputRequired: {
+    borderWidth: 2,
   },
   dropdownHeader: {
     flexDirection: "row",

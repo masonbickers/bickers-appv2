@@ -9,8 +9,8 @@ import {
   initialWindowMetrics,
   useSafeAreaInsets,
 } from "react-native-safe-area-context";
-import Footer from "./components/footer";
-import ServiceFooter from "./components/service-footer"; // 👈 NEW
+import Footer from "../components/app/footer";
+import ServiceFooter from "../components/app/service-footer"; // 👈 NEW
 
 import { collection, doc, onSnapshot, query, setDoc, where } from "firebase/firestore";
 import { db } from "../firebaseConfig";
@@ -22,10 +22,10 @@ import {
   registerForPushNotificationsAsync,
   scheduleLocalNotification,
 } from "../lib/notifications";
-import { AuthProvider, useAuth } from "./providers/AuthProvider";
+import { AuthProvider, useAuth } from "../providers/AuthProvider";
 
 // 👇 Theme imports
-import { ThemeProvider, useTheme } from "./providers/ThemeProvider";
+import { ThemeProvider, useTheme } from "../providers/ThemeProvider";
 
 const FOOTER_HEIGHT = 64;
 SplashScreen.preventAutoHideAsync().catch(() => {});
@@ -44,6 +44,37 @@ function fmtDDMMYY(val) {
   const mm = String(d.getMonth() + 1).padStart(2, "0");
   const yy = String(d.getFullYear()).slice(-2);
   return `${dd}/${mm}/${yy}`;
+}
+function toISODate(val) {
+  const d = val instanceof Date ? val : toDateSafe(val);
+  if (!d) return null;
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${dd}`;
+}
+function firstISOFromNotifData(data) {
+  const d = data || {};
+  const direct =
+    toISODate(d.dateISO) ||
+    toISODate(d.isoDate) ||
+    toISODate(d.date) ||
+    toISODate(d.jobDate) ||
+    toISODate(d.bookingDate);
+  if (direct) return direct;
+
+  const raw = d.bookingDates;
+  if (Array.isArray(raw) && raw.length > 0) {
+    const dates = raw.map(toDateSafe).filter(Boolean).sort((a, b) => a - b);
+    if (dates.length) return toISODate(dates[0]);
+  }
+
+  const s =
+    toDateSafe(d.startDate) ||
+    toDateSafe(d.from) ||
+    toDateSafe(d.start) ||
+    toDateSafe(d.date);
+  return toISODate(s);
 }
 const normStr = (v) => String(v ?? "").trim();
 
@@ -111,6 +142,7 @@ function ShellInner() {
   const isHolidayPageRoute = pathname === "/holidaypage";
   const isHolidayRequestRoute = pathname === "/holiday-request";
   const isServiceJobFormRoute = pathname?.startsWith("/service/service-form/");
+  const isServiceRepairFormRoute = pathname === "/service/repair-form";
   const isServiceDefectDetailRoute = pathname?.startsWith("/service/defects/");
   const isServiceVehicleOverviewRoute =
     pathname?.startsWith("/service/vehicles/") &&
@@ -118,6 +150,9 @@ function ShellInner() {
   const isServiceHistoryRoute =
     pathname === "/service/service-history" ||
     pathname?.startsWith("/service/service-history/");
+  const isServiceActivityHistoryRoute = pathname === "/service/activity-history";
+  const isServiceRecordRoute = pathname?.startsWith("/service/service-record/");
+  const isServiceVehicleTimelineRoute = pathname?.startsWith("/service/vehicle-timeline/");
   const isServiceSettingsRoute = pathname === "/service/settings";
   const hideFooter =
     inAuthGroup ||
@@ -132,15 +167,20 @@ function ShellInner() {
     isHolidayPageRoute ||
     isHolidayRequestRoute ||
     isServiceJobFormRoute ||
+    isServiceRepairFormRoute ||
     isServiceDefectDetailRoute ||
     isServiceVehicleOverviewRoute ||
     isServiceHistoryRoute ||
+    isServiceActivityHistoryRoute ||
+    isServiceRecordRoute ||
+    isServiceVehicleTimelineRoute ||
     isServiceSettingsRoute;
 
   const { user, loading: ctxLoading, isAuthed, employee } = useAuth() ?? {};
   const loading = typeof ctxLoading === "boolean" ? ctxLoading : user === undefined;
   const workspaceAccess = resolveWorkspaceAccess(employee);
   const isServiceOnlyUser = workspaceAccess.service && !workspaceAccess.user;
+  const lastNotificationNavSig = useRef("");
 
   // 👇 any route starting with "/service" uses the Service footer
   // e.g. /service, /service/pages/..., /service/whatever
@@ -204,7 +244,21 @@ function ShellInner() {
         onResponse: (resp) => {
           const data = resp?.notification?.request?.content?.data ?? {};
           if (data && typeof data.bookingId === "string" && data.bookingId) {
-            router.push(`/bookings/${data.bookingId}`);
+            const iso = firstISOFromNotifData(data) || toISODate(new Date());
+            const sig = `job:${data.bookingId}:${iso}`;
+            if (lastNotificationNavSig.current === sig) return;
+            lastNotificationNavSig.current = sig;
+            router.push({
+              pathname: "/(protected)/screens/schedule",
+              params: { date: iso },
+            });
+            return;
+          }
+          if (data && typeof data.holidayId === "string" && data.holidayId) {
+            const sig = `holiday:${data.holidayId}`;
+            if (lastNotificationNavSig.current === sig) return;
+            lastNotificationNavSig.current = sig;
+            router.push("/holidaypage");
             return;
           }
           if (data && typeof data.deepLink === "string" && data.deepLink) {

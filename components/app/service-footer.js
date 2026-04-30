@@ -1,4 +1,4 @@
-// app/components/service-footer.jsx
+// components/app/service-footer.jsx
 import { usePathname, useRouter } from "expo-router";
 import { collection, onSnapshot } from "firebase/firestore";
 import { useEffect, useMemo, useState } from "react";
@@ -6,7 +6,7 @@ import { Platform, StyleSheet, Text, TouchableOpacity, View } from "react-native
 import Ionicons from "react-native-vector-icons/Ionicons";
 
 import { db } from "../../firebaseConfig";
-import { useTheme } from "../providers/ThemeProvider";
+import { useTheme } from "../../providers/ThemeProvider";
 
 function normaliseKey(value) {
   return String(value || "")
@@ -48,12 +48,17 @@ function countOpenIssueDefects(issues) {
   ).length;
 }
 
+function countOpenManualDefects(reports) {
+  return reports.filter((report) => isOpenMaintenance(report?.status)).length;
+}
+
 export default function ServiceFooter() {
   const router = useRouter();
   const pathname = usePathname();
   const { colors } = useTheme();
   const [vehicleChecks, setVehicleChecks] = useState([]);
   const [vehicleIssues, setVehicleIssues] = useState([]);
+  const [defectReports, setDefectReports] = useState([]);
 
   useEffect(() => {
     const unsub = onSnapshot(
@@ -83,11 +88,26 @@ export default function ServiceFooter() {
     return () => unsub();
   }, []);
 
+  useEffect(() => {
+    const unsub = onSnapshot(
+      collection(db, "defectReports"),
+      (snap) => {
+        setDefectReports(snap.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
+      },
+      (err) => {
+        console.error("Failed to load footer defect reports:", err);
+      }
+    );
+
+    return () => unsub();
+  }, []);
+
   const openDefectCount = useMemo(
     () =>
       countOpenCheckDefects(vehicleChecks) +
-      countOpenIssueDefects(vehicleIssues),
-    [vehicleChecks, vehicleIssues]
+      countOpenIssueDefects(vehicleIssues) +
+      countOpenManualDefects(defectReports),
+    [defectReports, vehicleChecks, vehicleIssues]
   );
 
   // 🔧 Tabs dedicated to Service / Workshop area

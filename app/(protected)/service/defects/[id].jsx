@@ -23,7 +23,7 @@ import Icon from "react-native-vector-icons/Feather";
 
 import { db } from "../../../../firebaseConfig";
 import { designTokens as t } from "../../../../lib/design/tokens";
-import { useTheme } from "../../../providers/ThemeProvider";
+import { useTheme } from "../../../../providers/ThemeProvider";
 
 const COLORS = {
   background: "#0D0D0D",
@@ -67,6 +67,11 @@ function isApprovedDefect(review) {
     status === "approved" &&
     (category === "general" || category === "immediate")
   );
+}
+
+function isOpenMaintenance(status) {
+  const value = normaliseKey(status);
+  return value !== "resolved" && value !== "complete" && value !== "completed";
 }
 
 function formatDate(value) {
@@ -177,6 +182,30 @@ function buildIssueDefect(issue) {
   };
 }
 
+function buildManualDefect(report) {
+  const severity = report.severity || report.priority || "Defect report";
+  return {
+    sourceLabel: "Defect report",
+    title: report.category || report.title || severity,
+    description: report.description || report.note || report.summary || report.notes || "",
+    category: normaliseKey(severity) === "immediate" || report.offRoad ? "immediate" : "general",
+    status: report.status || "open",
+    maintenanceStatus: report.status || "open",
+    vehicleName: getVehicleLabel(report),
+    registration: report.registration || report.reg || "",
+    reporter: report.reportedBy || report.reporterName || report.driverName || "",
+    jobNumber: report.jobNumber || "",
+    dateText: formatDate(report.createdAt || report.dateISO || report.date),
+    itemIndex: null,
+  };
+}
+
+function getDefectCollectionName(source) {
+  if (source === "vehicleChecks") return "vehicleChecks";
+  if (source === "defectReports") return "defectReports";
+  return "vehicleIssues";
+}
+
 export default function DefectDetailScreen() {
   const router = useRouter();
   const { id } = useLocalSearchParams();
@@ -198,8 +227,7 @@ export default function DefectDetailScreen() {
 
       setLoading(true);
       try {
-        const collectionName =
-          route.source === "vehicleChecks" ? "vehicleChecks" : "vehicleIssues";
+        const collectionName = getDefectCollectionName(route.source);
         const ref = doc(db, collectionName, route.docId);
         const snap = await getDoc(ref);
 
@@ -226,6 +254,12 @@ export default function DefectDetailScreen() {
             return;
           }
           setDefect(buildCheckDefect(data, item, route.itemIndex));
+        } else if (route.source === "defectReports") {
+          if (!isOpenMaintenance(data.status)) {
+            setDefect(null);
+            return;
+          }
+          setDefect(buildManualDefect(data));
         } else {
           if (!isApprovedDefect(data.review)) {
             setDefect(null);
@@ -259,7 +293,7 @@ export default function DefectDetailScreen() {
             setSubmitting(true);
             try {
               const targetVehicleId = getRecordVehicleId(record, matchedVehicle);
-              if (!targetVehicleId) {
+              if (!targetVehicleId && route.source !== "defectReports") {
                 Alert.alert(
                   "Vehicle not linked",
                   "This defect cannot be completed until it is linked to a vehicle."
@@ -296,6 +330,12 @@ export default function DefectDetailScreen() {
                   items,
                   updatedAt: serverTimestamp(),
                 });
+              } else if (route.source === "defectReports") {
+                batch.update(doc(db, "defectReports", route.docId), {
+                  status: "resolved",
+                  completedAt: serverTimestamp(),
+                  updatedAt: serverTimestamp(),
+                });
               } else {
                 batch.update(doc(db, "vehicleIssues", route.docId), {
                   "maintenance.status": "resolved",
@@ -304,9 +344,11 @@ export default function DefectDetailScreen() {
                 });
               }
 
-              batch.update(doc(db, "vehicles", targetVehicleId), {
-                defectHistory: arrayUnion(historyItem),
-              });
+              if (targetVehicleId) {
+                batch.update(doc(db, "vehicles", targetVehicleId), {
+                  defectHistory: arrayUnion(historyItem),
+                });
+              }
               await batch.commit();
 
               Alert.alert("Defect completed", "The defect has been resolved.", [

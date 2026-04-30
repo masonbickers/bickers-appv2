@@ -1,4 +1,4 @@
-// app/components/TestNotificationButton.tsx
+// components/app/TestNotificationButton.tsx
 import * as Notifications from "expo-notifications";
 import React from "react";
 import { Platform, Pressable, Text } from "react-native";

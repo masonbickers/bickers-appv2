@@ -19,8 +19,8 @@ import Icon from "react-native-vector-icons/Feather";
 
 import { db } from "../../firebaseConfig";
 import { formatDateDDMMYYYY } from "../../lib/dateFormat";
-import { useAuth } from "../providers/AuthProvider";
-import { useTheme } from "../providers/ThemeProvider"; // 👈 theme
+import { useAuth } from "../../providers/AuthProvider";
+import { useTheme } from "../../providers/ThemeProvider"; // 👈 theme
 
 /* helpers */
 const DEFAULT_YARD_START = "08:00";

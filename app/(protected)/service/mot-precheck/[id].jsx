@@ -1,6 +1,6 @@
 //app/(protected)/service/mot-precheck/[id].jsx
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useLocalSearchParams, useNavigation, useRouter } from "expo-router";
 import {
     addDoc,
     collection,
@@ -11,10 +11,11 @@ import {
     serverTimestamp,
     updateDoc,
 } from "firebase/firestore";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
     ActivityIndicator,
     Alert,
+    Platform,
     ScrollView,
     StyleSheet,
     Text,
@@ -26,7 +27,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
 import { db } from "../../../../firebaseConfig";
-import { useTheme } from "../../../providers/ThemeProvider";
+import { useTheme } from "../../../../providers/ThemeProvider";
 
 const COLORS = {
   background: "#0D0D0D",
@@ -107,8 +108,10 @@ const MOT_PRECHECK_DRAFTS_KEY = "motPrecheckDrafts_v1";
 
 export default function MotPrecheckScreen() {
   const router = useRouter();
+  const navigation = useNavigation();
   const { id } = useLocalSearchParams();
   const formId = Array.isArray(id) ? id[0] : id;
+  const allowLeaveRef = useRef(false);
 
   const { colors } = useTheme();
 
@@ -188,6 +191,95 @@ export default function MotPrecheckScreen() {
     () => vehicles.find((v) => v.id === selectedVehicleId) || null,
     [vehicles, selectedVehicleId]
   );
+
+  const hasUnsavedChanges = useMemo(
+    () =>
+      !!selectedVehicleId ||
+      !!vehicleSearch.trim() ||
+      !!odometer.trim() ||
+      precheckStatus !== "Ready for MOT" ||
+      !!summary.trim() ||
+      !!faultsFound.trim() ||
+      !!workRecommended.trim() ||
+      !!signedBy.trim() ||
+      Object.keys(checks || {}).length > 0 ||
+      Object.keys(checkRatings || {}).length > 0 ||
+      Object.keys(checkNA || {}).length > 0,
+    [
+      checkNA,
+      checkRatings,
+      checks,
+      faultsFound,
+      odometer,
+      precheckStatus,
+      selectedVehicleId,
+      signedBy,
+      summary,
+      vehicleSearch,
+      workRecommended,
+    ]
+  );
+
+  const confirmLeave = (onLeave) => {
+    if (!hasUnsavedChanges || allowLeaveRef.current) {
+      onLeave();
+      return;
+    }
+
+    Alert.alert(
+      "Leave MOT pre-check?",
+      "You have unsaved pre-check details. Leave without saving?",
+      [
+        { text: "Stay", style: "cancel" },
+        {
+          text: "Leave",
+          style: "destructive",
+          onPress: () => {
+            allowLeaveRef.current = true;
+            onLeave();
+          },
+        },
+      ]
+    );
+  };
+
+  useEffect(() => {
+    const unsubscribe = navigation.addListener("beforeRemove", (event) => {
+      if (!hasUnsavedChanges || allowLeaveRef.current) return;
+
+      event.preventDefault();
+      Alert.alert(
+        "Leave MOT pre-check?",
+        "You have unsaved pre-check details. Leave without saving?",
+        [
+          { text: "Stay", style: "cancel" },
+          {
+            text: "Leave",
+            style: "destructive",
+            onPress: () => {
+              allowLeaveRef.current = true;
+              navigation.dispatch(event.data.action);
+            },
+          },
+        ]
+      );
+    });
+
+    return unsubscribe;
+  }, [hasUnsavedChanges, navigation]);
+
+  useEffect(() => {
+    if (Platform.OS !== "web" || typeof window === "undefined") return;
+
+    const handleBeforeUnload = (event) => {
+      if (!hasUnsavedChanges || allowLeaveRef.current) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [hasUnsavedChanges]);
 
   /* ---------------- LOAD DRAFT ---------------- */
 
@@ -485,7 +577,15 @@ export default function MotPrecheckScreen() {
       Alert.alert(
         "MOT pre-check saved",
         "Pre-check recorded and vehicle updated.",
-        [{ text: "OK", onPress: () => router.back() }]
+        [
+          {
+            text: "OK",
+            onPress: () => {
+              allowLeaveRef.current = true;
+              router.back();
+            },
+          },
+        ]
       );
     } catch (err) {
       console.error("Failed to save MOT pre-check:", err);
@@ -509,6 +609,7 @@ export default function MotPrecheckScreen() {
           onPress: async () => {
             try {
               if (!formId) {
+                allowLeaveRef.current = true;
                 router.back();
                 return;
               }
@@ -534,6 +635,7 @@ export default function MotPrecheckScreen() {
                 "Could not delete draft. Please try again."
               );
             } finally {
+              allowLeaveRef.current = true;
               router.back();
             }
           },
@@ -559,7 +661,10 @@ export default function MotPrecheckScreen() {
           { borderBottomColor: colors.border || COLORS.border },
         ]}
       >
-        <TouchableOpacity onPress={router.back} style={styles.backButton}>
+        <TouchableOpacity
+          onPress={() => confirmLeave(() => router.back())}
+          style={styles.backButton}
+        >
           <Icon
             name="chevron-left"
             size={22}

@@ -32,12 +32,6 @@
         "android.permission.READ_EXTERNAL_STORAGE",
         "android.permission.POST_NOTIFICATIONS",
         "android.permission.VIBRATE",
-        "android.permission.RECORD_AUDIO",
-        "android.permission.CAMERA",
-        "android.permission.READ_MEDIA_IMAGES",
-        "android.permission.READ_EXTERNAL_STORAGE",
-        "android.permission.POST_NOTIFICATIONS",
-        "android.permission.VIBRATE",
         "android.permission.RECORD_AUDIO"
       ]
     },
@@ -90,7 +84,6 @@
     },
     "extra": {
       "router": {},
-      "API_URL": "http://localhost:3001",
       "appEnv": "development",
       "syncEnabled": true,
       "syncIntervalMs": 120000,

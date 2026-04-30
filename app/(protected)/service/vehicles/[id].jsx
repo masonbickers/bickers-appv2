@@ -15,7 +15,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
 import { db } from "../../../../firebaseConfig";
-import { useTheme } from "../../../providers/ThemeProvider";
+import { useTheme } from "../../../../providers/ThemeProvider";
 
 /* ---------- CONSTANTS ---------- */
 
@@ -77,6 +77,17 @@ function formatDateShort(value) {
     month: "2-digit",
     year: "2-digit",
   });
+}
+
+function isRepairHistoryItem(item) {
+  const type = String(item?.type || item?.serviceType || item?.recordType || "")
+    .trim()
+    .toLowerCase();
+  return (
+    type.includes("repair") ||
+    !!item?.repairRecordId ||
+    item?.recordType === "repair"
+  );
 }
 
 /* ---------- MAIN SCREEN ---------- */
@@ -156,11 +167,17 @@ export default function VehicleDetailScreen() {
   // serviceHistory can be an array (old style) or a string summary (new web edit)
   const serviceHistory = useMemo(() => {
     if (Array.isArray(vehicle?.serviceHistory)) {
-      return [...vehicle.serviceHistory].sort((a, b) => {
-        const da = toDateMaybe(a?.completedDate || a?.date || a?.recordedAt)?.getTime() || 0;
-        const db = toDateMaybe(b?.completedDate || b?.date || b?.recordedAt)?.getTime() || 0;
-        return db - da;
-      });
+      return [...vehicle.serviceHistory]
+        .filter((item) => !isRepairHistoryItem(item))
+        .sort((a, b) => {
+          const da =
+            toDateMaybe(a?.completedDate || a?.date || a?.recordedAt)?.getTime() ||
+            0;
+          const db =
+            toDateMaybe(b?.completedDate || b?.date || b?.recordedAt)?.getTime() ||
+            0;
+          return db - da;
+        });
     }
     return [];
   }, [vehicle]);
@@ -170,6 +187,23 @@ export default function VehicleDetailScreen() {
     typeof vehicle?.serviceHistory === "string"
       ? vehicle.serviceHistory
       : null;
+
+  const repairHistory = useMemo(() => {
+    const fromRepairs = Array.isArray(vehicle?.repairHistory)
+      ? vehicle.repairHistory
+      : [];
+    const legacyRepairs = Array.isArray(vehicle?.serviceHistory)
+      ? vehicle.serviceHistory.filter(isRepairHistoryItem)
+      : [];
+
+    return [...fromRepairs, ...legacyRepairs].sort((a, b) => {
+      const da =
+        toDateMaybe(a?.completedDate || a?.date || a?.recordedAt)?.getTime() || 0;
+      const db =
+        toDateMaybe(b?.completedDate || b?.date || b?.recordedAt)?.getTime() || 0;
+      return db - da;
+    });
+  }, [vehicle]);
 
   const defectHistory = useMemo(() => {
     if (!Array.isArray(vehicle?.defectHistory)) return [];
@@ -311,6 +345,18 @@ export default function VehicleDetailScreen() {
       pathname: "/service/service-history/[vehicleId]",
       params: {
         vehicleId: vehicle.id,
+        name: vehicle.name || vehicle.vehicleName || "",
+        registration: vehicle.registration || vehicle.reg || "",
+      },
+    });
+  };
+
+  const handleViewTimeline = () => {
+    if (!vehicle) return;
+    router.push({
+      pathname: "/service/vehicle-timeline/[id]",
+      params: {
+        id: vehicle.id,
         name: vehicle.name || vehicle.vehicleName || "",
         registration: vehicle.registration || vehicle.reg || "",
       },
@@ -522,6 +568,45 @@ export default function VehicleDetailScreen() {
             </View>
           </View>
 
+          <TouchableOpacity
+            style={[
+              styles.timelineButton,
+              {
+                borderColor: colors.border || COLORS.border,
+                backgroundColor: colors.surfaceAlt || COLORS.card,
+              },
+            ]}
+            activeOpacity={0.9}
+            onPress={handleViewTimeline}
+          >
+            <View style={styles.timelineIconWrap}>
+              <Icon name="clock" size={18} color={COLORS.textHigh} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text
+                style={[
+                  styles.timelineButtonTitle,
+                  { color: colors.text || COLORS.textHigh },
+                ]}
+              >
+                View full timeline
+              </Text>
+              <Text
+                style={[
+                  styles.timelineButtonSub,
+                  { color: colors.textMuted || COLORS.textMid },
+                ]}
+              >
+                Services, repairs, defects, MOT checks and prep history
+              </Text>
+            </View>
+            <Icon
+              name="chevron-right"
+              size={18}
+              color={colors.textMuted || COLORS.textMid}
+            />
+          </TouchableOpacity>
+
           {/* MAINTENANCE SECTION */}
           <SectionHeader label="Maintenance" colors={colors} />
           <View
@@ -670,6 +755,95 @@ export default function VehicleDetailScreen() {
               files={vehicle.serviceHistoryFiles}
               colors={colors}
             />
+          </View>
+
+          {/* REPAIR HISTORY */}
+          <SectionHeader label="Repair history" colors={colors} />
+          <View
+            style={[
+              styles.card,
+              {
+                backgroundColor: colors.surfaceAlt || COLORS.card,
+                borderColor: colors.border || COLORS.border,
+              },
+            ]}
+          >
+            {repairHistory.length > 0 ? (
+              repairHistory.slice(0, 5).map((item, index) => {
+                const dateValue =
+                  item?.completedDate || item?.date || item?.recordedAt;
+                const dateLabel = dateValue
+                  ? formatDateShort(dateValue)
+                  : "No date";
+                const odoLabel =
+                  typeof item?.odometer === "number"
+                    ? `${item.odometer.toLocaleString("en-GB")} mi`
+                    : item?.odometer || null;
+                const summaryText =
+                  item?.summary ||
+                  item?.repairSummary ||
+                  item?.notes ||
+                  item?.reason ||
+                  "";
+                const partsText = item?.partsUsed ? `Parts: ${item.partsUsed}` : "";
+
+                return (
+                  <View
+                    key={`${item?.repairRecordId || item?.serviceRecordId || index}-${index}`}
+                    style={styles.historyItem}
+                  >
+                    <View style={styles.historyHeaderRow}>
+                      <Text
+                        style={[
+                          styles.historyTitle,
+                          { color: colors.text || COLORS.textHigh },
+                        ]}
+                      >
+                        {item?.type || "General repair"}
+                      </Text>
+                      <Text
+                        style={[
+                          styles.historyMeta,
+                          { color: colors.textMuted || COLORS.textLow },
+                        ]}
+                      >
+                        {dateLabel}
+                        {odoLabel ? ` · ${odoLabel}` : ""}
+                      </Text>
+                    </View>
+                    {!!summaryText && (
+                      <Text
+                        style={[
+                          styles.historySummary,
+                          { color: colors.textMuted || COLORS.textMid },
+                        ]}
+                      >
+                        {summaryText}
+                      </Text>
+                    )}
+                    {!!partsText && (
+                      <Text
+                        style={[
+                          styles.historySummary,
+                          { color: colors.textMuted || COLORS.textMid },
+                        ]}
+                      >
+                        {partsText}
+                      </Text>
+                    )}
+                  </View>
+                );
+              })
+            ) : (
+              <Text
+                style={[
+                  styles.notesText,
+                  { color: colors.textMuted || COLORS.textMid },
+                ]}
+              >
+                No general repairs recorded for this vehicle.
+              </Text>
+            )}
           </View>
 
           {/* DEFECT HISTORY */}
@@ -1315,6 +1489,32 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: COLORS.textMid,
     marginTop: 1,
+  },
+  timelineButton: {
+    minHeight: 58,
+    flexDirection: "row",
+    alignItems: "center",
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 12,
+  },
+  timelineIconWrap: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 10,
+    backgroundColor: COLORS.primaryAction,
+  },
+  timelineButtonTitle: {
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  timelineButtonSub: {
+    marginTop: 2,
+    fontSize: 12,
   },
 
   /* SERVICE HISTORY LIST */

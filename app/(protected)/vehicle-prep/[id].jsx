@@ -11,7 +11,7 @@ import {
   View,
 } from "react-native";
 import Icon from "react-native-vector-icons/Feather";
-import { useTheme } from "../../providers/ThemeProvider";
+import { useTheme } from "../../../providers/ThemeProvider";
 
 /* ---------- SAME COLOUR MAP AS SERVICE-LIST.JSX ---------- */
 

@@ -19,13 +19,13 @@ import Icon from "react-native-vector-icons/Feather";
 import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
 
-import { doc, getDoc, serverTimestamp, setDoc } from "firebase/firestore";
+import { collection, doc, getDoc, serverTimestamp, setDoc } from "firebase/firestore";
 import { getDownloadURL, ref, uploadBytesResumable } from "firebase/storage";
 
 // ⛽ Firebase + Auth provider
 import { auth, db, storage } from "../../firebaseConfig";
-import { useAuth } from "../providers/AuthProvider"; // if file is app/vehicle-check.js use "./providers/AuthProvider"
-import { useTheme } from "../providers/ThemeProvider"; // 🎨 theme
+import { useAuth } from "../../providers/AuthProvider"; // if file is app/vehicle-check.js use "./providers/AuthProvider"
+import { useTheme } from "../../providers/ThemeProvider"; // 🎨 theme
 
 const IMAGES_ONLY = ImagePicker.MediaTypeOptions.Images;
 
@@ -58,6 +58,11 @@ const CHECK_ITEMS = [
 
 const STATUS = { SERVICEABLE: "serviceable", DEFECT: "defect", NA: "na" };
 
+const normaliseParam = (value) => {
+  if (Array.isArray(value)) return value[0] ? String(value[0]) : "";
+  return value ? String(value) : "";
+};
+
 const toISO = (d) =>
   (d?.toISOString?.() || new Date(d)).split?.("T")?.[0] ??
   new Date().toISOString().split("T")[0];
@@ -79,8 +84,11 @@ const ensureFileUri = async (uri) => {
 export default function VehicleCheckPage() {
   const router = useRouter();
   const params = useLocalSearchParams();
-  const jobId = params?.jobId;
-  const dateISOParam = params?.dateISO;
+  const jobId = normaliseParam(params?.jobId);
+  const dateISOParam = normaliseParam(params?.dateISO);
+  const [standaloneCheckDocId] = useState(
+    () => doc(collection(db, "vehicleChecks")).id
+  );
 
   const { employee, user, isAuthed, loading } = useAuth();
   const { colors } = useTheme(); // 🎨
@@ -125,8 +133,11 @@ export default function VehicleCheckPage() {
 
   const [photos, setPhotos] = useState([]); // [{uri, remote?}]
 
-  // 🔑 One doc per job
-  const checkDocId = useMemo(() => jobId || "nojob", [jobId]);
+  // One doc per job. Standalone checks get their own generated doc ID.
+  const checkDocId = useMemo(
+    () => jobId || standaloneCheckDocId,
+    [jobId, standaloneCheckDocId]
+  );
 
   const normalizeMaintenanceBooking = useCallback((id, data) => {
     if (!data) return null;
@@ -299,7 +310,7 @@ export default function VehicleCheckPage() {
       if (!fileUri) continue;
 
       const filename = `${Date.now()}_${i}.jpg`;
-      const path = `vehicle-checks/${uid}/${jobId || "nojob"}/${filename}`;
+      const path = `vehicle-checks/${uid}/${checkDocId}/${filename}`;
       const r = ref(storage, path);
 
       const resp = await fetch(fileUri);
@@ -329,13 +340,16 @@ export default function VehicleCheckPage() {
   };
 
   const save = async (finalize = false) => {
+    if (saving) return;
+
     try {
       setSaving(true);
       const photoUrls = await uploadPhotos();
 
       const payload = {
-        bookingId: jobId, // 🔑 for JobDay lookup
-        jobId,
+        bookingId: jobId || null, // for JobDay lookup when linked to a job
+        jobId: jobId || null,
+        checkId: checkDocId,
         dateISO,
         time: timeStr,
         vehicle,

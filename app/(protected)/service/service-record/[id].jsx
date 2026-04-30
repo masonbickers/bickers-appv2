@@ -1,10 +1,11 @@
 // app/(protected)/service/service-record/[id].jsx
 import { Feather } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { doc, getDoc } from "firebase/firestore";
+import { deleteDoc, deleteField, doc, getDoc, updateDoc } from "firebase/firestore";
 import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   Image,
   ScrollView,
   StyleSheet,
@@ -15,7 +16,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { db } from "../../../../firebaseConfig";
-import { useTheme } from "../../../providers/ThemeProvider";
+import { useTheme } from "../../../../providers/ThemeProvider";
 
 const COLORS = {
   background: "#0D0D0D",
@@ -27,6 +28,88 @@ const COLORS = {
   chipBg: "#262626",
   primaryAction: "#ED1C25",
 };
+
+const CHECK_STATUS_META = {
+  green: { label: "Green", color: "#22C55E" },
+  amber: { label: "Amber", color: "#F59E0B" },
+  red: { label: "Red", color: "#EF4444" },
+};
+
+const WHEEL_POSITIONS = [
+  { key: "frontLeft", label: "Front left", shortLabel: "FL" },
+  { key: "frontRight", label: "Front right", shortLabel: "FR" },
+  { key: "rearLeft", label: "Rear left", shortLabel: "RL" },
+  { key: "rearRight", label: "Rear right", shortLabel: "RR" },
+];
+
+const DEFECT_ACTION_LABELS = {
+  repaired: "Repaired",
+  replaced: "Replaced",
+  not_repaired: "Not repaired",
+};
+
+function normalizeCheckStatus(value) {
+  if (typeof value === "string") {
+    const status = value.trim().toLowerCase();
+    if (CHECK_STATUS_META[status]) return status;
+  }
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    if (value >= 4) return "green";
+    if (value >= 2) return "amber";
+    return "red";
+  }
+
+  return "";
+}
+
+function normalizeWheelInspection(value) {
+  return WHEEL_POSITIONS.reduce((acc, wheel) => {
+    const source = value?.[wheel.key] || {};
+    acc[wheel.key] = {
+      tread: source.tread !== undefined && source.tread !== null ? String(source.tread) : "",
+      pressure:
+        source.pressure !== undefined && source.pressure !== null ? String(source.pressure) : "",
+      brakeWear:
+        source.brakeWear !== undefined && source.brakeWear !== null
+          ? String(source.brakeWear)
+          : "",
+      note: source.note !== undefined && source.note !== null ? String(source.note) : "",
+    };
+    return acc;
+  }, {});
+}
+
+function hasWheelInspectionData(value) {
+  return WHEEL_POSITIONS.some((wheel) => {
+    const item = value?.[wheel.key] || {};
+    return ["tread", "pressure", "brakeWear", "note"].some((field) =>
+      String(item[field] || "").trim()
+    );
+  });
+}
+
+function parseMetricNumber(value) {
+  const cleaned = String(value || "").replace(/[^\d.]/g, "");
+  const parsed = Number(cleaned);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function getTreadStatus(value) {
+  const tread = parseMetricNumber(value);
+  if (tread === null) return "";
+  if (tread >= 4) return "green";
+  if (tread >= 2) return "amber";
+  return "red";
+}
+
+function getBrakeWearStatus(value) {
+  const wear = parseMetricNumber(value);
+  if (wear === null) return "";
+  if (wear < 60) return "green";
+  if (wear < 80) return "amber";
+  return "red";
+}
 
 function toDateMaybe(value) {
   if (!value) return null;
@@ -58,6 +141,7 @@ export default function ServiceRecordViewScreen() {
 
   const [record, setRecord] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     if (!id) return;
@@ -86,6 +170,14 @@ export default function ServiceRecordViewScreen() {
   const title = record?.serviceType || "Service record";
   const vehicleName = record?.vehicleName || "Vehicle";
   const reg = record?.registration || "";
+  const serviceFormNumber = record?.serviceFormNumber || "";
+  const wheelInspection = normalizeWheelInspection(record?.wheelInspection);
+  const hasWheelInspection = hasWheelInspectionData(wheelInspection);
+  const serviceDefectActions = record?.serviceDefectActions || {};
+  const serviceDefectActionList = Object.values(serviceDefectActions).filter(
+    (item) => item?.title
+  );
+  const monitorReport = Array.isArray(record?.monitorReport) ? record.monitorReport : [];
   const serviceDateDisplay =
     record?.serviceDate ||
     record?.serviceDateOnly ||
@@ -118,14 +210,81 @@ export default function ServiceRecordViewScreen() {
         return {
           label,
           checked: !!checks[label],
-          rating:
-            typeof ratings[label] === "number" ? ratings[label] : null,
+          rating: ratings[label] ?? null,
+          status: normalizeCheckStatus(ratings[label]),
           na: !!na[label],
           note: typeof notes[label] === "string" ? notes[label] : "",
           photos: Array.isArray(photosForLabel) ? photosForLabel : [],
         };
       });
   }, [record]);
+
+  const handleDeleteRecord = () => {
+    if (!record?.id) return;
+
+    Alert.alert(
+      "Delete service record?",
+      "This will permanently delete this record from the service history.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: async () => {
+            setDeleting(true);
+            try {
+              const recordId = String(record.id);
+
+              if (record.vehicleId) {
+                const vehicleRef = doc(db, "vehicles", String(record.vehicleId));
+                const vehicleSnap = await getDoc(vehicleRef);
+
+                if (vehicleSnap.exists()) {
+                  const vehicle = vehicleSnap.data() || {};
+                  const updatePayload = {};
+
+                  if (Array.isArray(vehicle.serviceHistory)) {
+                    updatePayload.serviceHistory = vehicle.serviceHistory.filter(
+                      (item) =>
+                        item?.serviceRecordId !== recordId &&
+                        item?.repairRecordId !== recordId
+                    );
+                  }
+
+                  if (Array.isArray(vehicle.repairHistory)) {
+                    updatePayload.repairHistory = vehicle.repairHistory.filter(
+                      (item) =>
+                        item?.serviceRecordId !== recordId &&
+                        item?.repairRecordId !== recordId
+                    );
+                  }
+
+                  if (vehicle.lastRepair?.serviceRecordId === recordId) {
+                    updatePayload.lastRepair = deleteField();
+                  }
+
+                  if (Object.keys(updatePayload).length > 0) {
+                    await updateDoc(vehicleRef, updatePayload);
+                  }
+                }
+              }
+
+              await deleteDoc(doc(db, "serviceRecords", recordId));
+
+              Alert.alert("Deleted", "The service record has been deleted.", [
+                { text: "OK", onPress: () => router.back() },
+              ]);
+            } catch (err) {
+              console.error("Failed to delete service record:", err);
+              Alert.alert("Error", "Could not delete this service record.");
+            } finally {
+              setDeleting(false);
+            }
+          },
+        },
+      ]
+    );
+  };
 
   return (
     <SafeAreaView
@@ -264,6 +423,7 @@ export default function ServiceRecordViewScreen() {
               label="Vehicle"
               value={`${vehicleName}${reg ? ` · ${reg}` : ""}`}
             />
+            <Field label="Service form no." value={serviceFormNumber || "—"} />
             <Field label="Service type" value={record.serviceType} />
             <Field label="Service date" value={fullDate} />
             <Field
@@ -298,6 +458,117 @@ export default function ServiceRecordViewScreen() {
             />
           </View>
 
+          {/* TYRES & BRAKES FOOTPRINT */}
+          <View
+            style={[
+              styles.card,
+              {
+                backgroundColor: colors.surfaceAlt || COLORS.card,
+                borderColor: colors.border || COLORS.border,
+              },
+            ]}
+          >
+            <Text style={styles.sectionTitle}>Tyres & brakes footprint</Text>
+            {!hasWheelInspection ? (
+              <Text style={styles.checkSummaryText}>
+                No wheel inspection data saved for this service.
+              </Text>
+            ) : (
+              <View style={styles.wheelGrid}>
+                {WHEEL_POSITIONS.map((wheel) => {
+                  const item = wheelInspection[wheel.key] || {};
+                  return (
+                    <View key={wheel.key} style={styles.wheelRecordCard}>
+                      <View style={styles.wheelRecordHeader}>
+                        <View style={styles.wheelRecordBadge}>
+                          <Text style={styles.wheelRecordBadgeText}>{wheel.shortLabel}</Text>
+                        </View>
+                        <Text style={styles.wheelRecordTitle}>{wheel.label}</Text>
+                      </View>
+                      <WheelRecordMetric
+                        label="Tread"
+                        value={item.tread}
+                        suffix="mm"
+                        status={getTreadStatus(item.tread)}
+                      />
+                      <WheelRecordMetric label="Pressure" value={item.pressure} suffix="psi" />
+                      <WheelRecordMetric
+                        label="Brake wear"
+                        value={item.brakeWear}
+                        suffix="%"
+                        status={getBrakeWearStatus(item.brakeWear)}
+                      />
+                      {item.note ? (
+                        <Text style={styles.wheelRecordNote}>{item.note}</Text>
+                      ) : null}
+                    </View>
+                  );
+                })}
+              </View>
+            )}
+          </View>
+
+          {/* MONITOR REPORT */}
+          {monitorReport.length > 0 && (
+            <View
+              style={[
+                styles.card,
+                {
+                  backgroundColor: colors.surfaceAlt || COLORS.card,
+                  borderColor: colors.border || COLORS.border,
+                },
+              ]}
+            >
+              <Text style={styles.sectionTitle}>Monitor report</Text>
+              {monitorReport.map((item) => (
+                <View key={item.key} style={styles.monitorRecordRow}>
+                  <View style={styles.monitorRecordBadge}>
+                    <Text style={styles.monitorRecordBadgeText}>M</Text>
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.monitorRecordTitle}>{item.title}</Text>
+                    <Text style={styles.monitorRecordDetails}>{item.details}</Text>
+                  </View>
+                </View>
+              ))}
+            </View>
+          )}
+
+          {/* DEFECT ACTIONS */}
+          {serviceDefectActionList.length > 0 && (
+            <View
+              style={[
+                styles.card,
+                {
+                  backgroundColor: colors.surfaceAlt || COLORS.card,
+                  borderColor: colors.border || COLORS.border,
+                },
+              ]}
+            >
+              <Text style={styles.sectionTitle}>Defect report actions</Text>
+              {serviceDefectActionList.map((item) => (
+                <View key={item.key} style={styles.defectActionRecordRow}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.defectActionRecordTitle}>{item.title}</Text>
+                    <Text style={styles.defectActionRecordMeta}>
+                      {item.value}
+                      {item.unit} recorded
+                      {item.defectReportId ? ` · Report ${item.defectReportId}` : ""}
+                    </Text>
+                  </View>
+                  <Text
+                    style={[
+                      styles.defectActionRecordBadge,
+                      item.action === "not_repaired" && { color: COLORS.primaryAction },
+                    ]}
+                  >
+                    {DEFECT_ACTION_LABELS[item.action] || "Not marked"}
+                  </Text>
+                </View>
+              ))}
+            </View>
+          )}
+
           {/* FULL CHECKLIST DETAILS */}
           <View
             style={[
@@ -316,7 +587,7 @@ export default function ServiceRecordViewScreen() {
             ) : (
               checklistItems.map((item) => (
                 <View key={item.label} style={styles.checkRowWrapper}>
-                  {/* Row: tick / N/A / label + rating */}
+                  {/* Row: tick / N/A / label + status */}
                   <View style={styles.checkRowTop}>
                     {/* Left: icon + label */}
                     <View style={styles.checkLeft}>
@@ -326,7 +597,14 @@ export default function ServiceRecordViewScreen() {
                             <Text style={styles.naIconText}>N/A</Text>
                           </View>
                         ) : item.checked ? (
-                          <View style={styles.checkIconFilled}>
+                          <View
+                            style={[
+                              styles.checkIconFilled,
+                              item.status && {
+                                backgroundColor: CHECK_STATUS_META[item.status].color,
+                              },
+                            ]}
+                          >
                             <Feather
                               name="check"
                               size={16}
@@ -340,16 +618,21 @@ export default function ServiceRecordViewScreen() {
                       <Text style={styles.checkLabel}>{item.label}</Text>
                     </View>
 
-                    {/* Right: rating */}
+                    {/* Right: status */}
                     <View style={styles.checkRight}>
                       {item.na ? (
                         <Text style={styles.checkRightText}>N/A</Text>
-                      ) : typeof item.rating === "number" ? (
-                        <Text style={styles.checkRightText}>
-                          Rating: {item.rating}/5
+                      ) : item.status ? (
+                        <Text
+                          style={[
+                            styles.checkRightText,
+                            { color: CHECK_STATUS_META[item.status].color },
+                          ]}
+                        >
+                          {CHECK_STATUS_META[item.status].label}
                         </Text>
                       ) : (
-                        <Text style={styles.checkRightText}>No rating</Text>
+                        <Text style={styles.checkRightText}>No status</Text>
                       )}
                     </View>
                   </View>
@@ -411,7 +694,35 @@ export default function ServiceRecordViewScreen() {
             </View>
           )}
 
-          <View style={{ height: 40 }} />
+          <TouchableOpacity
+            style={[
+              styles.deleteButton,
+              deleting && styles.deleteButtonDisabled,
+            ]}
+            onPress={handleDeleteRecord}
+            activeOpacity={0.85}
+            disabled={deleting}
+          >
+            {deleting ? (
+              <ActivityIndicator
+                size="small"
+                color={COLORS.textHigh}
+                style={{ marginRight: 8 }}
+              />
+            ) : (
+              <Feather
+                name="trash-2"
+                size={17}
+                color={COLORS.textHigh}
+                style={{ marginRight: 8 }}
+              />
+            )}
+            <Text style={styles.deleteButtonText}>
+              {deleting ? "Deleting..." : "Delete service record"}
+            </Text>
+          </TouchableOpacity>
+
+          <View style={{ height: 24 }} />
         </ScrollView>
       )}
     </SafeAreaView>
@@ -425,6 +736,25 @@ function Field({ label, value }) {
     <View style={styles.fieldRow}>
       <Text style={styles.fieldLabel}>{label}</Text>
       <Text style={styles.fieldValue}>{value || "—"}</Text>
+    </View>
+  );
+}
+
+function WheelRecordMetric({ label, value, suffix, status }) {
+  const displayValue = String(value || "").trim();
+  const statusMeta = CHECK_STATUS_META[status] || null;
+
+  return (
+    <View style={styles.wheelRecordMetric}>
+      <View style={styles.wheelRecordMetricLabelRow}>
+        <Text style={styles.wheelRecordMetricLabel}>{label}</Text>
+        {statusMeta ? (
+          <View style={[styles.wheelRecordStatusDot, { backgroundColor: statusMeta.color }]} />
+        ) : null}
+      </View>
+      <Text style={styles.wheelRecordMetricValue}>
+        {displayValue ? `${displayValue} ${suffix}` : "—"}
+      </Text>
     </View>
   );
 }
@@ -490,6 +820,7 @@ const styles = StyleSheet.create({
   },
   content: {
     padding: 16,
+    paddingBottom: 28,
   },
   card: {
     backgroundColor: COLORS.card,
@@ -557,6 +888,138 @@ const styles = StyleSheet.create({
   checkSummaryText: {
     fontSize: 12,
     color: COLORS.textMid,
+  },
+  wheelGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  wheelRecordCard: {
+    width: "48%",
+    minWidth: 132,
+    flexGrow: 1,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.background,
+    padding: 10,
+  },
+  wheelRecordHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+    marginBottom: 8,
+  },
+  wheelRecordBadge: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: COLORS.primaryAction,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  wheelRecordBadgeText: {
+    color: COLORS.textHigh,
+    fontSize: 10,
+    fontWeight: "900",
+  },
+  wheelRecordTitle: {
+    flex: 1,
+    color: COLORS.textHigh,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  wheelRecordMetric: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 8,
+    paddingVertical: 3,
+  },
+  wheelRecordMetricLabelRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+  },
+  wheelRecordMetricLabel: {
+    color: COLORS.textLow,
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  wheelRecordStatusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  wheelRecordMetricValue: {
+    color: COLORS.textMid,
+    fontSize: 11,
+    fontWeight: "800",
+  },
+  wheelRecordNote: {
+    marginTop: 6,
+    paddingTop: 6,
+    borderTopWidth: 1,
+    borderTopColor: "rgba(255,255,255,0.06)",
+    color: COLORS.textMid,
+    fontSize: 11,
+    lineHeight: 15,
+  },
+  defectActionRecordRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(255,255,255,0.05)",
+  },
+  defectActionRecordTitle: {
+    color: COLORS.textHigh,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  defectActionRecordMeta: {
+    color: COLORS.textLow,
+    fontSize: 11,
+    marginTop: 2,
+  },
+  defectActionRecordBadge: {
+    color: COLORS.textMid,
+    fontSize: 11,
+    fontWeight: "900",
+    textAlign: "right",
+  },
+  monitorRecordRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 9,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(255,255,255,0.05)",
+  },
+  monitorRecordBadge: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: "#F59E0B",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  monitorRecordBadgeText: {
+    color: COLORS.textHigh,
+    fontSize: 11,
+    fontWeight: "900",
+  },
+  monitorRecordTitle: {
+    color: COLORS.textHigh,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  monitorRecordDetails: {
+    color: COLORS.textLow,
+    fontSize: 11,
+    marginTop: 2,
+    lineHeight: 16,
   },
 
   /* Checklist details */
@@ -646,5 +1109,23 @@ const styles = StyleSheet.create({
     width: 90,
     height: 90,
     borderRadius: 8,
+  },
+  deleteButton: {
+    minHeight: 48,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 10,
+    backgroundColor: COLORS.primaryAction,
+    paddingHorizontal: 14,
+    marginTop: 2,
+  },
+  deleteButtonDisabled: {
+    opacity: 0.7,
+  },
+  deleteButtonText: {
+    color: COLORS.textHigh,
+    fontSize: 14,
+    fontWeight: "800",
   },
 });

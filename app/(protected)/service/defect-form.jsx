@@ -1,11 +1,13 @@
 // app/(protected)/service/defect-form.jsx
+import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
-import { useLocalSearchParams, useRouter } from "expo-router";
-import { useEffect, useMemo, useState } from "react";
+import { useLocalSearchParams, useNavigation, useRouter } from "expo-router";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
     ActivityIndicator,
     Alert,
     Image,
+    Platform,
     ScrollView,
     StyleSheet,
     Switch,
@@ -18,7 +20,6 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
 import {
-    addDoc,
     arrayUnion,
     collection,
     doc,
@@ -26,10 +27,12 @@ import {
     orderBy,
     query,
     serverTimestamp,
+    setDoc,
     updateDoc,
 } from "firebase/firestore";
-import { db } from "../../../firebaseConfig";
-import { useTheme } from "../../providers/ThemeProvider";
+import { getDownloadURL, ref, uploadBytesResumable } from "firebase/storage";
+import { db, storage } from "../../../firebaseConfig";
+import { useTheme } from "../../../providers/ThemeProvider";
 
 const COLORS = {
   background: "#0D0D0D",
@@ -47,10 +50,74 @@ function isDownloadUrl(uri) {
   return typeof uri === "string" && /^https?:\/\//i.test(uri);
 }
 
+function sanitizeStorageSegment(value) {
+  return String(value || "item")
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || "item";
+}
+
+async function ensureUploadableImageUri(uri) {
+  if (!uri || isDownloadUrl(uri)) return uri;
+
+  try {
+    const manip = await ImageManipulator.manipulateAsync(
+      uri,
+      [{ resize: { width: 1600 } }],
+      { compress: 0.8, format: ImageManipulator.SaveFormat.JPEG }
+    );
+    return manip?.uri || uri;
+  } catch {
+    return uri;
+  }
+}
+
+async function uploadImageUri(uri, path) {
+  if (isDownloadUrl(uri)) return uri;
+
+  const uploadableUri = await ensureUploadableImageUri(uri);
+  const response = await fetch(uploadableUri);
+  if (!response.ok) {
+    throw new Error("Could not read selected photo for upload.");
+  }
+
+  const blob = await response.blob();
+  const storageRef = ref(storage, path);
+
+  await new Promise((resolve, reject) => {
+    const task = uploadBytesResumable(storageRef, blob, {
+      contentType: blob.type || "image/jpeg",
+    });
+    task.on("state_changed", undefined, reject, resolve);
+  });
+
+  return getDownloadURL(storageRef);
+}
+
+async function uploadPhotoList(uris, basePath) {
+  const uploaded = [];
+  const photoUris = Array.isArray(uris) ? uris.filter(Boolean) : [];
+
+  for (const [index, uri] of photoUris.entries()) {
+    if (isDownloadUrl(uri)) {
+      uploaded.push(uri);
+      continue;
+    }
+
+    const filename = `${Date.now()}-${index}.jpg`;
+    uploaded.push(await uploadImageUri(uri, `${basePath}/${filename}`));
+  }
+
+  return uploaded;
+}
+
 export default function DefectFormScreen() {
   const router = useRouter();
+  const navigation = useNavigation();
   const { colors } = useTheme();
   const params = useLocalSearchParams();
+  const allowLeaveRef = useRef(false);
 
   const initialVehicleName = params.vehicleName || params.name || "";
   const initialReg = params.registration || params.reg || "";
@@ -134,6 +201,98 @@ export default function DefectFormScreen() {
     [vehicles, selectedVehicleId]
   );
 
+  const hasUnsavedChanges = useMemo(
+    () =>
+      String(selectedVehicleId || "") !== String(initialVehicleId || "") ||
+      vehicleName.trim() !== String(initialVehicleName || "").trim() ||
+      registration.trim() !== String(initialReg || "").trim() ||
+      !!vehicleSearch.trim() ||
+      !!location.trim() ||
+      !!description.trim() ||
+      severity !== "Immediate" ||
+      offRoad ||
+      !!reportedBy.trim() ||
+      !!notes.trim() ||
+      photos.length > 0,
+    [
+      description,
+      initialReg,
+      initialVehicleId,
+      initialVehicleName,
+      location,
+      notes,
+      offRoad,
+      photos.length,
+      registration,
+      reportedBy,
+      selectedVehicleId,
+      severity,
+      vehicleName,
+      vehicleSearch,
+    ]
+  );
+
+  const confirmLeave = (onLeave) => {
+    if (!hasUnsavedChanges || allowLeaveRef.current) {
+      onLeave();
+      return;
+    }
+
+    Alert.alert(
+      "Leave defect report?",
+      "You have unsaved defect details. Leave without saving?",
+      [
+        { text: "Stay", style: "cancel" },
+        {
+          text: "Leave",
+          style: "destructive",
+          onPress: () => {
+            allowLeaveRef.current = true;
+            onLeave();
+          },
+        },
+      ]
+    );
+  };
+
+  useEffect(() => {
+    const unsubscribe = navigation.addListener("beforeRemove", (event) => {
+      if (!hasUnsavedChanges || allowLeaveRef.current) return;
+
+      event.preventDefault();
+      Alert.alert(
+        "Leave defect report?",
+        "You have unsaved defect details. Leave without saving?",
+        [
+          { text: "Stay", style: "cancel" },
+          {
+            text: "Leave",
+            style: "destructive",
+            onPress: () => {
+              allowLeaveRef.current = true;
+              navigation.dispatch(event.data.action);
+            },
+          },
+        ]
+      );
+    });
+
+    return unsubscribe;
+  }, [hasUnsavedChanges, navigation]);
+
+  useEffect(() => {
+    if (Platform.OS !== "web" || typeof window === "undefined") return;
+
+    const handleBeforeUnload = (event) => {
+      if (!hasUnsavedChanges || allowLeaveRef.current) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [hasUnsavedChanges]);
+
   // When a vehicle is selected, auto-fill the name/reg text fields
   useEffect(() => {
     if (!selectedVehicle) return;
@@ -190,6 +349,8 @@ export default function DefectFormScreen() {
   /* ---------------- SAVE ---------------- */
 
   const handleSave = async () => {
+    if (saving) return;
+
     const trimmedDesc = description.trim();
     if (!trimmedDesc) {
       Alert.alert("Missing description", "Add a short description of the defect.");
@@ -209,6 +370,25 @@ export default function DefectFormScreen() {
 
     try {
       setSaving(true);
+      const defectRef = doc(collection(db, "defectReports"));
+      const vehicleSegment = sanitizeStorageSegment(
+        effectiveVehicleId || registration || vehicleName || "unassigned"
+      );
+      let photoURLs = [];
+
+      try {
+        photoURLs = await uploadPhotoList(
+          photos,
+          `defectReports/${defectRef.id}/${vehicleSegment}`
+        );
+      } catch (uploadErr) {
+        console.error("Failed to upload defect photos:", uploadErr);
+        Alert.alert(
+          "Photo upload failed",
+          "Could not upload the defect photos. Please check your connection and try again."
+        );
+        return;
+      }
 
       const payload = {
         vehicleId: effectiveVehicleId || null,
@@ -222,14 +402,14 @@ export default function DefectFormScreen() {
         reportedBy: reportedBy.trim(),
         notes: notes.trim(),
         status: "open",
-        photoURIs: photos,
-        photoURLs: photos.filter(isDownloadUrl),
+        photoURIs: [],
+        photoURLs,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       };
 
       // 1) Save into standalone defectReports collection
-      await addDoc(collection(db, "defectReports"), payload);
+      await setDoc(defectRef, payload);
 
       // 2) ALSO push into the vehicle's defects[] array so it appears in Defects screen
       if (effectiveVehicleId) {
@@ -244,8 +424,8 @@ export default function DefectFormScreen() {
           notes: notes.trim() || null,
           status: "open",
           location: location.trim() || null,
-          photoURIs: photos,
-          photoURLs: photos.filter(isDownloadUrl),
+          photoURIs: [],
+          photoURLs,
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
         };
@@ -258,7 +438,10 @@ export default function DefectFormScreen() {
       Alert.alert("Saved", "Defect report saved.", [
         {
           text: "OK",
-          onPress: () => router.back(),
+          onPress: () => {
+            allowLeaveRef.current = true;
+            router.back();
+          },
         },
       ]);
     } catch (err) {
@@ -302,7 +485,7 @@ export default function DefectFormScreen() {
       >
         <TouchableOpacity
           style={styles.backButton}
-          onPress={() => router.back()}
+          onPress={() => confirmLeave(() => router.back())}
           activeOpacity={0.8}
         >
           <Icon

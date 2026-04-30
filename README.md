@@ -15,6 +15,7 @@ The app now includes a production sync foundation:
 
 Set these in Expo `extra` or `EXPO_PUBLIC_*` env vars:
 
+- `EXPO_PUBLIC_API_URL`: HTTPS base URL for the deployed DVLA bridge API. Do not use localhost for production builds.
 - `syncEnabled` / `EXPO_PUBLIC_SYNC_ENABLED`: enable background sync layer.
 - `syncIntervalMs` / `EXPO_PUBLIC_SYNC_INTERVAL_MS`: sync interval (default `120000`).
 - `syncTimeoutMs` / `EXPO_PUBLIC_SYNC_TIMEOUT_MS`: bridge request timeout (default `10000`).

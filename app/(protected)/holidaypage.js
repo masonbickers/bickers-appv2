@@ -12,8 +12,8 @@ import {
 } from "react-native";
 import Icon from "react-native-vector-icons/Feather";
 import { db } from "../../firebaseConfig";
-import { useAuth } from "../providers/AuthProvider";
-import { useTheme } from "../providers/ThemeProvider";
+import { useAuth } from "../../providers/AuthProvider";
+import { useTheme } from "../../providers/ThemeProvider";
 
 /* ─────────────────────────── Helpers ─────────────────────────── */
 const norm = (v) => String(v ?? "").trim().toLowerCase();

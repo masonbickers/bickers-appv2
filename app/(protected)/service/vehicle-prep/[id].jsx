@@ -1,8 +1,19 @@
 // app/(protected)/service/service-form/vehicle-prep.jsx (or your actual path)
 import { Feather } from "@expo/vector-icons";
-import { useLocalSearchParams, useRouter } from "expo-router";
-import { useState } from "react";
+import { useLocalSearchParams, useNavigation, useRouter } from "expo-router";
 import {
+  addDoc,
+  arrayUnion,
+  collection,
+  doc,
+  serverTimestamp,
+  updateDoc,
+} from "firebase/firestore";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  ActivityIndicator,
+  Alert,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -12,7 +23,8 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { useTheme } from "../../../providers/ThemeProvider";
+import { db } from "../../../../firebaseConfig";
+import { useTheme } from "../../../../providers/ThemeProvider";
 
 const COLORS = {
   background: "#0D0D0D",
@@ -39,8 +51,10 @@ const DEFAULT_CHECKS = [
 
 export default function VehiclePrepScreen() {
   const router = useRouter();
+  const navigation = useNavigation();
   const { colors } = useTheme();
   const params = useLocalSearchParams();
+  const allowLeaveRef = useRef(false);
 
   const [checks, setChecks] = useState(
     DEFAULT_CHECKS.map((label, idx) => ({
@@ -92,7 +106,9 @@ export default function VehiclePrepScreen() {
   );
 
   const [notes, setNotes] = useState("");
+  const [saving, setSaving] = useState(false);
 
+  const vehicleId = Array.isArray(params.id) ? params.id[0] : params.id;
   const vehicleName = params.vehicleName || "";
   const registration = params.registration || "";
   const dateStr = params.date || "";
@@ -129,6 +145,135 @@ export default function VehiclePrepScreen() {
       ? equipmentChecks.map((e) => e.label).join(", ")
       : "";
 
+  const hasUnsavedChanges = useMemo(
+    () =>
+      checks.some((check) => check.done) ||
+      equipmentChecks.some((check) => check.done) ||
+      !!notes.trim(),
+    [checks, equipmentChecks, notes]
+  );
+
+  const confirmLeave = (onLeave) => {
+    if (!hasUnsavedChanges || allowLeaveRef.current) {
+      onLeave();
+      return;
+    }
+
+    Alert.alert(
+      "Leave vehicle prep?",
+      "You have unsaved prep details. Leave without saving?",
+      [
+        { text: "Stay", style: "cancel" },
+        {
+          text: "Leave",
+          style: "destructive",
+          onPress: () => {
+            allowLeaveRef.current = true;
+            onLeave();
+          },
+        },
+      ]
+    );
+  };
+
+  useEffect(() => {
+    const unsubscribe = navigation.addListener("beforeRemove", (event) => {
+      if (!hasUnsavedChanges || allowLeaveRef.current) return;
+
+      event.preventDefault();
+      Alert.alert(
+        "Leave vehicle prep?",
+        "You have unsaved prep details. Leave without saving?",
+        [
+          { text: "Stay", style: "cancel" },
+          {
+            text: "Leave",
+            style: "destructive",
+            onPress: () => {
+              allowLeaveRef.current = true;
+              navigation.dispatch(event.data.action);
+            },
+          },
+        ]
+      );
+    });
+
+    return unsubscribe;
+  }, [hasUnsavedChanges, navigation]);
+
+  useEffect(() => {
+    if (Platform.OS !== "web" || typeof window === "undefined") return;
+
+    const handleBeforeUnload = (event) => {
+      if (!hasUnsavedChanges || allowLeaveRef.current) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [hasUnsavedChanges]);
+
+  const handleSave = async (markComplete = false) => {
+    if (markComplete && !allDone) return;
+
+    setSaving(true);
+    try {
+      const record = {
+        vehicleId: vehicleId || null,
+        vehicleName: String(vehicleName || ""),
+        registration: String(registration || ""),
+        prepDate: String(dateStr || ""),
+        checks,
+        equipmentChecks,
+        notes: notes.trim(),
+        completed: !!markComplete,
+        completedAt: markComplete ? serverTimestamp() : null,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      };
+
+      await addDoc(collection(db, "vehiclePrepRecords"), record);
+
+      if (vehicleId && vehicleId !== "vehicle") {
+        const summary = {
+          prepDate: String(dateStr || ""),
+          vehicleName: String(vehicleName || ""),
+          registration: String(registration || ""),
+          completed: !!markComplete,
+          notes: notes.trim(),
+          recordedAt: new Date(),
+        };
+
+        await updateDoc(doc(db, "vehicles", String(vehicleId)), {
+          lastVehiclePrep: summary,
+          prepHistory: arrayUnion(summary),
+        });
+      }
+
+      Alert.alert(
+        markComplete ? "Vehicle prepped" : "Prep saved",
+        markComplete
+          ? "The vehicle prep has been recorded."
+          : "The vehicle prep notes have been saved.",
+        [
+          {
+            text: "OK",
+            onPress: () => {
+              allowLeaveRef.current = true;
+              router.back();
+            },
+          },
+        ]
+      );
+    } catch (err) {
+      console.error("Failed to save vehicle prep:", err);
+      Alert.alert("Error", "Could not save this vehicle prep. Please try again.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <SafeAreaView
       edges={["left", "right"]}
@@ -145,7 +290,7 @@ export default function VehiclePrepScreen() {
         ]}
       >
         <TouchableOpacity
-          onPress={() => router.back()}
+          onPress={() => confirmLeave(() => router.back())}
           style={styles.backButton}
           hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
         >
@@ -322,10 +467,13 @@ export default function VehiclePrepScreen() {
               styles.secondaryButton,
               { borderColor: COLORS.lightGray },
             ]}
-            onPress={() => router.back()}
+            onPress={() => handleSave(false)}
+            disabled={saving}
             activeOpacity={0.85}
           >
-            <Text style={styles.secondaryButtonText}>Save & back</Text>
+            <Text style={styles.secondaryButtonText}>
+              {saving ? "Saving…" : "Save & back"}
+            </Text>
           </TouchableOpacity>
 
           <TouchableOpacity
@@ -337,18 +485,26 @@ export default function VehiclePrepScreen() {
                   : COLORS.lightGray,
               },
             ]}
-            onPress={() => router.back()}
-            disabled={!allDone}
+            onPress={() => handleSave(true)}
+            disabled={!allDone || saving}
             activeOpacity={0.9}
           >
-            <Feather
-              name="check-circle"
-              size={16}
-              color={COLORS.textHigh}
-              style={{ marginRight: 6 }}
-            />
+            {saving ? (
+              <ActivityIndicator
+                size="small"
+                color={COLORS.textHigh}
+                style={{ marginRight: 6 }}
+              />
+            ) : (
+              <Feather
+                name="check-circle"
+                size={16}
+                color={COLORS.textHigh}
+                style={{ marginRight: 6 }}
+              />
+            )}
             <Text style={styles.primaryButtonText}>
-              Mark vehicle prepped
+              {saving ? "Saving…" : "Mark vehicle prepped"}
             </Text>
           </TouchableOpacity>
         </View>

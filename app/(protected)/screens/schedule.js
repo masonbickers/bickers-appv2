@@ -16,8 +16,8 @@ import Icon from "react-native-vector-icons/Feather";
 import PageHeaderCard from "../../../components/PageHeaderCard";
 import { db } from "../../../firebaseConfig";
 import { designTokens as t } from "../../../lib/design/tokens";
-import { useAuth } from "../../providers/AuthProvider";
-import { useTheme } from "../../providers/ThemeProvider";
+import { useAuth } from "../../../providers/AuthProvider";
+import { useTheme } from "../../../providers/ThemeProvider";
 
 /* ───────────────────────────────
    BANK HOLIDAYS (UK via GOV.UK)

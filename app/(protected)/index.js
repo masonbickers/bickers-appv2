@@ -1,6 +1,6 @@
 // app/(protected)/index.js
 import { Redirect } from "expo-router";
-import { useAuth } from "../providers/AuthProvider"; // ← import the hook (one level up from (protected))
+import { useAuth } from "../../providers/AuthProvider"; // ← import the hook (one level up from (protected))
 
 export default function ProtectedIndexRedirect() {
   const { user, loading } = useAuth();

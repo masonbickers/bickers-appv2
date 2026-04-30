@@ -17,8 +17,8 @@ import Icon from "react-native-vector-icons/Feather";
 import { signOut } from "firebase/auth";
 import { auth } from "../../../firebaseConfig";
 
-import { useAuth } from "../../providers/AuthProvider";
-import { useTheme } from "../../providers/ThemeProvider";
+import { useAuth } from "../../../providers/AuthProvider";
+import { useTheme } from "../../../providers/ThemeProvider";
 
 /* --------- SERVICE STYLE COLOURS --------- */
 

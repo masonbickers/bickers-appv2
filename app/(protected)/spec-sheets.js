@@ -17,7 +17,7 @@ import Icon from "react-native-vector-icons/Feather";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { auth, storage } from "../../firebaseConfig";
-import { useTheme } from "../providers/ThemeProvider"; // 👈 theme
+import { useTheme } from "../../providers/ThemeProvider"; // 👈 theme
 
 // ✅ trailing slash avoids ambiguous matches and mirrors console pathing
 const FOLDER_PATH = "spec sheets/";

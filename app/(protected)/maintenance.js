@@ -26,8 +26,8 @@ import Icon from "react-native-vector-icons/Feather";
 
 // 🔑 Firebase + Auth provider (paths for app/(protected)/*)
 import { db } from "../../firebaseConfig";
-import { useAuth } from "../providers/AuthProvider";
-import { useTheme } from "../providers/ThemeProvider";
+import { useAuth } from "../../providers/AuthProvider";
+import { useTheme } from "../../providers/ThemeProvider";
 
 const MAX_CHARS = 600;
 

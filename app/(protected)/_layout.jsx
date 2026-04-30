@@ -1,16 +1,14 @@
 // app/(protected)/_layout.jsx
-import { Stack, useRouter } from "expo-router";
+import { Stack } from "expo-router";
 import { collection, getDocs, onSnapshot, query, where } from "firebase/firestore";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { db } from "../../firebaseConfig";
 import { useSyncManager } from "../../hooks/useSyncManager";
-import { useAuth } from "../providers/AuthProvider";
+import { useAuth } from "../../providers/AuthProvider";
 
 import {
-  addNotificationListeners,
   NOTIFICATIONS_ENABLED,
-  registerForPushNotificationsAsync,
   scheduleLocalNotification,
 } from "../../lib/notifications";
 
@@ -48,34 +46,6 @@ function firstISOFromBooking(booking) {
   return toISODate(s);
 }
 
-function firstISOFromNotifData(data) {
-  const d = data || {};
-
-  // 1) explicit date fields if you ever add them
-  const direct =
-    toISODate(d.dateISO) ||
-    toISODate(d.isoDate) ||
-    toISODate(d.date) ||
-    toISODate(d.jobDate) ||
-    toISODate(d.bookingDate);
-  if (direct) return direct;
-
-  // 2) bookingDates in payload (your current notifications include this)
-  const raw = d.bookingDates;
-  if (Array.isArray(raw) && raw.length > 0) {
-    const dates = raw.map(toDateSafe).filter(Boolean).sort((a, b) => a - b);
-    if (dates.length) return toISODate(dates[0]);
-  }
-
-  // 3) start/end fields if present
-  const s =
-    toDateSafe(d.startDate) ||
-    toDateSafe(d.from) ||
-    toDateSafe(d.start) ||
-    toDateSafe(d.date);
-  return toISODate(s);
-}
-
 function formatDateShort(d) {
   if (!d) return "";
   return d.toLocaleDateString("en-GB", {
@@ -86,7 +56,6 @@ function formatDateShort(d) {
 }
 
 export default function ProtectedLayout() {
-  const router = useRouter();
   const { user, employee, isAuthed, loading, setJobsUpdatedAt } = useAuth();
 
   useSyncManager({
@@ -101,73 +70,6 @@ export default function ProtectedLayout() {
       }
     },
   });
-
-  // ============================================================
-  // GLOBAL NOTIFICATION HANDLER
-  // - When user taps push/local notif pop-up:
-  //   Job -> go to Schedule page with that date selected
-  //   Holiday -> holiday page
-  // ============================================================
-  const lastNavSig = useRef("");
-
-  const handleNotifResponse = useCallback(
-    (resp) => {
-      const data = resp?.notification?.request?.content?.data || {};
-      if (!data) return;
-
-      // --- Job tapped: open schedule on date ---
-      if (data.bookingId) {
-        const iso = firstISOFromNotifData(data) || toISODate(new Date());
-        const sig = `job:${String(data.bookingId)}:${iso}`;
-        if (lastNavSig.current === sig) return;
-        lastNavSig.current = sig;
-
-        setTimeout(() => {
-          // 👇 schedule page + date open
-          router.push({
-            pathname: "/(protected)/screens/schedule",
-            params: { date: iso },
-          });
-        }, 50);
-        return;
-      }
-
-      // --- Holiday tapped ---
-      if (data.holidayId) {
-        const sig = `hol:${String(data.holidayId)}`;
-        if (lastNavSig.current === sig) return;
-        lastNavSig.current = sig;
-
-        setTimeout(() => {
-          router.push("/holidaypage");
-        }, 50);
-        return;
-      }
-    },
-    [router]
-  );
-
-  useEffect(() => {
-    if (!NOTIFICATIONS_ENABLED) return;
-    if (loading || !isAuthed) return;
-
-    let removeNotifListeners = () => {};
-
-    (async () => {
-      await registerForPushNotificationsAsync();
-
-      // IMPORTANT:
-      // Your lib/notifications addNotificationListeners should already handle:
-      // - addNotificationResponseReceivedListener (tap)
-      // - getLastNotificationResponseAsync (cold start), if you implemented it there
-      // If it doesn't, you can add it there. For now we route via onResponse.
-      removeNotifListeners = addNotificationListeners({
-        onResponse: handleNotifResponse,
-      });
-    })();
-
-    return () => removeNotifListeners?.();
-  }, [loading, isAuthed, handleNotifResponse]);
 
   // ============================================================
   // VEHICLE LOOKUP (id -> "Name · REG")

@@ -16,7 +16,7 @@ import {
 import Icon from "react-native-vector-icons/Feather";
 
 import { storage } from "../../firebaseConfig";
-import { useTheme } from "../providers/ThemeProvider";
+import { useTheme } from "../../providers/ThemeProvider";
 
 function withAlpha(hex, alpha) {
   const safeAlpha = Math.max(0, Math.min(1, Number(alpha) || 0));

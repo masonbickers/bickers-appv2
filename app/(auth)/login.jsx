@@ -26,8 +26,8 @@ import {
 
 import { auth, db } from "../../firebaseConfig";
 import { inferServiceAccess, normaliseSessionRole } from "../../lib/access";
-import { useAuth } from "../providers/AuthProvider";
-import { useTheme } from "../providers/ThemeProvider";
+import { useAuth } from "../../providers/AuthProvider";
+import { useTheme } from "../../providers/ThemeProvider";
 
 export default function LoginPage() {
   const [employeeEmail, setEmployeeEmail] = useState("");

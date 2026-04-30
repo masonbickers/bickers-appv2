@@ -17,8 +17,8 @@ import Icon from "react-native-vector-icons/Feather";
 // 🔑 Firebase + Provider
 import { doc, getDoc } from "firebase/firestore";
 import { db } from "../../firebaseConfig";
-import { useAuth } from "../providers/AuthProvider";
-import { useTheme } from "../providers/ThemeProvider";
+import { useAuth } from "../../providers/AuthProvider";
+import { useTheme } from "../../providers/ThemeProvider";
 
 export default function HelpCentrePage() {
   const router = useRouter();
