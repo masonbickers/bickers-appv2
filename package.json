@@ -26,7 +26,7 @@
     "@react-navigation/native": "^7.1.6",
     "base-64": "^1.0.0",
     "date-fns": "^4.1.0",
-    "expo": "~54.0.34",
+    "expo": "^55",
     "expo-application": "~7.0.8",
     "expo-blur": "~15.0.8",
     "expo-constants": "^18.0.9",

@@ -87,6 +87,10 @@ export default function WorkScreen() {
     router.push(`/service/mot-precheck/${newId}`);
   };
 
+  const handleNewEquipmentInspection = () => {
+    router.push(`/service/inspections/inspection-form/new-${Date.now()}`);
+  };
+
   useFocusEffect(
     useCallback(() => {
       let active = true;
@@ -222,6 +226,26 @@ export default function WorkScreen() {
             ))}
           </View>
         )}
+
+        {/* SECTION: INSPECTIONS */}
+        <View style={styles.sectionDivider}>
+          <Text
+            style={[
+              styles.sectionTitle,
+              { color: colors.text || COLORS.textHigh },
+            ]}
+          >
+            Inspections
+          </Text>
+        </View>
+
+        <FormCard
+          icon="clipboard"
+          title="Equipment Inspection"
+          subtitle="Pre-use condition check for stunt equipment, rigs and vehicles."
+          onPress={handleNewEquipmentInspection}
+          colors={colors}
+        />
 
         {/* SECTION: MOT FORMS */}
         <View style={styles.sectionDivider}>

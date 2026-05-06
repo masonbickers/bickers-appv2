@@ -60,6 +60,7 @@ function getActivityDate(item) {
     item?.completedAt ||
     item?.updatedAt ||
     item?.createdAt ||
+    item?.inspectionDateISO ||
     item?.serviceDateOnly ||
     item?.serviceDate ||
     item?.completedDate ||
@@ -77,7 +78,23 @@ function getVehicleText(item) {
     .join(" · ");
 }
 
-function buildActivityItems({ serviceRecords, defectReports, vehiclePrepRecords, motPreChecks }) {
+function getEquipmentText(item) {
+  return [
+    item?.equipmentName || item?.name,
+    item?.serialNumber || item?.equipmentId,
+    item?.asset,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+function buildActivityItems({
+  serviceRecords,
+  defectReports,
+  vehiclePrepRecords,
+  motPreChecks,
+  equipmentInspections,
+}) {
   const services = serviceRecords.map((record) => {
     const serviceType = record.serviceType || record.type || "Service";
     const key = normaliseKey(serviceType);
@@ -133,7 +150,23 @@ function buildActivityItems({ serviceRecords, defectReports, vehiclePrepRecords,
     route: null,
   }));
 
-  return [...services, ...defects, ...prep, ...mot]
+  const inspections = equipmentInspections.map((record) => ({
+    id: `equipment-inspection-${record.id}`,
+    icon: record.overallResult === "fail" ? "alert-circle" : "clipboard",
+    typeKey: "inspections",
+    title: "Equipment inspection",
+    subtitle:
+      record.findings ||
+      record.recommendations ||
+      record.extraNotes ||
+      `${record.overallResult === "fail" ? "Failed" : "Passed"} equipment inspection`,
+    vehicle: getEquipmentText(record),
+    technician: record.signedBy || record.inspectedBy || "",
+    date: getActivityDate(record),
+    route: record.id ? `/service/inspections/inspection-form/${record.id}` : null,
+  }));
+
+  return [...services, ...defects, ...prep, ...mot, ...inspections]
     .map((item) => ({ ...item, dateObj: toDateMaybe(item.date) }))
     .sort((a, b) => (b.dateObj?.getTime() || 0) - (a.dateObj?.getTime() || 0));
 }
@@ -170,6 +203,7 @@ export default function ActivityHistoryScreen() {
   const defectReports = useCollectionRows("defectReports", "defect activity");
   const vehiclePrepRecords = useCollectionRows("vehiclePrepRecords", "vehicle prep activity");
   const motPreChecks = useCollectionRows("motPreChecks", "MOT pre-check activity");
+  const equipmentInspections = useCollectionRows("equipmentInspections", "equipment inspection activity");
 
   useEffect(() => {
     const timer = setTimeout(() => setLoading(false), 300);
@@ -183,8 +217,9 @@ export default function ActivityHistoryScreen() {
         defectReports,
         vehiclePrepRecords,
         motPreChecks,
+        equipmentInspections,
       }),
-    [defectReports, motPreChecks, serviceRecords, vehiclePrepRecords]
+    [defectReports, equipmentInspections, motPreChecks, serviceRecords, vehiclePrepRecords]
   );
 
   const summary = useMemo(() => {
@@ -197,8 +232,9 @@ export default function ActivityHistoryScreen() {
     const defects = activity.filter((item) =>
       normaliseKey(item.title).includes("defect")
     ).length;
+    const inspections = activity.filter((item) => item.typeKey === "inspections").length;
 
-    return { total: activity.length, services, repairs, defects };
+    return { total: activity.length, services, repairs, defects, inspections };
   }, [activity]);
 
   const filteredActivity = useMemo(() => {
@@ -261,7 +297,7 @@ export default function ActivityHistoryScreen() {
               { color: colors.textMuted || COLORS.textMid },
             ]}
           >
-            Recent completed services, repairs, defects and workshop updates.
+            Recent completed services, repairs, defects, inspections and workshop updates.
           </Text>
         </View>
       </View>
@@ -296,6 +332,7 @@ export default function ActivityHistoryScreen() {
             <SummaryItem label="Services" value={summary.services} colors={colors} />
             <SummaryItem label="Repairs" value={summary.repairs} colors={colors} />
             <SummaryItem label="Defects" value={summary.defects} colors={colors} />
+            <SummaryItem label="Inspections" value={summary.inspections} colors={colors} />
           </View>
 
           <View
@@ -327,7 +364,7 @@ export default function ActivityHistoryScreen() {
                   styles.searchInput,
                   { color: colors.text || COLORS.textHigh },
                 ]}
-                placeholder="Search vehicle, reg, notes, technician..."
+                placeholder="Search vehicle, equipment, reg, notes, technician..."
                 placeholderTextColor={colors.textMuted || COLORS.textLow}
                 value={searchText}
                 onChangeText={setSearchText}
@@ -342,6 +379,7 @@ export default function ActivityHistoryScreen() {
                 ["services", "Services"],
                 ["repairs", "Repairs"],
                 ["defects", "Defects"],
+                ["inspections", "Inspections"],
                 ["mot", "MOT"],
                 ["prep", "Prep"],
               ]}
@@ -387,7 +425,7 @@ export default function ActivityHistoryScreen() {
                   { color: colors.textMuted || COLORS.textMid },
                 ]}
               >
-                Completed services, general repairs, prep records and defects will appear here.
+                Completed services, general repairs, prep records, inspections and defects will appear here.
               </Text>
             </View>
           ) : (

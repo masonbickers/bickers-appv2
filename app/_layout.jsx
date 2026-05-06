@@ -154,6 +154,7 @@ function ShellInner() {
   const isServiceRecordRoute = pathname?.startsWith("/service/service-record/");
   const isServiceVehicleTimelineRoute = pathname?.startsWith("/service/vehicle-timeline/");
   const isServiceSettingsRoute = pathname === "/service/settings";
+  const isInspectionFormRoute = pathname?.startsWith("/service/inspections/inspection-form/");
   const hideFooter =
     inAuthGroup ||
     isWeekRoute ||
@@ -174,7 +175,8 @@ function ShellInner() {
     isServiceActivityHistoryRoute ||
     isServiceRecordRoute ||
     isServiceVehicleTimelineRoute ||
-    isServiceSettingsRoute;
+    isServiceSettingsRoute ||
+    isInspectionFormRoute;
 
   const { user, loading: ctxLoading, isAuthed, employee } = useAuth() ?? {};
   const loading = typeof ctxLoading === "boolean" ? ctxLoading : user === undefined;

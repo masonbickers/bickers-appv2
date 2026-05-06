@@ -136,11 +136,26 @@ function countOpenManualDefects(reports) {
   return reports.filter((report) => isOpenMaintenance(report?.status)).length;
 }
 
+function countMonitorItems(records) {
+  return records.reduce((sum, record) => {
+    const items = Array.isArray(record?.monitorReport) ? record.monitorReport : [];
+    return sum + items.length;
+  }, 0);
+}
+
+function countDueEquipment(records) {
+  return records.filter((record) => {
+    const status = classifyStatus(record?.nextInspection || record?.inspectionDueDate);
+    return status.code === "overdue" || status.code === "due-soon";
+  }).length;
+}
+
 function getActivityDate(item) {
   return (
     item?.completedAt ||
     item?.updatedAt ||
     item?.createdAt ||
+    item?.inspectionDateISO ||
     item?.serviceDateOnly ||
     item?.serviceDate ||
     item?.completedDate ||
@@ -158,7 +173,23 @@ function getVehicleText(item) {
     .join(" · ");
 }
 
-function buildActivityItems({ serviceRecords, defectReports, vehiclePrepRecords, motPreChecks }) {
+function getEquipmentText(item) {
+  return [
+    item?.equipmentName || item?.name,
+    item?.serialNumber || item?.equipmentId,
+    item?.asset,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+function buildActivityItems({
+  serviceRecords,
+  defectReports,
+  vehiclePrepRecords,
+  motPreChecks,
+  equipmentInspections,
+}) {
   const services = serviceRecords.map((record) => {
     const serviceType = record.serviceType || record.type || "Service";
     const isRepair =
@@ -204,7 +235,21 @@ function buildActivityItems({ serviceRecords, defectReports, vehiclePrepRecords,
     route: null,
   }));
 
-  return [...services, ...defects, ...prep, ...mot]
+  const inspections = equipmentInspections.map((record) => ({
+    id: `equipment-inspection-${record.id}`,
+    icon: record.overallResult === "fail" ? "alert-circle" : "clipboard",
+    title: "Equipment inspection",
+    subtitle:
+      record.findings ||
+      record.recommendations ||
+      record.extraNotes ||
+      `${record.overallResult === "fail" ? "Failed" : "Passed"} equipment inspection`,
+    vehicle: getEquipmentText(record),
+    date: getActivityDate(record),
+    route: record.id ? `/service/inspections/inspection-form/${record.id}` : null,
+  }));
+
+  return [...services, ...defects, ...prep, ...mot, ...inspections]
     .map((item) => ({ ...item, dateObj: toDateMaybe(item.date) }))
     .sort((a, b) => (b.dateObj?.getTime() || 0) - (a.dateObj?.getTime() || 0));
 }
@@ -223,6 +268,8 @@ export default function ServiceHomeScreen() {
   const [defectReports, setDefectReports] = useState([]);
   const [vehiclePrepRecords, setVehiclePrepRecords] = useState([]);
   const [motPreChecks, setMotPreChecks] = useState([]);
+  const [equipmentInspections, setEquipmentInspections] = useState([]);
+  const [equipment, setEquipment] = useState([]);
   const [loading, setLoading] = useState(true);
   const workspaceAccess = useMemo(() => resolveWorkspaceAccess(employee), [employee]);
   const canSwitchToMainApp = workspaceAccess.user && workspaceAccess.service;
@@ -358,6 +405,34 @@ export default function ServiceHomeScreen() {
     return () => unsub();
   }, []);
 
+  useEffect(() => {
+    const unsub = onSnapshot(
+      collection(db, "equipmentInspections"),
+      (snap) => {
+        setEquipmentInspections(snap.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
+      },
+      (err) => {
+        console.error("Service Home equipmentInspections listener error:", err);
+      }
+    );
+
+    return () => unsub();
+  }, []);
+
+  useEffect(() => {
+    const unsub = onSnapshot(
+      collection(db, "equipment"),
+      (snap) => {
+        setEquipment(snap.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
+      },
+      (err) => {
+        console.error("Service Home equipment listener error:", err);
+      }
+    );
+
+    return () => unsub();
+  }, []);
+
   const openDefectCount = useMemo(
     () =>
       countOpenCheckDefects(vehicleChecks) +
@@ -366,6 +441,13 @@ export default function ServiceHomeScreen() {
     [defectReports, vehicleChecks, vehicleIssues]
   );
 
+  const advisoryCount = useMemo(
+    () => countMonitorItems(serviceRecords) + countMonitorItems(equipmentInspections),
+    [equipmentInspections, serviceRecords]
+  );
+
+  const equipmentDueCount = useMemo(() => countDueEquipment(equipment), [equipment]);
+
   const recentActivity = useMemo(
     () =>
       buildActivityItems({
@@ -373,8 +455,9 @@ export default function ServiceHomeScreen() {
         defectReports,
         vehiclePrepRecords,
         motPreChecks,
+        equipmentInspections,
       }).slice(0, 20),
-    [defectReports, motPreChecks, serviceRecords, vehiclePrepRecords]
+    [defectReports, equipmentInspections, motPreChecks, serviceRecords, vehiclePrepRecords]
   );
 
   const processed = useMemo(() => {
@@ -592,6 +675,21 @@ export default function ServiceHomeScreen() {
               colors={colors}
             />
             <QuickActionCard
+              icon="package"
+              title="Equipment"
+              subtitle={
+                equipmentDueCount > 0
+                  ? `${equipmentDueCount} due or overdue`
+                  : "Inspection dates OK"
+              }
+              badgeCount={equipmentDueCount}
+              onPress={() => router.push("/service/equipment-list")}
+              colors={colors}
+            />
+          </View>
+
+          <View style={[styles.quickRow, { marginTop: 10 }]}>
+            <QuickActionCard
               icon="alert-triangle"
               title="Defects & Issues"
               subtitle={
@@ -603,16 +701,21 @@ export default function ServiceHomeScreen() {
               onPress={() => router.push("/(protected)/service/defects")}
               colors={colors}
             />
+            <QuickActionCard
+              icon="eye"
+              title="Advisories"
+              subtitle={
+                advisoryCount > 0
+                  ? `${advisoryCount} amber item${advisoryCount === 1 ? "" : "s"} to monitor`
+                  : "No amber advisories"
+              }
+              badgeCount={advisoryCount}
+              onPress={() => router.push("/service/advisories")}
+              colors={colors}
+            />
           </View>
 
           <View style={[styles.quickRow, { marginTop: 10 }]}>
-            <QuickActionCard
-              icon="tool"
-              title="Book Workshop"
-              subtitle="Off-road, repairs, tyres, etc."
-              onPress={() => router.push("/(protected)/service/book-work")}
-              colors={colors}
-            />
             <QuickActionCard
               icon="activity"
               title="Activity History"

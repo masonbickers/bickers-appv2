@@ -52,6 +52,13 @@ function countOpenManualDefects(reports) {
   return reports.filter((report) => isOpenMaintenance(report?.status)).length;
 }
 
+function countMonitorItems(records) {
+  return records.reduce((sum, record) => {
+    const items = Array.isArray(record?.monitorReport) ? record.monitorReport : [];
+    return sum + items.length;
+  }, 0);
+}
+
 export default function ServiceFooter() {
   const router = useRouter();
   const pathname = usePathname();
@@ -59,6 +66,8 @@ export default function ServiceFooter() {
   const [vehicleChecks, setVehicleChecks] = useState([]);
   const [vehicleIssues, setVehicleIssues] = useState([]);
   const [defectReports, setDefectReports] = useState([]);
+  const [serviceRecords, setServiceRecords] = useState([]);
+  const [equipmentInspections, setEquipmentInspections] = useState([]);
 
   useEffect(() => {
     const unsub = onSnapshot(
@@ -102,6 +111,34 @@ export default function ServiceFooter() {
     return () => unsub();
   }, []);
 
+  useEffect(() => {
+    const unsub = onSnapshot(
+      collection(db, "serviceRecords"),
+      (snap) => {
+        setServiceRecords(snap.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
+      },
+      (err) => {
+        console.error("Failed to load footer service advisories:", err);
+      }
+    );
+
+    return () => unsub();
+  }, []);
+
+  useEffect(() => {
+    const unsub = onSnapshot(
+      collection(db, "equipmentInspections"),
+      (snap) => {
+        setEquipmentInspections(snap.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
+      },
+      (err) => {
+        console.error("Failed to load footer inspection advisories:", err);
+      }
+    );
+
+    return () => unsub();
+  }, []);
+
   const openDefectCount = useMemo(
     () =>
       countOpenCheckDefects(vehicleChecks) +
@@ -109,6 +146,13 @@ export default function ServiceFooter() {
       countOpenManualDefects(defectReports),
     [defectReports, vehicleChecks, vehicleIssues]
   );
+
+  const advisoryCount = useMemo(
+    () => countMonitorItems(serviceRecords) + countMonitorItems(equipmentInspections),
+    [equipmentInspections, serviceRecords]
+  );
+
+  const issueCount = openDefectCount + advisoryCount;
 
   // 🔧 Tabs dedicated to Service / Workshop area
   // URLs are /service/... (group (protected) is hidden from URL)
@@ -141,9 +185,8 @@ export default function ServiceFooter() {
       iconInactive: "list-outline",
     },
     {
-      // app/(protected)/service/defects.jsx
-      route: "/service/defects",
-      label: "Defects",
+      route: "/service/issues",
+      label: "Issues",
       iconActive: "alert-circle",
       iconInactive: "alert-circle-outline",
     },
@@ -185,8 +228,8 @@ export default function ServiceFooter() {
               accessibilityRole="button"
               accessibilityState={{ selected: isActive }}
               accessibilityLabel={
-                t.route === "/service/defects" && openDefectCount > 0
-                  ? `${t.label}, ${openDefectCount} open`
+                t.route === "/service/issues" && issueCount > 0
+                  ? `${t.label}, ${issueCount} open`
                   : t.label
               }
             >
@@ -196,10 +239,10 @@ export default function ServiceFooter() {
                   size={26}
                   color={isActive ? activeColor : inactiveColor}
                 />
-                {t.route === "/service/defects" && openDefectCount > 0 && (
+                {t.route === "/service/issues" && issueCount > 0 && (
                   <View style={styles.badge}>
                     <Text style={styles.badgeText}>
-                      {openDefectCount > 99 ? "99+" : openDefectCount}
+                      {issueCount > 99 ? "99+" : issueCount}
                     </Text>
                   </View>
                 )}
