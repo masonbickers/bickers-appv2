@@ -1,0 +1,14 @@
+node_modules
+.expo
+.git
+ios
+android
+dist
+web-build
+coverage
+.DS_Store
+*.log
+.env
+.env.local
+.env.*.local
+
