@@ -937,9 +937,9 @@ export default function VehicleDetailScreen() {
                 { color: colors.textMuted || COLORS.textMid },
               ]}
             >
-              {vehicle.preChecksSummary ||
-                vehicle.preChecksNotes ||
-                vehicle.preChecks ||
+              {(typeof vehicle.preChecksSummary === "string" && vehicle.preChecksSummary) ||
+                (typeof vehicle.preChecksNotes === "string" && vehicle.preChecksNotes) ||
+                (typeof vehicle.preChecks === "string" && vehicle.preChecks) ||
                 "No pre-checks or daily inspection notes recorded."}
             </Text>
 
@@ -1188,6 +1188,18 @@ function SectionHeader({ label, colors }) {
 }
 
 function Field({ label, value, colors }) {
+  let display;
+  if (value === null || value === undefined || value === "") {
+    display = "—";
+  } else if (typeof value === "object") {
+    const d = typeof value.toDate === "function" ? value.toDate() : null;
+    display = d
+      ? d.toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit", year: "2-digit" })
+      : "—";
+  } else {
+    display = String(value) || "—";
+  }
+
   return (
     <View style={styles.fieldRow}>
       <Text
@@ -1204,7 +1216,7 @@ function Field({ label, value, colors }) {
           { color: colors?.textMuted || COLORS.textMid },
         ]}
       >
-        {value || "—"}
+        {display}
       </Text>
     </View>
   );

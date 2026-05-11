@@ -38,51 +38,100 @@ const COLORS = {
   lightGray: "#3F3F46",
 };
 
+const SERVICE_ROUTES = {
+  settings: "/(protected)/service/settings",
+  serviceList: "/(protected)/service/service-list",
+  equipmentList: "/(protected)/service/equipment-list",
+  defects: "/(protected)/service/defects",
+  advisories: "/(protected)/service/advisories",
+  activityHistory: "/(protected)/service/activity-history",
+  mainApp: "/screens/homescreen",
+};
+
+function safeArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function safeString(value, fallback = "") {
+  if (value === null || value === undefined) return fallback;
+  return String(value);
+}
+
 function toDateMaybe(value) {
   if (!value) return null;
-  if (value.toDate) return value.toDate(); // Firestore Timestamp
-  if (typeof value === "string" || value instanceof String) {
+
+  if (value?.toDate && typeof value.toDate === "function") {
+    const d = value.toDate();
+    return d instanceof Date && !Number.isNaN(d.getTime()) ? d : null;
+  }
+
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+
+  if (typeof value === "number") {
     const d = new Date(value);
     return Number.isNaN(d.getTime()) ? null : d;
   }
-  if (value instanceof Date) return value;
+
+  if (typeof value === "string" || value instanceof String) {
+    const raw = String(value).trim();
+    if (!raw) return null;
+
+    const d = new Date(raw);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+
   return null;
 }
 
 function daysUntilDate(value) {
   const d = toDateMaybe(value);
   if (!d) return null;
+
   const today = new Date();
   const start = new Date(
     today.getFullYear(),
     today.getMonth(),
     today.getDate()
   );
+
   const target = new Date(d.getFullYear(), d.getMonth(), d.getDate());
   const diffMs = target.getTime() - start.getTime();
+
   return Math.round(diffMs / (1000 * 60 * 60 * 24));
 }
 
 function classifyStatus(dateValue, windowDays = 30) {
   const days = daysUntilDate(dateValue);
+
   if (days === null) return { label: "No date", code: "unknown" };
-  if (days < 0) return { label: `Overdue by ${Math.abs(days)}d`, code: "overdue" };
+  if (days < 0) {
+    return {
+      label: `Overdue by ${Math.abs(days)}d`,
+      code: "overdue",
+    };
+  }
   if (days === 0) return { label: "Due today", code: "due-soon" };
   if (days <= windowDays) return { label: `Due in ${days}d`, code: "due-soon" };
+
   return { label: `In ${days}d`, code: "ok" };
 }
 
 function pickWorstStatusCode(motCode, serviceCode) {
   const codes = [motCode, serviceCode];
+
   if (codes.includes("overdue")) return "overdue";
   if (codes.includes("due-soon")) return "due-soon";
   if (codes.includes("ok")) return "ok";
+
   return "unknown";
 }
 
 function formatDateShort(value) {
   const d = toDateMaybe(value);
   if (!d) return "";
+
   return d.toLocaleDateString("en-GB", {
     day: "2-digit",
     month: "2-digit",
@@ -99,6 +148,7 @@ function normaliseKey(value) {
 function isApprovedDefect(review) {
   const status = normaliseKey(review?.status);
   const category = normaliseKey(review?.category);
+
   return (
     status === "approved" &&
     (category === "general" || category === "immediate")
@@ -107,12 +157,14 @@ function isApprovedDefect(review) {
 
 function isOpenMaintenance(status) {
   const value = normaliseKey(status);
+
   return value !== "resolved" && value !== "complete" && value !== "completed";
 }
 
 function countOpenCheckDefects(checks) {
-  return checks.reduce((sum, check) => {
-    const items = Array.isArray(check.items) ? check.items : [];
+  return safeArray(checks).reduce((sum, check) => {
+    const items = safeArray(check?.items);
+
     return (
       sum +
       items.filter(
@@ -125,7 +177,7 @@ function countOpenCheckDefects(checks) {
 }
 
 function countOpenIssueDefects(issues) {
-  return issues.filter(
+  return safeArray(issues).filter(
     (issue) =>
       isApprovedDefect(issue?.review) &&
       isOpenMaintenance(issue?.maintenance?.status)
@@ -133,19 +185,24 @@ function countOpenIssueDefects(issues) {
 }
 
 function countOpenManualDefects(reports) {
-  return reports.filter((report) => isOpenMaintenance(report?.status)).length;
+  return safeArray(reports).filter((report) =>
+    isOpenMaintenance(report?.status)
+  ).length;
 }
 
 function countMonitorItems(records) {
-  return records.reduce((sum, record) => {
-    const items = Array.isArray(record?.monitorReport) ? record.monitorReport : [];
+  return safeArray(records).reduce((sum, record) => {
+    const items = safeArray(record?.monitorReport);
     return sum + items.length;
   }, 0);
 }
 
 function countDueEquipment(records) {
-  return records.filter((record) => {
-    const status = classifyStatus(record?.nextInspection || record?.inspectionDueDate);
+  return safeArray(records).filter((record) => {
+    const status = classifyStatus(
+      record?.nextInspection || record?.inspectionDueDate
+    );
+
     return status.code === "overdue" || status.code === "due-soon";
   }).length;
 }
@@ -168,7 +225,10 @@ function getActivityDate(item) {
 }
 
 function getVehicleText(item) {
-  return [item?.vehicleName || item?.vehicle || item?.name, item?.registration || item?.reg]
+  return [
+    item?.vehicleName || item?.vehicle || item?.name,
+    item?.registration || item?.reg,
+  ]
     .filter(Boolean)
     .join(" · ");
 }
@@ -190,68 +250,95 @@ function buildActivityItems({
   motPreChecks,
   equipmentInspections,
 }) {
-  const services = serviceRecords.map((record) => {
-    const serviceType = record.serviceType || record.type || "Service";
+  const services = safeArray(serviceRecords).map((record) => {
+    const serviceType = record?.serviceType || record?.type || "Service";
     const isRepair =
-      record.recordType === "repair" || normaliseKey(serviceType).includes("repair");
+      record?.recordType === "repair" ||
+      normaliseKey(serviceType).includes("repair");
+
     return {
-      id: `service-${record.id}`,
+      id: `service-${record?.id || Math.random()}`,
       icon: isRepair ? "tool" : "clipboard",
       title: serviceType,
-      subtitle: record.workSummary || record.repairSummary || record.extraNotes || "Service record completed",
+      subtitle:
+        record?.workSummary ||
+        record?.repairSummary ||
+        record?.extraNotes ||
+        "Service record completed",
       vehicle: getVehicleText(record),
       date: getActivityDate(record),
-      route: record.id ? `/service/service-record/${record.id}` : null,
+      route: record?.id
+        ? `/(protected)/service/service-record/${record.id}`
+        : null,
     };
   });
 
-  const defects = defectReports.map((report) => ({
-    id: `defect-${report.id}`,
-    icon: report.status === "resolved" ? "check-circle" : "alert-triangle",
-    title: report.status === "resolved" ? "Defect resolved" : "Defect reported",
-    subtitle: report.description || report.category || report.notes || "Defect report logged",
+  const defects = safeArray(defectReports).map((report) => ({
+    id: `defect-${report?.id || Math.random()}`,
+    icon: report?.status === "resolved" ? "check-circle" : "alert-triangle",
+    title: report?.status === "resolved" ? "Defect resolved" : "Defect reported",
+    subtitle:
+      report?.description ||
+      report?.category ||
+      report?.notes ||
+      "Defect report logged",
     vehicle: getVehicleText(report),
     date: getActivityDate(report),
-    route: "/service/defects",
+    route: SERVICE_ROUTES.defects,
   }));
 
-  const prep = vehiclePrepRecords.map((record) => ({
-    id: `prep-${record.id}`,
-    icon: record.completed ? "check-square" : "save",
-    title: record.completed ? "Vehicle prep completed" : "Vehicle prep saved",
-    subtitle: record.notes || "Vehicle prep record saved",
+  const prep = safeArray(vehiclePrepRecords).map((record) => ({
+    id: `prep-${record?.id || Math.random()}`,
+    icon: record?.completed ? "check-square" : "save",
+    title: record?.completed ? "Vehicle prep completed" : "Vehicle prep saved",
+    subtitle: record?.notes || "Vehicle prep record saved",
     vehicle: getVehicleText(record),
     date: getActivityDate(record),
     route: null,
   }));
 
-  const mot = motPreChecks.map((record) => ({
-    id: `mot-${record.id}`,
+  const mot = safeArray(motPreChecks).map((record) => ({
+    id: `mot-${record?.id || Math.random()}`,
     icon: "file-text",
     title: "MOT pre-check",
-    subtitle: record.status || record.motPrecheckStatus || record.summary || "MOT pre-check completed",
+    subtitle:
+      record?.status ||
+      record?.motPrecheckStatus ||
+      record?.summary ||
+      "MOT pre-check completed",
     vehicle: getVehicleText(record),
     date: getActivityDate(record),
     route: null,
   }));
 
-  const inspections = equipmentInspections.map((record) => ({
-    id: `equipment-inspection-${record.id}`,
-    icon: record.overallResult === "fail" ? "alert-circle" : "clipboard",
+  const inspections = safeArray(equipmentInspections).map((record) => ({
+    id: `equipment-inspection-${record?.id || Math.random()}`,
+    icon: record?.overallResult === "fail" ? "alert-circle" : "clipboard",
     title: "Equipment inspection",
     subtitle:
-      record.findings ||
-      record.recommendations ||
-      record.extraNotes ||
-      `${record.overallResult === "fail" ? "Failed" : "Passed"} equipment inspection`,
+      record?.findings ||
+      record?.recommendations ||
+      record?.extraNotes ||
+      `${
+        record?.overallResult === "fail" ? "Failed" : "Passed"
+      } equipment inspection`,
     vehicle: getEquipmentText(record),
     date: getActivityDate(record),
-    route: record.id ? `/service/inspections/inspection-form/${record.id}` : null,
+    route: record?.id
+      ? `/(protected)/service/inspections/inspection-form/${record.id}`
+      : null,
   }));
 
   return [...services, ...defects, ...prep, ...mot, ...inspections]
     .map((item) => ({ ...item, dateObj: toDateMaybe(item.date) }))
     .sort((a, b) => (b.dateObj?.getTime() || 0) - (a.dateObj?.getTime() || 0));
+}
+
+function snapshotToRows(snap) {
+  return snap.docs.map((doc) => ({
+    id: doc.id,
+    ...doc.data(),
+  }));
 }
 
 /* ---------- MAIN SCREEN ---------- */
@@ -271,166 +358,143 @@ export default function ServiceHomeScreen() {
   const [equipmentInspections, setEquipmentInspections] = useState([]);
   const [equipment, setEquipment] = useState([]);
   const [loading, setLoading] = useState(true);
-  const workspaceAccess = useMemo(() => resolveWorkspaceAccess(employee), [employee]);
+
+  const workspaceAccess = useMemo(
+    () => resolveWorkspaceAccess(employee),
+    [employee]
+  );
+
   const canSwitchToMainApp = workspaceAccess.user && workspaceAccess.service;
 
+  const safePush = (href) => {
+    if (!href) return;
+
+    try {
+      router.push(href);
+    } catch (err) {
+      console.error("Service Home navigation error:", href, err);
+    }
+  };
+
   useEffect(() => {
-    let unsubscribeSnapshot = null;
+    let unsubscribers = [];
+
+    const resetData = () => {
+      setVehicles([]);
+      setVehicleChecks([]);
+      setVehicleIssues([]);
+      setServiceRecords([]);
+      setDefectReports([]);
+      setVehiclePrepRecords([]);
+      setMotPreChecks([]);
+      setEquipmentInspections([]);
+      setEquipment([]);
+    };
+
+    const clearListeners = () => {
+      unsubscribers.forEach((unsub) => {
+        if (typeof unsub === "function") unsub();
+      });
+      unsubscribers = [];
+    };
+
+    const attachCollectionListener = ({
+      collectionName,
+      setter,
+      label,
+      sortByName = false,
+    }) => {
+      const ref = collection(db, collectionName);
+      const source = sortByName ? query(ref, orderBy("name", "asc")) : ref;
+
+      const unsubscribe = onSnapshot(
+        source,
+        (snap) => {
+          setter(snapshotToRows(snap));
+        },
+        (err) => {
+          if (err?.code === "permission-denied" && !auth.currentUser) return;
+
+          console.error(`Service Home ${label} listener error:`, err);
+        }
+      );
+
+      unsubscribers.push(unsubscribe);
+    };
 
     const unsubscribeAuth = auth.onAuthStateChanged((user) => {
-      // 🔥 1. If user logs OUT → kill listener BEFORE Firestore throws
+      clearListeners();
+
       if (!user) {
-        if (unsubscribeSnapshot) {
-          unsubscribeSnapshot();
-          unsubscribeSnapshot = null;
-        }
-        setVehicles([]);
+        resetData();
         setLoading(false);
         return;
       }
 
-      // 🔥 2. User logged IN → safe to attach listener now
-      const q = query(collection(db, "vehicles"), orderBy("name", "asc"));
+      setLoading(true);
 
-      unsubscribeSnapshot = onSnapshot(
-        q,
-        (snap) => {
-          const data = snap.docs.map((doc) => ({
-            id: doc.id,
-            ...doc.data(),
-          }));
-          setVehicles(data);
-          setLoading(false);
-        },
-        (err) => {
-          // 🔥 3. User logged out MID-LISTEN → ignore permission error
-          if (err.code === "permission-denied" && !auth.currentUser) {
-            return;
-          }
+      attachCollectionListener({
+        collectionName: "vehicles",
+        setter: setVehicles,
+        label: "vehicles",
+        sortByName: true,
+      });
 
-          console.error("Service Home listener error:", err);
-          setLoading(false);
-        }
-      );
+      attachCollectionListener({
+        collectionName: "vehicleChecks",
+        setter: setVehicleChecks,
+        label: "vehicleChecks",
+      });
+
+      attachCollectionListener({
+        collectionName: "vehicleIssues",
+        setter: setVehicleIssues,
+        label: "vehicleIssues",
+      });
+
+      attachCollectionListener({
+        collectionName: "serviceRecords",
+        setter: setServiceRecords,
+        label: "serviceRecords",
+      });
+
+      attachCollectionListener({
+        collectionName: "defectReports",
+        setter: setDefectReports,
+        label: "defectReports",
+      });
+
+      attachCollectionListener({
+        collectionName: "vehiclePrepRecords",
+        setter: setVehiclePrepRecords,
+        label: "vehiclePrepRecords",
+      });
+
+      attachCollectionListener({
+        collectionName: "motPreChecks",
+        setter: setMotPreChecks,
+        label: "motPreChecks",
+      });
+
+      attachCollectionListener({
+        collectionName: "equipmentInspections",
+        setter: setEquipmentInspections,
+        label: "equipmentInspections",
+      });
+
+      attachCollectionListener({
+        collectionName: "equipment",
+        setter: setEquipment,
+        label: "equipment",
+      });
+
+      setLoading(false);
     });
 
-    // 🔥 4. Cleanup auth + Firestore listeners when leaving the page
     return () => {
-      if (unsubscribeSnapshot) unsubscribeSnapshot();
+      clearListeners();
       unsubscribeAuth();
     };
-  }, []);
-
-  useEffect(() => {
-    const unsub = onSnapshot(
-      collection(db, "vehicleChecks"),
-      (snap) => {
-        setVehicleChecks(snap.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
-      },
-      (err) => {
-        console.error("Service Home vehicleChecks listener error:", err);
-      }
-    );
-
-    return () => unsub();
-  }, []);
-
-  useEffect(() => {
-    const unsub = onSnapshot(
-      collection(db, "vehicleIssues"),
-      (snap) => {
-        setVehicleIssues(snap.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
-      },
-      (err) => {
-        console.error("Service Home vehicleIssues listener error:", err);
-      }
-    );
-
-    return () => unsub();
-  }, []);
-
-  useEffect(() => {
-    const unsub = onSnapshot(
-      collection(db, "serviceRecords"),
-      (snap) => {
-        setServiceRecords(snap.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
-      },
-      (err) => {
-        console.error("Service Home serviceRecords listener error:", err);
-      }
-    );
-
-    return () => unsub();
-  }, []);
-
-  useEffect(() => {
-    const unsub = onSnapshot(
-      collection(db, "defectReports"),
-      (snap) => {
-        setDefectReports(snap.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
-      },
-      (err) => {
-        console.error("Service Home defectReports listener error:", err);
-      }
-    );
-
-    return () => unsub();
-  }, []);
-
-  useEffect(() => {
-    const unsub = onSnapshot(
-      collection(db, "vehiclePrepRecords"),
-      (snap) => {
-        setVehiclePrepRecords(snap.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
-      },
-      (err) => {
-        console.error("Service Home vehiclePrepRecords listener error:", err);
-      }
-    );
-
-    return () => unsub();
-  }, []);
-
-  useEffect(() => {
-    const unsub = onSnapshot(
-      collection(db, "motPreChecks"),
-      (snap) => {
-        setMotPreChecks(snap.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
-      },
-      (err) => {
-        console.error("Service Home motPreChecks listener error:", err);
-      }
-    );
-
-    return () => unsub();
-  }, []);
-
-  useEffect(() => {
-    const unsub = onSnapshot(
-      collection(db, "equipmentInspections"),
-      (snap) => {
-        setEquipmentInspections(snap.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
-      },
-      (err) => {
-        console.error("Service Home equipmentInspections listener error:", err);
-      }
-    );
-
-    return () => unsub();
-  }, []);
-
-  useEffect(() => {
-    const unsub = onSnapshot(
-      collection(db, "equipment"),
-      (snap) => {
-        setEquipment(snap.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
-      },
-      (err) => {
-        console.error("Service Home equipment listener error:", err);
-      }
-    );
-
-    return () => unsub();
   }, []);
 
   const openDefectCount = useMemo(
@@ -457,19 +521,25 @@ export default function ServiceHomeScreen() {
         motPreChecks,
         equipmentInspections,
       }).slice(0, 20),
-    [defectReports, equipmentInspections, motPreChecks, serviceRecords, vehiclePrepRecords]
+    [
+      defectReports,
+      equipmentInspections,
+      motPreChecks,
+      serviceRecords,
+      vehiclePrepRecords,
+    ]
   );
 
   const processed = useMemo(() => {
-    return vehicles.map((v) => {
+    return safeArray(vehicles).map((v) => {
       const motDateRaw =
-        v.nextMOT || v.nextMot || v.nextMotDate || v.motDueDate || v.motExpiryDate;
+        v?.nextMOT || v?.nextMot || v?.nextMotDate || v?.motDueDate || v?.motExpiryDate;
       const serviceDateRaw =
-        v.nextService || v.nextServiceDate || v.serviceDueDate || v.nextSvc;
+        v?.nextService || v?.nextServiceDate || v?.serviceDueDate || v?.nextSvc;
 
       const motStatus = classifyStatus(motDateRaw);
       const serviceStatus = classifyStatus(serviceDateRaw);
-      const defects = Array.isArray(v.defects) ? v.defects : [];
+      const defects = safeArray(v?.defects);
       const hasDefects = defects.length > 0;
 
       return {
@@ -487,14 +557,17 @@ export default function ServiceHomeScreen() {
 
   const summary = useMemo(() => {
     const total = processed.length;
+
     const overdue = processed.filter(
       (v) =>
         v.motStatus.code === "overdue" || v.serviceStatus.code === "overdue"
     ).length;
+
     const dueSoon = processed.filter(
       (v) =>
         v.motStatus.code === "due-soon" || v.serviceStatus.code === "due-soon"
     ).length;
+
     const defects = openDefectCount;
 
     return { total, overdue, dueSoon, defects };
@@ -505,12 +578,39 @@ export default function ServiceHomeScreen() {
       (v) =>
         v.motStatus.code === "overdue" || v.serviceStatus.code === "overdue"
     );
+
     const dueSoon = processed.filter(
       (v) =>
         v.motStatus.code === "due-soon" || v.serviceStatus.code === "due-soon"
     );
 
-    return [...overdue, ...dueSoon].slice(0, 5);
+    const seen = new Set();
+    const dedupedCombined = [...overdue, ...dueSoon].filter((v) => {
+      if (seen.has(v.id)) return false;
+      seen.add(v.id);
+      return true;
+    });
+
+    const byUrgency = dedupedCombined.sort((a, b) => {
+      const aMot = daysUntilDate(a.motDateRaw);
+      const aService = daysUntilDate(a.serviceDateRaw);
+      const bMot = daysUntilDate(b.motDateRaw);
+      const bService = daysUntilDate(b.serviceDateRaw);
+
+      const aWorst = Math.min(
+        aMot ?? Number.POSITIVE_INFINITY,
+        aService ?? Number.POSITIVE_INFINITY
+      );
+
+      const bWorst = Math.min(
+        bMot ?? Number.POSITIVE_INFINITY,
+        bService ?? Number.POSITIVE_INFINITY
+      );
+
+      return aWorst - bWorst;
+    });
+
+    return byUrgency.slice(0, 5);
   }, [processed]);
 
   return (
@@ -543,7 +643,7 @@ export default function ServiceHomeScreen() {
                   styles.profileButton,
                   { borderColor: colors.border || COLORS.border },
                 ]}
-                onPress={() => router.push("/screens/homescreen")}
+                onPress={() => safePush(SERVICE_ROUTES.mainApp)}
                 activeOpacity={0.8}
                 accessibilityRole="button"
                 accessibilityLabel="Switch to main app"
@@ -561,7 +661,7 @@ export default function ServiceHomeScreen() {
                 styles.profileButton,
                 { borderColor: colors.border || COLORS.border },
               ]}
-              onPress={() => router.push("/(protected)/service/settings")}
+              onPress={() => safePush(SERVICE_ROUTES.settings)}
               activeOpacity={0.8}
               accessibilityRole="button"
               accessibilityLabel="Open service settings"
@@ -671,7 +771,7 @@ export default function ServiceHomeScreen() {
               icon="clipboard"
               title="All MOT & Service"
               subtitle="See full maintenance list"
-              onPress={() => router.push("/(protected)/service/service-list")}
+              onPress={() => safePush(SERVICE_ROUTES.serviceList)}
               colors={colors}
             />
             <QuickActionCard
@@ -683,7 +783,7 @@ export default function ServiceHomeScreen() {
                   : "Inspection dates OK"
               }
               badgeCount={equipmentDueCount}
-              onPress={() => router.push("/service/equipment-list")}
+              onPress={() => safePush(SERVICE_ROUTES.equipmentList)}
               colors={colors}
             />
           </View>
@@ -694,11 +794,13 @@ export default function ServiceHomeScreen() {
               title="Defects & Issues"
               subtitle={
                 openDefectCount > 0
-                  ? `${openDefectCount} open defect${openDefectCount === 1 ? "" : "s"} need attention`
+                  ? `${openDefectCount} open defect${
+                      openDefectCount === 1 ? "" : "s"
+                    } need attention`
                   : "No open approved defects"
               }
               badgeCount={openDefectCount}
-              onPress={() => router.push("/(protected)/service/defects")}
+              onPress={() => safePush(SERVICE_ROUTES.defects)}
               colors={colors}
             />
             <QuickActionCard
@@ -706,11 +808,13 @@ export default function ServiceHomeScreen() {
               title="Advisories"
               subtitle={
                 advisoryCount > 0
-                  ? `${advisoryCount} amber item${advisoryCount === 1 ? "" : "s"} to monitor`
+                  ? `${advisoryCount} amber item${
+                      advisoryCount === 1 ? "" : "s"
+                    } to monitor`
                   : "No amber advisories"
               }
               badgeCount={advisoryCount}
-              onPress={() => router.push("/service/advisories")}
+              onPress={() => safePush(SERVICE_ROUTES.advisories)}
               colors={colors}
             />
           </View>
@@ -721,11 +825,13 @@ export default function ServiceHomeScreen() {
               title="Activity History"
               subtitle={
                 recentActivity.length > 0
-                  ? `${recentActivity.length} recent update${recentActivity.length === 1 ? "" : "s"}`
+                  ? `${recentActivity.length} recent update${
+                      recentActivity.length === 1 ? "" : "s"
+                    }`
                   : "Services, repairs and defects"
               }
               badgeCount={recentActivity.length}
-              onPress={() => router.push("/service/activity-history")}
+              onPress={() => safePush(SERVICE_ROUTES.activityHistory)}
               colors={colors}
             />
           </View>
@@ -768,11 +874,12 @@ export default function ServiceHomeScreen() {
             </View>
           ) : (
             attentionVehicles.map((v) => {
-              const name = v.name || v.vehicleName || "Unnamed vehicle";
-              const reg = v.reg || v.registration || "";
-              const manufacturer = v.manufacturer || "";
-              const model = v.model || "";
-              const worstCode = v.worstCode;
+              const vehicleId = safeString(v?.id);
+              const name = v?.name || v?.vehicleName || "Unnamed vehicle";
+              const reg = v?.reg || v?.registration || "";
+              const manufacturer = v?.manufacturer || "";
+              const model = v?.model || "";
+              const worstCode = v?.worstCode;
 
               const motStatusWithDate = {
                 ...v.motStatus,
@@ -780,6 +887,7 @@ export default function ServiceHomeScreen() {
                   v.motStatus.label +
                   (v.motDateRaw ? ` · ${formatDateShort(v.motDateRaw)}` : ""),
               };
+
               const serviceStatusWithDate = {
                 ...v.serviceStatus,
                 label:
@@ -795,7 +903,7 @@ export default function ServiceHomeScreen() {
 
               return (
                 <TouchableOpacity
-                  key={v.id}
+                  key={vehicleId || `${name}-${reg}`}
                   style={[
                     styles.vehicleCard,
                     {
@@ -804,7 +912,15 @@ export default function ServiceHomeScreen() {
                     },
                   ]}
                   activeOpacity={0.85}
-                  onPress={() => router.push(`/service/vehicles/${v.id}`)}
+                  disabled={!vehicleId}
+                  onPress={() => {
+                    if (!vehicleId) {
+                      console.warn("Cannot open vehicle. Missing vehicle id:", v);
+                      return;
+                    }
+
+                    safePush(`/(protected)/service/vehicles/${vehicleId}`);
+                  }}
                 >
                   <View style={styles.vehicleHeaderRow}>
                     <View style={{ flex: 1 }}>
@@ -816,6 +932,7 @@ export default function ServiceHomeScreen() {
                       >
                         {name}
                       </Text>
+
                       {!!reg && (
                         <Text
                           style={[
@@ -826,6 +943,7 @@ export default function ServiceHomeScreen() {
                           {reg}
                         </Text>
                       )}
+
                       {(manufacturer || model) && (
                         <Text
                           style={[
@@ -839,6 +957,7 @@ export default function ServiceHomeScreen() {
                         </Text>
                       )}
                     </View>
+
                     <Icon
                       name="chevron-right"
                       size={18}
@@ -849,6 +968,7 @@ export default function ServiceHomeScreen() {
                   <View style={styles.statusRow}>
                     <StatusPill label="MOT" status={motStatusWithDate} />
                     <StatusPill label="Service" status={serviceStatusWithDate} />
+
                     {v.hasDefects && (
                       <View style={styles.defectPill}>
                         <Icon
@@ -887,7 +1007,14 @@ function SummaryItem({ label, value, color, labelColor }) {
   );
 }
 
-function QuickActionCard({ icon, title, subtitle, badgeCount = 0, onPress, colors }) {
+function QuickActionCard({
+  icon,
+  title,
+  subtitle,
+  badgeCount = 0,
+  onPress,
+  colors,
+}) {
   const dashboardCards = createDashboardCardStyles({
     surface: colors.surface || COLORS.card,
     surfaceAlt: colors.surfaceAlt || COLORS.card,
@@ -896,15 +1023,11 @@ function QuickActionCard({ icon, title, subtitle, badgeCount = 0, onPress, color
 
   return (
     <TouchableOpacity
-      style={[
-        quickStyles.card,
-        dashboardCards.quickActionCard,
-      ]}
+      style={[quickStyles.card, dashboardCards.quickActionCard]}
       onPress={onPress}
       activeOpacity={0.85}
     >
       <View style={quickStyles.iconWrap}>
-        {/* 👇 Force high-contrast icon so it’s always visible */}
         <Icon name={icon} size={18} color={COLORS.textHigh} />
         {badgeCount > 0 && (
           <View style={quickStyles.badge}>
@@ -914,14 +1037,11 @@ function QuickActionCard({ icon, title, subtitle, badgeCount = 0, onPress, color
           </View>
         )}
       </View>
-      <Text
-        style={[
-          quickStyles.title,
-          { color: colors.text || COLORS.textHigh },
-        ]}
-      >
+
+      <Text style={[quickStyles.title, { color: colors.text || COLORS.textHigh }]}>
         {title}
       </Text>
+
       <Text
         style={[
           quickStyles.subtitle,
@@ -936,7 +1056,8 @@ function QuickActionCard({ icon, title, subtitle, badgeCount = 0, onPress, color
 
 function StatusPill({ label, status }) {
   const { colors } = useTheme();
-  const code = status.code;
+  const code = status?.code;
+
   let bg = "rgba(74, 74, 74, 0.7)";
   let fg = COLORS.textHigh;
 
@@ -957,7 +1078,7 @@ function StatusPill({ label, status }) {
   return (
     <View style={[styles.statusPill, { backgroundColor: bg }]}>
       <Text style={[styles.statusPillText, { color: fg }]}>
-        {label}: {status.label}
+        {label}: {status?.label || "No date"}
       </Text>
     </View>
   );
