@@ -7,7 +7,6 @@
     "icon": "./assets/images/icon.png",
     "scheme": "bickersapp",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.bickers.booking",
@@ -23,7 +22,6 @@
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "edgeToEdgeEnabled": true,
       "package": "com.bickers.bickersapp",
       "versionCode": 1,
       "permissions": [
@@ -73,11 +71,13 @@
         }
       ],
       [
-  "expo-notifications",
-  {
-    "color": "#ffffff"
-  }
-]
+        "expo-notifications",
+        {
+          "color": "#ffffff"
+        }
+      ],
+      "@react-native-community/datetimepicker",
+      "expo-image"
     ],
     "experiments": {
       "typedRoutes": true
