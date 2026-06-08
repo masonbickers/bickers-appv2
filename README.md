@@ -15,12 +15,18 @@ The app now includes a production sync foundation:
 
 Set these in Expo `extra` or `EXPO_PUBLIC_*` env vars:
 
-- `EXPO_PUBLIC_API_URL`: HTTPS base URL for the deployed DVLA bridge API. Do not use localhost for production builds.
+- `EXPO_PUBLIC_API_URL`: HTTPS base URL for the deployed bridge API used by DVLA lookup and SMS verification. Do not use localhost for production builds.
 - `syncEnabled` / `EXPO_PUBLIC_SYNC_ENABLED`: enable background sync layer.
 - `syncIntervalMs` / `EXPO_PUBLIC_SYNC_INTERVAL_MS`: sync interval (default `120000`).
 - `syncTimeoutMs` / `EXPO_PUBLIC_SYNC_TIMEOUT_MS`: bridge request timeout (default `10000`).
 - `syncApiBaseUrl` / `EXPO_PUBLIC_SYNC_API_URL`: optional external bridge API base URL.
 - `appEnv` / `EXPO_PUBLIC_APP_ENV`: `development`, `staging`, or `production`.
+
+Set these on the deployed bridge server for SMS verification:
+
+- `TWILIO_ACCOUNT_SID`: Twilio account SID.
+- `TWILIO_AUTH_TOKEN`: Twilio auth token.
+- `TWILIO_VERIFY_SERVICE_SID`: Twilio Verify service SID for SMS codes.
 
 ### Optional external software bridge
 

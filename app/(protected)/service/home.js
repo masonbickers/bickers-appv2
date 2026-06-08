@@ -13,13 +13,15 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
-import { collection, onSnapshot, orderBy, query } from "firebase/firestore";
-
 import PageHeaderCard from "../../../components/PageHeaderCard";
-import { auth, db } from "../../../firebaseConfig";
+import { auth } from "../../../firebaseConfig";
 import { resolveWorkspaceAccess } from "../../../lib/access";
 import { createDashboardCardStyles } from "../../../lib/design/dashboard";
 import { designTokens as t } from "../../../lib/design/tokens";
+import {
+  readServiceCollectionCache,
+  subscribeServiceCollectionCache,
+} from "../../../lib/serviceCache";
 import { useAuth } from "../../../providers/AuthProvider";
 import { useTheme } from "../../../providers/ThemeProvider";
 
@@ -334,13 +336,6 @@ function buildActivityItems({
     .sort((a, b) => (b.dateObj?.getTime() || 0) - (a.dateObj?.getTime() || 0));
 }
 
-function snapshotToRows(snap) {
-  return snap.docs.map((doc) => ({
-    id: doc.id,
-    ...doc.data(),
-  }));
-}
-
 /* ---------- MAIN SCREEN ---------- */
 
 export default function ServiceHomeScreen() {
@@ -398,26 +393,28 @@ export default function ServiceHomeScreen() {
       unsubscribers = [];
     };
 
-    const attachCollectionListener = ({
+    const attachCollectionListener = async ({
       collectionName,
       setter,
       label,
       sortByName = false,
     }) => {
-      const ref = collection(db, collectionName);
-      const source = sortByName ? query(ref, orderBy("name", "asc")) : ref;
+      const cached = await readServiceCollectionCache(collectionName);
+      if (cached.rows.length > 0) {
+        setter(cached.rows);
+      }
 
-      const unsubscribe = onSnapshot(
-        source,
-        (snap) => {
-          setter(snapshotToRows(snap));
-        },
-        (err) => {
+      const unsubscribe = subscribeServiceCollectionCache({
+        collectionName,
+        orderByField: sortByName ? "name" : undefined,
+        label,
+        onRows: setter,
+        onError: (err) => {
           if (err?.code === "permission-denied" && !auth.currentUser) return;
 
           console.error(`Service Home ${label} listener error:`, err);
-        }
-      );
+        },
+      });
 
       unsubscribers.push(unsubscribe);
     };
@@ -433,62 +430,55 @@ export default function ServiceHomeScreen() {
 
       setLoading(true);
 
-      attachCollectionListener({
-        collectionName: "vehicles",
-        setter: setVehicles,
-        label: "vehicles",
-        sortByName: true,
-      });
-
-      attachCollectionListener({
-        collectionName: "vehicleChecks",
-        setter: setVehicleChecks,
-        label: "vehicleChecks",
-      });
-
-      attachCollectionListener({
-        collectionName: "vehicleIssues",
-        setter: setVehicleIssues,
-        label: "vehicleIssues",
-      });
-
-      attachCollectionListener({
-        collectionName: "serviceRecords",
-        setter: setServiceRecords,
-        label: "serviceRecords",
-      });
-
-      attachCollectionListener({
-        collectionName: "defectReports",
-        setter: setDefectReports,
-        label: "defectReports",
-      });
-
-      attachCollectionListener({
-        collectionName: "vehiclePrepRecords",
-        setter: setVehiclePrepRecords,
-        label: "vehiclePrepRecords",
-      });
-
-      attachCollectionListener({
-        collectionName: "motPreChecks",
-        setter: setMotPreChecks,
-        label: "motPreChecks",
-      });
-
-      attachCollectionListener({
-        collectionName: "equipmentInspections",
-        setter: setEquipmentInspections,
-        label: "equipmentInspections",
-      });
-
-      attachCollectionListener({
-        collectionName: "equipment",
-        setter: setEquipment,
-        label: "equipment",
-      });
-
-      setLoading(false);
+      Promise.all([
+        attachCollectionListener({
+          collectionName: "vehicles",
+          setter: setVehicles,
+          label: "vehicles",
+          sortByName: true,
+        }),
+        attachCollectionListener({
+          collectionName: "vehicleChecks",
+          setter: setVehicleChecks,
+          label: "vehicleChecks",
+        }),
+        attachCollectionListener({
+          collectionName: "vehicleIssues",
+          setter: setVehicleIssues,
+          label: "vehicleIssues",
+        }),
+        attachCollectionListener({
+          collectionName: "serviceRecords",
+          setter: setServiceRecords,
+          label: "serviceRecords",
+        }),
+        attachCollectionListener({
+          collectionName: "defectReports",
+          setter: setDefectReports,
+          label: "defectReports",
+        }),
+        attachCollectionListener({
+          collectionName: "vehiclePrepRecords",
+          setter: setVehiclePrepRecords,
+          label: "vehiclePrepRecords",
+        }),
+        attachCollectionListener({
+          collectionName: "motPreChecks",
+          setter: setMotPreChecks,
+          label: "motPreChecks",
+        }),
+        attachCollectionListener({
+          collectionName: "equipmentInspections",
+          setter: setEquipmentInspections,
+          label: "equipmentInspections",
+        }),
+        attachCollectionListener({
+          collectionName: "equipment",
+          setter: setEquipment,
+          label: "equipment",
+          sortByName: true,
+        }),
+      ]).finally(() => setLoading(false));
     });
 
     return () => {
@@ -989,7 +979,6 @@ export default function ServiceHomeScreen() {
             })
           )}
 
-          <View style={{ height: 40 }} />
         </ScrollView>
       )}
     </SafeAreaView>

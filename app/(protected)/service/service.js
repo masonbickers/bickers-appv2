@@ -1,7 +1,7 @@
 // app/protected/service.jsx
 
 import { useRouter } from "expo-router";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   ActivityIndicator,
   ScrollView,
@@ -13,10 +13,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
-// Firebase
-import { collection, onSnapshot, orderBy, query } from "firebase/firestore";
-
-import { db } from "../../../firebaseConfig";
+import { useCachedServiceCollection } from "../../../lib/serviceCache";
 import { useTheme } from "../../../providers/ThemeProvider";
 
 /* ---------- CONSTANTS & HELPERS ---------- */
@@ -91,30 +88,11 @@ export default function ServiceScreen() {
   const router = useRouter();
   const { colors } = useTheme();
 
-  const [vehicles, setVehicles] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const { rows: vehicles, loading } = useCachedServiceCollection("vehicles", {
+    label: "vehicles",
+    orderByField: "name",
+  });
   const [filter, setFilter] = useState("all");
-
-  useEffect(() => {
-    const q = query(collection(db, "vehicles"), orderBy("name", "asc"));
-    const unsub = onSnapshot(
-      q,
-      (snap) => {
-        const data = snap.docs.map((doc) => ({
-          id: doc.id,
-          ...doc.data(),
-        }));
-        setVehicles(data);
-        setLoading(false);
-      },
-      (err) => {
-        console.error("Failed to load vehicles:", err);
-        setLoading(false);
-      }
-    );
-
-    return () => unsub();
-  }, []);
 
   const processed = useMemo(() => {
     return vehicles.map((v) => {

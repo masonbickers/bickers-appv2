@@ -6,7 +6,6 @@ import {
   collection,
   doc,
   getDoc,
-  getDocs,
   serverTimestamp,
   setDoc,
   updateDoc,
@@ -30,6 +29,8 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
 import { db, storage } from "../../../../../firebaseConfig";
+import { getServiceCollectionRows } from "../../../../../lib/serviceCache";
+import { runOrQueueFirestoreMutations } from "../../../../../lib/sync/firestoreQueue";
 import { useTheme } from "../../../../../providers/ThemeProvider";
 
 /* ------------------------------------------------------------------ */
@@ -408,11 +409,9 @@ export default function InspectionFormScreen() {
     const loadEquipmentOptions = async () => {
       try {
         setLoadingEquipment(true);
-        const snap = await getDocs(collection(db, "equipment"));
+        const rows = await getServiceCollectionRows("equipment");
         setEquipmentOptions(
-          buildEquipmentOptions(
-            snap.docs.map((entry) => ({ id: entry.id, ...(entry.data() || {}) }))
-          )
+          buildEquipmentOptions(rows)
         );
       } catch (err) {
         console.error("Failed to load equipment options:", err);
@@ -574,11 +573,8 @@ export default function InspectionFormScreen() {
   /* ---------------------------------------------------------------- */
   /*  Photo handlers                                                   */
   /* ---------------------------------------------------------------- */
-  async function pickImage(source) {
-    const fn = source === "camera"
-      ? ImagePicker.launchCameraAsync
-      : ImagePicker.launchImageLibraryAsync;
-    const result = await fn({ mediaTypes: "images", quality: 0.85 });
+  async function pickImage() {
+    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: "images", quality: 0.85 });
     if (result.canceled) return null;
     return result.assets[0].uri;
   }
@@ -588,10 +584,10 @@ export default function InspectionFormScreen() {
     setPhotoModalLabel(label);
   }
 
-  async function handleCheckPhotoSource(source) {
+  async function handleCheckPhotoSource() {
     const label = photoModalLabel;
     setPhotoModalLabel(null);
-    const uri = await pickImage(source);
+    const uri = await pickImage();
     if (!uri || !label) return;
     setCheckPhotos((p) => ({
       ...p,
@@ -609,15 +605,8 @@ export default function InspectionFormScreen() {
   }
 
   // Overall photos
-  async function handleTakePhoto() {
-    const uri = await pickImage("camera");
-    if (!uri) return;
-    setPhotos((p) => [...p, { uri, uploaded: false }]);
-    setDirty(true);
-  }
-
   async function handleAddPhotoFromLibrary() {
-    const uri = await pickImage("library");
+    const uri = await pickImage();
     if (!uri) return;
     setPhotos((p) => [...p, { uri, uploaded: false }]);
     setDirty(true);
@@ -729,10 +718,24 @@ export default function InspectionFormScreen() {
 
       if (isNew) {
         payload.createdAt = serverTimestamp();
-        await setDoc(doc(db, "equipmentInspections", docId), payload);
-      } else {
-        await updateDoc(doc(db, "equipmentInspections", docId), payload);
       }
+      const inspectionRef = doc(db, "equipmentInspections", docId);
+      const firestoreMutations = [
+        {
+          run: () =>
+            isNew
+              ? setDoc(inspectionRef, payload)
+              : updateDoc(inspectionRef, payload),
+          mutation: {
+            operation: isNew ? "set" : "update",
+            docPath: `equipmentInspections/${docId}`,
+            data: payload,
+            options: isNew ? { merge: false } : undefined,
+            entityType: "equipmentInspection",
+            entityId: docId,
+          },
+        },
+      ];
 
       const historyItem = buildEquipmentInspectionHistoryItem({
         inspectionRecordId: docId,
@@ -747,29 +750,38 @@ export default function InspectionFormScreen() {
         recommendations: recommendations.trim(),
       });
 
-      const removeInspectionFromEquipment = async (targetEquipmentDocId) => {
+      const equipmentRows = await getServiceCollectionRows("equipment").catch(() => []);
+      const findEquipment = (targetEquipmentDocId) =>
+        equipmentRows.find((item) => String(item.id) === String(targetEquipmentDocId));
+
+      const queueRemoveInspectionFromEquipment = (targetEquipmentDocId) => {
         if (!targetEquipmentDocId) return;
-        const equipmentRef = doc(db, "equipment", targetEquipmentDocId);
-        const equipmentSnap = await getDoc(equipmentRef);
-        if (!equipmentSnap.exists()) return;
-        const equipmentData = equipmentSnap.data() || {};
+        const equipmentData = findEquipment(targetEquipmentDocId);
+        if (!equipmentData) return;
         const currentHistory = Array.isArray(equipmentData.inspectionHistory)
           ? equipmentData.inspectionHistory
           : [];
-        await updateDoc(equipmentRef, {
+        const equipmentUpdate = {
           inspectionHistory: currentHistory.filter(
             (item) => item?.inspectionRecordId !== docId
           ),
           updatedAt: serverTimestamp(),
+        };
+        firestoreMutations.push({
+          run: () => updateDoc(doc(db, "equipment", targetEquipmentDocId), equipmentUpdate),
+          mutation: {
+            operation: "update",
+            docPath: `equipment/${targetEquipmentDocId}`,
+            data: equipmentUpdate,
+            entityType: "equipment",
+            entityId: targetEquipmentDocId,
+          },
         });
       };
 
-      const saveInspectionToEquipment = async (targetEquipmentDocId) => {
+      const queueSaveInspectionToEquipment = (targetEquipmentDocId) => {
         if (!targetEquipmentDocId) return;
-        const equipmentRef = doc(db, "equipment", targetEquipmentDocId);
-        const equipmentSnap = await getDoc(equipmentRef);
-        if (!equipmentSnap.exists()) return;
-        const equipmentData = equipmentSnap.data() || {};
+        const equipmentData = findEquipment(targetEquipmentDocId) || {};
         const currentHistory = Array.isArray(equipmentData.inspectionHistory)
           ? equipmentData.inspectionHistory
           : [];
@@ -785,19 +797,34 @@ export default function InspectionFormScreen() {
           equipmentUpdate.inspectionFrequency = inspectionFrequency.trim();
         }
         if (nextInspection.trim()) equipmentUpdate.nextInspection = nextInspection.trim();
-        await updateDoc(equipmentRef, equipmentUpdate);
+        firestoreMutations.push({
+          run: () => updateDoc(doc(db, "equipment", targetEquipmentDocId), equipmentUpdate),
+          mutation: {
+            operation: "update",
+            docPath: `equipment/${targetEquipmentDocId}`,
+            data: equipmentUpdate,
+            entityType: "equipment",
+            entityId: targetEquipmentDocId,
+          },
+        });
       };
 
       if (originalEquipmentDocId && originalEquipmentDocId !== targetEquipmentDocId) {
-        await removeInspectionFromEquipment(originalEquipmentDocId);
+        queueRemoveInspectionFromEquipment(originalEquipmentDocId);
       }
-      await saveInspectionToEquipment(targetEquipmentDocId);
+      queueSaveInspectionToEquipment(targetEquipmentDocId);
+
+      const { queued } = await runOrQueueFirestoreMutations(firestoreMutations);
 
       allowLeaveRef.current = true;
       setDirty(false);
       Alert.alert(
-        "Saved",
-        isNew ? "Inspection created." : "Inspection updated.",
+        queued ? "Saved offline" : "Saved",
+        queued
+          ? "No internet right now. This inspection will upload automatically when internet returns."
+          : isNew
+          ? "Inspection created."
+          : "Inspection updated.",
         [{ text: "OK", onPress: () => router.back() }]
       );
     } catch (e) {
@@ -1294,10 +1321,6 @@ export default function InspectionFormScreen() {
           borderColor: colors.border || COLORS.border,
         }]}>
           <View style={styles.photoButtonsRow}>
-            <TouchableOpacity style={styles.photoButton} onPress={handleTakePhoto} activeOpacity={0.85}>
-              <Icon name="camera" size={18} color={COLORS.textHigh} style={{ marginRight: 6 }} />
-              <Text style={styles.photoAddText}>Take photo</Text>
-            </TouchableOpacity>
             <TouchableOpacity style={styles.photoButton} onPress={handleAddPhotoFromLibrary} activeOpacity={0.85}>
               <Icon name="image" size={18} color={COLORS.textHigh} style={{ marginRight: 6 }} />
               <Text style={styles.photoAddText}>Add from library</Text>
@@ -1361,16 +1384,7 @@ export default function InspectionFormScreen() {
             </Text>
             <TouchableOpacity
               style={styles.modalOption}
-              onPress={() => handleCheckPhotoSource("camera")}
-            >
-              <Icon name="camera" size={20} color={COLORS.primaryAction} style={{ marginRight: 12 }} />
-              <Text style={[styles.modalOptionText, { color: colors.text || COLORS.textHigh }]}>
-                Take photo
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.modalOption}
-              onPress={() => handleCheckPhotoSource("library")}
+              onPress={handleCheckPhotoSource}
             >
               <Icon name="image" size={20} color={COLORS.primaryAction} style={{ marginRight: 12 }} />
               <Text style={[styles.modalOptionText, { color: colors.text || COLORS.textHigh }]}>
@@ -1508,7 +1522,7 @@ function ChecklistRow({
           style={styles.photoIconButton}
           activeOpacity={0.75}
         >
-          <Icon name="camera" size={16} color={COLORS.textMid} />
+          <Icon name="image" size={16} color={COLORS.textMid} />
           {photos.length > 0 && (
             <View style={styles.photoBadge}>
               <Text style={styles.photoBadgeText}>{photos.length}</Text>

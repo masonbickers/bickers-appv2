@@ -2,13 +2,10 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useLocalSearchParams, useNavigation, useRouter } from "expo-router";
 import {
-    addDoc,
     collection,
     doc,
-    getDocs,
-    orderBy,
-    query,
     serverTimestamp,
+    setDoc,
     updateDoc,
 } from "firebase/firestore";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -27,6 +24,8 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
 import { db } from "../../../../firebaseConfig";
+import { getServiceCollectionRows } from "../../../../lib/serviceCache";
+import { runOrQueueFirestoreMutations } from "../../../../lib/sync/firestoreQueue";
 import { useTheme } from "../../../../providers/ThemeProvider";
 
 const COLORS = {
@@ -156,9 +155,9 @@ export default function MotPrecheckScreen() {
   useEffect(() => {
     const loadVehicles = async () => {
       try {
-        const q = query(collection(db, "vehicles"), orderBy("name", "asc"));
-        const snap = await getDocs(q);
-        const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        const list = await getServiceCollectionRows("vehicles", {
+          orderByField: "name",
+        });
         setVehicles(list);
       } catch (err) {
         console.error("Failed to load vehicles for MOT pre-check:", err);
@@ -521,7 +520,7 @@ export default function MotPrecheckScreen() {
         createdAt: serverTimestamp(),
       };
 
-      await addDoc(collection(db, "motPreChecks"), record);
+      const motRef = doc(collection(db, "motPreChecks"));
 
       const vehicleRef = doc(db, "vehicles", selectedVehicleId);
       const updatePayload = {
@@ -551,7 +550,29 @@ export default function MotPrecheckScreen() {
         updatePayload.mileage = odoNumber;
       }
 
-      await updateDoc(vehicleRef, updatePayload);
+      const { queued } = await runOrQueueFirestoreMutations([
+        {
+          run: () => setDoc(motRef, record),
+          mutation: {
+            operation: "set",
+            docPath: `motPreChecks/${motRef.id}`,
+            data: record,
+            options: { merge: false },
+            entityType: "motPreCheck",
+            entityId: motRef.id,
+          },
+        },
+        {
+          run: () => updateDoc(vehicleRef, updatePayload),
+          mutation: {
+            operation: "update",
+            docPath: `vehicles/${selectedVehicleId}`,
+            data: updatePayload,
+            entityType: "vehicle",
+            entityId: selectedVehicleId,
+          },
+        },
+      ]);
 
       // Clear this draft
       try {
@@ -575,8 +596,10 @@ export default function MotPrecheckScreen() {
       }
 
       Alert.alert(
-        "MOT pre-check saved",
-        "Pre-check recorded and vehicle updated.",
+        queued ? "Saved offline" : "MOT pre-check saved",
+        queued
+          ? "No internet right now. This MOT pre-check will upload automatically when internet returns."
+          : "Pre-check recorded and vehicle updated.",
         [
           {
             text: "OK",

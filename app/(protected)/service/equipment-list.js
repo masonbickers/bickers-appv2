@@ -1,6 +1,5 @@
 import { useRouter } from "expo-router";
-import { collection, onSnapshot, orderBy, query } from "firebase/firestore";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   ActivityIndicator,
   ScrollView,
@@ -14,8 +13,8 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
 import PageHeaderCard from "../../../components/PageHeaderCard";
-import { db } from "../../../firebaseConfig";
 import { designTokens as t } from "../../../lib/design/tokens";
+import { useCachedServiceCollection } from "../../../lib/serviceCache";
 import { useTheme } from "../../../providers/ThemeProvider";
 
 const COLORS = {
@@ -122,8 +121,10 @@ export default function EquipmentListScreen() {
   const router = useRouter();
   const { colors } = useTheme();
 
-  const [equipment, setEquipment] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const { rows: equipment, loading } = useCachedServiceCollection("equipment", {
+    label: "equipment list",
+    orderByField: "name",
+  });
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [expandedStatus, setExpandedStatus] = useState({
@@ -132,23 +133,6 @@ export default function EquipmentListScreen() {
     ok: true,
     unknown: true,
   });
-
-  useEffect(() => {
-    const q = query(collection(db, "equipment"), orderBy("name", "asc"));
-    const unsub = onSnapshot(
-      q,
-      (snap) => {
-        setEquipment(snap.docs.map((entry) => ({ id: entry.id, ...entry.data() })));
-        setLoading(false);
-      },
-      (err) => {
-        console.error("Failed to load equipment list:", err);
-        setLoading(false);
-      }
-    );
-
-    return () => unsub();
-  }, []);
 
   const processed = useMemo(() => {
     return equipment.map((item) => {

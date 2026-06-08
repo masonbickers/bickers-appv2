@@ -1,13 +1,5 @@
 // app/(protected)/service/service-history/[vehicleId].jsx
 import { useLocalSearchParams, useRouter } from "expo-router";
-import {
-  collection,
-  doc,
-  getDoc,
-  getDocs,
-  query,
-  where,
-} from "firebase/firestore";
 import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
@@ -20,7 +12,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
-import { db } from "../../../../firebaseConfig";
+import { getServiceCollectionRows } from "../../../../lib/serviceCache";
 import { useTheme } from "../../../../providers/ThemeProvider";
 
 const COLORS = {
@@ -71,24 +63,16 @@ export default function ServiceHistoryListScreen() {
     const load = async () => {
       setLoading(true);
       try {
-        // 1) Vehicle doc
-        const ref = doc(db, "vehicles", String(vehicleId));
-        const snap = await getDoc(ref);
-        if (snap.exists()) {
-          setVehicle({ id: snap.id, ...snap.data() });
-        } else {
-          setVehicle(null);
-        }
-
-        // 2) Service records for this vehicle
-        const formsRef = collection(db, "serviceRecords");
-        const qRef = query(
-          formsRef,
-          where("vehicleId", "==", String(vehicleId))
+        const [vehicles, serviceRecords] = await Promise.all([
+          getServiceCollectionRows("vehicles", { orderByField: "name" }),
+          getServiceCollectionRows("serviceRecords"),
+        ]);
+        setVehicle(
+          vehicles.find((item) => String(item.id) === String(vehicleId)) || null
         );
-
-        const formsSnap = await getDocs(qRef);
-        const forms = formsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        const forms = serviceRecords.filter(
+          (record) => String(record.vehicleId || "") === String(vehicleId)
+        );
         setServiceForms(forms);
       } catch (err) {
         console.error("Failed to load vehicle/service history:", err);

@@ -390,23 +390,80 @@ function normalizeVehicles(list, vehiclesData) {
     if (
       vRaw &&
       typeof vRaw === "object" &&
-      (vRaw.name || vRaw.registration || vRaw.id)
+      (vRaw.name || vRaw.registration || vRaw.id || vRaw.vehicleId)
     ) {
-      return vRaw;
+      const match = findVehicleRecord(vRaw, vehiclesData);
+      return match ? { ...match, ...vRaw } : vRaw;
     }
     const needle = String(vRaw ?? "").trim();
-    const match =
-      vehiclesData.find((x) => x.id === needle) ||
-      vehiclesData.find(
-        (x) =>
-          String(x.registration ?? "").trim().toUpperCase() ===
-          needle.toUpperCase()
-      ) ||
-      vehiclesData.find(
-        (x) => String(x.name ?? "").trim().toLowerCase() === needle.toLowerCase()
-      );
+    const match = findVehicleRecord(needle, vehiclesData);
     return match || { name: needle };
   });
+}
+
+function findVehicleRecord(vehicleRef, vehiclesData) {
+  const list = Array.isArray(vehiclesData) ? vehiclesData : [];
+  if (!vehicleRef) return null;
+
+  const id =
+    typeof vehicleRef === "object"
+      ? vehicleRef.id || vehicleRef.vehicleId || vehicleRef.value
+      : vehicleRef;
+  const reg =
+    typeof vehicleRef === "object"
+      ? vehicleRef.registration || vehicleRef.reg || vehicleRef.plate || vehicleRef.license
+      : vehicleRef;
+  const name = typeof vehicleRef === "object" ? vehicleRef.name : vehicleRef;
+
+  const idNeedle = String(id ?? "").trim();
+  const regNeedle = String(reg ?? "").trim().toUpperCase();
+  const nameNeedle = String(name ?? "").trim().toLowerCase();
+
+  return (
+    (idNeedle && list.find((x) => x.id === idNeedle)) ||
+    (regNeedle &&
+      list.find(
+        (x) =>
+          String(x.registration ?? x.reg ?? x.plate ?? x.license ?? "")
+            .trim()
+            .toUpperCase() === regNeedle
+      )) ||
+    (nameNeedle &&
+      list.find((x) => String(x.name ?? "").trim().toLowerCase() === nameNeedle)) ||
+    null
+  );
+}
+
+function isHgvVehicle(vehicle) {
+  if (!vehicle) return false;
+  if (vehicle.isHgv === true || vehicle.isHGV === true || vehicle.hgv === true) return true;
+
+  const fields = [
+    vehicle.category,
+    vehicle.vehicleCategory,
+    vehicle.vehicleType,
+    vehicle.type,
+    vehicle.class,
+    vehicle.vehicleClass,
+    vehicle.bodyType,
+  ];
+
+  return fields.some((field) => {
+    const value = safeStr(field);
+    if (!value) return false;
+    return /\bhgv\b/.test(value) || value.includes("heavy goods");
+  });
+}
+
+function jobHasHgvVehicle(job, vehiclesData) {
+  const list =
+    job?.vehicles ||
+    job?.vehicleIds ||
+    job?.selectedVehicles ||
+    job?.vehicleIDs ||
+    [];
+
+  return isHgvVehicle(job) || normalizeVehicles(list, vehiclesData).some(isHgvVehicle);
 }
 
 /** ✅ Display vehicles by NAME/REG but keep bookings stored by ID */
@@ -455,6 +512,11 @@ const JobCard = ({ job, dateISO, router, colors, vehiclesData }) => {
   }, [job, vehiclesData]);
 
   const vehicleChecked = !!job.vehicleChecked;
+  const requiresVehicleCheck = useMemo(
+    () => jobHasHgvVehicle(job, vehiclesData),
+    [job, vehiclesData]
+  );
+  const showActions = requiresVehicleCheck || recce;
 
   const handleActionPress = (pathname) => {
     router.push({ pathname, params: { jobId: job.id, dateISO } });
@@ -560,42 +622,46 @@ const JobCard = ({ job, dateISO, router, colors, vehiclesData }) => {
       )}
 
       {/* Actions */}
-      <View style={styles.actionsRow}>
-        <TouchableOpacity
-          style={[
-            styles.actionBtn,
-            vehicleChecked
-              ? {
-                  backgroundColor: colors.success,
-                  borderWidth: 1,
-                  borderColor: colors.success,
-                }
-              : { backgroundColor: colors.accent },
-          ]}
-          activeOpacity={0.85}
-          onPress={() => handleActionPress("/vehicle-check")}
-        >
-          <Icon
-            name={vehicleChecked ? "check-circle" : "truck"}
-            size={16}
-            color={colors.surface}
-          />
-          <Text style={[styles.actionText, { color: colors.surface }]}>
-            {vehicleChecked ? "Vehicle Check Complete" : "Vehicle Check"}
-          </Text>
-        </TouchableOpacity>
+      {showActions && (
+        <View style={styles.actionsRow}>
+          {requiresVehicleCheck && (
+            <TouchableOpacity
+              style={[
+                styles.actionBtn,
+                vehicleChecked
+                  ? {
+                      backgroundColor: colors.success,
+                      borderWidth: 1,
+                      borderColor: colors.success,
+                    }
+                  : { backgroundColor: colors.accent },
+              ]}
+              activeOpacity={0.85}
+              onPress={() => handleActionPress("/vehicle-check")}
+            >
+              <Icon
+                name={vehicleChecked ? "check-circle" : "truck"}
+                size={16}
+                color={colors.surface}
+              />
+              <Text style={[styles.actionText, { color: colors.surface }]}>
+                {vehicleChecked ? "Vehicle Check Complete" : "Vehicle Check"}
+              </Text>
+            </TouchableOpacity>
+          )}
 
-        {recce && (
-          <TouchableOpacity
-            style={[styles.actionBtn, { backgroundColor: RECCE_BG }]}
-            activeOpacity={0.85}
-            onPress={() => handleActionPress("/recce")}
-          >
-            <Icon name="map-pin" size={16} color={colors.surface} />
-            <Text style={[styles.actionText, { color: colors.surface }]}>Recce Form</Text>
-          </TouchableOpacity>
-        )}
-      </View>
+          {recce && (
+            <TouchableOpacity
+              style={[styles.actionBtn, { backgroundColor: RECCE_BG }]}
+              activeOpacity={0.85}
+              onPress={() => handleActionPress("/recce")}
+            >
+              <Icon name="map-pin" size={16} color={colors.surface} />
+              <Text style={[styles.actionText, { color: colors.surface }]}>Recce Form</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      )}
     </View>
   );
 };

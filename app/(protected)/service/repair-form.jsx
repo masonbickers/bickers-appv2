@@ -1,13 +1,10 @@
 import { useLocalSearchParams, useNavigation, useRouter } from "expo-router";
 import {
-  addDoc,
   arrayUnion,
   collection,
   doc,
-  getDocs,
-  orderBy,
-  query,
   serverTimestamp,
+  setDoc,
   updateDoc,
 } from "firebase/firestore";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -26,6 +23,8 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
 import { db } from "../../../firebaseConfig";
+import { getServiceCollectionRows } from "../../../lib/serviceCache";
+import { runOrQueueFirestoreMutations } from "../../../lib/sync/firestoreQueue";
 import { useTheme } from "../../../providers/ThemeProvider";
 
 const COLORS = {
@@ -108,12 +107,12 @@ export default function RepairFormRoute() {
     const loadVehicles = async () => {
       try {
         setLoadingVehicles(true);
-        const q = query(collection(db, "vehicles"), orderBy("name", "asc"));
-        const snap = await getDocs(q);
-        const list = snap.docs.map((d) => {
-          const data = d.data() || {};
+        const rows = await getServiceCollectionRows("vehicles", {
+          orderByField: "name",
+        });
+        const list = rows.map((data) => {
           return {
-            id: d.id,
+            id: data.id,
             name: data.name || data.vehicleName || "Unnamed vehicle",
             reg: data.registration || data.reg || "",
             manufacturer: data.manufacturer || "",
@@ -290,7 +289,20 @@ export default function RepairFormRoute() {
         updatedAt: serverTimestamp(),
       };
 
-      const repairRecordRef = await addDoc(collection(db, "serviceRecords"), record);
+      const repairRecordRef = doc(collection(db, "serviceRecords"));
+      const mutations = [
+        {
+          run: () => setDoc(repairRecordRef, record),
+          mutation: {
+            operation: "set",
+            docPath: `serviceRecords/${repairRecordRef.id}`,
+            data: record,
+            options: { merge: false },
+            entityType: "serviceRecord",
+            entityId: repairRecordRef.id,
+          },
+        },
+      ];
 
       if (effectiveVehicleId) {
         const vehicleRef = doc(db, "vehicles", String(effectiveVehicleId));
@@ -321,11 +333,26 @@ export default function RepairFormRoute() {
         if (odoNumber !== null) {
           updatePayload.mileage = odoNumber;
         }
-
-        await updateDoc(vehicleRef, updatePayload);
+        mutations.push({
+          run: () => updateDoc(vehicleRef, updatePayload),
+          mutation: {
+            operation: "update",
+            docPath: `vehicles/${effectiveVehicleId}`,
+            data: updatePayload,
+            entityType: "vehicle",
+            entityId: String(effectiveVehicleId),
+          },
+        });
       }
 
-      Alert.alert("Repair saved", "The general repair has been recorded.", [
+      const { queued } = await runOrQueueFirestoreMutations(mutations);
+
+      Alert.alert(
+        queued ? "Saved offline" : "Repair saved",
+        queued
+          ? "No internet right now. This repair will upload automatically when internet returns."
+          : "The general repair has been recorded.",
+        [
         {
           text: "OK",
           onPress: () => {

@@ -1,20 +1,31 @@
 // app/(protected)/me.js
 import { useRouter } from "expo-router";
-import { collection, getDocs, query, where } from "firebase/firestore";
+import {
+  collection,
+  doc,
+  getDocs,
+  limit,
+  query,
+  serverTimestamp,
+  where,
+  writeBatch,
+} from "firebase/firestore";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { Calendar } from "react-native-calendars";
 import Icon from "react-native-vector-icons/Feather";
 
-import { getInbox } from "../../lib/notificationInbox";
 import { createDashboardCardStyles } from "../../lib/design/dashboard";
 import { designTokens as t } from "../../lib/design/tokens";
 
@@ -31,6 +42,151 @@ function withAlpha(hex, alpha) {
   const g = parseInt(raw.slice(2, 4), 16);
   const b = parseInt(raw.slice(4, 6), 16);
   return `rgba(${r},${g},${b},${safeAlpha})`;
+}
+
+const TIMESHEET_DAYS = [
+  "Monday",
+  "Tuesday",
+  "Wednesday",
+  "Thursday",
+  "Friday",
+  "Saturday",
+  "Sunday",
+];
+const TIMESHEET_WEEKEND_SET = new Set(["Saturday", "Sunday"]);
+const DEFAULT_YARD_START = "08:00";
+const DEFAULT_YARD_END = "16:30";
+
+function timeToMinutes(value) {
+  const raw = String(value || "").trim();
+  const match = /^(\d{1,2}):(\d{2})$/.exec(raw);
+  if (!match) return null;
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+  return hour * 60 + minute;
+}
+
+function normaliseTimeValue(value) {
+  const mins = timeToMinutes(value);
+  if (mins == null) return null;
+  const hour = Math.floor(mins / 60);
+  const minute = mins % 60;
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+function timesheetBoolish(value) {
+  if (value === true) return true;
+  if (value === false) return false;
+  const raw = String(value ?? "").trim().toLowerCase();
+  return raw === "true" || raw === "1" || raw === "yes" || raw === "y";
+}
+
+function durationMinutes(startTime, endTime) {
+  const start = timeToMinutes(startTime);
+  const end = timeToMinutes(endTime);
+  if (start == null || end == null) return 0;
+  return end >= start ? end - start : end + 24 * 60 - start;
+}
+
+function parseHoursValue(value) {
+  const hours = Number(String(value ?? "").trim().replace(",", "."));
+  if (!Number.isFinite(hours) || hours <= 0) return 0;
+  return hours;
+}
+
+function normaliseYardSegments(entry) {
+  const defaultStart = normaliseTimeValue(entry?.leaveTime) || DEFAULT_YARD_START;
+  const defaultEnd = normaliseTimeValue(entry?.arriveBack) || DEFAULT_YARD_END;
+  const segments = Array.isArray(entry?.yardSegments) ? entry.yardSegments : [];
+
+  if (segments.length === 0) {
+    return [{ start: defaultStart, end: defaultEnd }];
+  }
+
+  return segments.map((seg) => ({
+    start: normaliseTimeValue(seg?.start) || defaultStart,
+    end: normaliseTimeValue(seg?.end) || defaultEnd,
+  }));
+}
+
+function computeTimesheetDayMinutes(entry) {
+  const mode = String(entry?.mode || "off").trim().toLowerCase();
+  if (mode === "off" || mode === "holiday" || mode === "bankholiday" || mode === "unpaid") {
+    return 0;
+  }
+
+  if (mode === "yard") {
+    if (entry?.isTurnaround === true) return 0;
+    let total = normaliseYardSegments(entry).reduce(
+      (sum, segment) => sum + durationMinutes(segment.start, segment.end),
+      0
+    );
+    if (timesheetBoolish(entry?.yardTravelEnabled)) {
+      total += durationMinutes(entry?.yardTravelLeaveTime, entry?.yardTravelArriveTime);
+    }
+    if (!timesheetBoolish(entry?.lunchSup) && total > 0) total = Math.max(0, total - 30);
+    return total;
+  }
+
+  if (mode === "travel") {
+    return durationMinutes(entry?.leaveTime, entry?.arriveTime);
+  }
+
+  if (mode === "workshop") {
+    const segments = Array.isArray(entry?.yardSegments) ? entry.yardSegments : [];
+    if (segments.length > 0) {
+      return segments.reduce(
+        (sum, segment) => sum + durationMinutes(segment?.start, segment?.end),
+        0
+      );
+    }
+
+    const rows = Array.isArray(entry?.workshopJobs) ? entry.workshopJobs : [];
+    return rows.reduce((sum, row) => sum + parseHoursValue(row?.hours) * 60, 0);
+  }
+
+  if (mode === "onset") {
+    let baseStart = entry?.leaveTime || entry?.arriveTime || entry?.callTime || null;
+    let baseEnd = entry?.arriveBack || entry?.wrapTime || null;
+
+    if (entry?.callTime && entry?.wrapTime) {
+      baseStart = entry.callTime;
+      baseEnd = entry.wrapTime;
+    } else if (!baseEnd && entry?.wrapTime) {
+      baseEnd = entry.wrapTime;
+    }
+
+    let mins = durationMinutes(baseStart, baseEnd);
+    if (entry?.callTime && entry?.precallDuration) {
+      mins += Math.max(0, durationMinutes(entry.precallDuration, entry.callTime));
+    }
+    return mins;
+  }
+
+  return 0;
+}
+
+function computeTimesheetWeekHours(timesheet) {
+  const storedHours = toNumber(timesheet?.totalHours, 0);
+  if (storedHours > 0) return storedHours;
+
+  const days = timesheet?.days || {};
+  const totalMinutes = TIMESHEET_DAYS.reduce((sum, day) => {
+    const fallback = { mode: TIMESHEET_WEEKEND_SET.has(day) ? "off" : "yard" };
+    return sum + computeTimesheetDayMinutes(days?.[day] || fallback);
+  }, 0);
+
+  return Math.round((totalMinutes / 60) * 100) / 100;
+}
+
+function formatTimesheetHours(hours) {
+  const totalMinutes = Math.max(0, Math.round(toNumber(hours, 0) * 60));
+  const h = Math.floor(totalMinutes / 60);
+  const m = totalMinutes % 60;
+  if (m === 0) return `${h}h`;
+  if (h === 0) return `${m}m`;
+  return `${h}h ${String(m).padStart(2, "0")}m`;
 }
 
 export default function MePage() {
@@ -60,6 +216,18 @@ export default function MePage() {
 
   // latest manager query on a timesheet
   const [latestTimesheetQuery, setLatestTimesheetQuery] = useState(null);
+
+  const [noteStartDate, setNoteStartDate] = useState(() => isoDate(new Date()));
+  const [noteEndDate, setNoteEndDate] = useState("");
+  const [noteDateMode, setNoteDateMode] = useState("single");
+  const [activeNoteDateField, setActiveNoteDateField] = useState(null);
+  const [noteText, setNoteText] = useState("");
+  const [noteBlocksBookings, setNoteBlocksBookings] = useState(true);
+  const [savingNote, setSavingNote] = useState(false);
+  const [noteHistoryOpen, setNoteHistoryOpen] = useState(false);
+  const [noteHistoryLoading, setNoteHistoryLoading] = useState(false);
+  const [sentNotes, setSentNotes] = useState([]);
+  const [deletingNoteKey, setDeletingNoteKey] = useState("");
 
   // ✅ Bank holidays (UK Gov JSON) for current year
   const currentYear = new Date().getFullYear();
@@ -133,16 +301,6 @@ export default function MePage() {
       }
     : { name: "Unknown User", email: "No email", userCode: "N/A" };
 
-  // load unread notifications count from inbox (AsyncStorage)
-  const loadNotifBadge = useCallback(async () => {
-    try {
-      const list = await getInbox();
-      void list;
-    } catch {
-      return;
-    }
-  }, []);
-
   const loadPersonal = useCallback(async () => {
     setBusy(true);
     try {
@@ -165,41 +323,34 @@ export default function MePage() {
       // ============================================================
       // 1) Find employee record (same approach as HolidayPage)
       // ============================================================
-      const empSnap = await getDocs(collection(db, "employees"));
-      const employees = empSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
-
       let empRecord = null;
-
+      const employeeLookups = [];
       if (userCode) {
-        empRecord =
-          employees.find((e) => safeStr(e.userCode) === safeStr(userCode)) ||
-          (email ? employees.find((e) => safeStr(e.email) === safeStr(email)) : null);
-      } else if (email) {
-        empRecord = employees.find((e) => safeStr(e.email) === safeStr(email));
-      } else if (empName) {
-        empRecord = employees.find((e) => safeStr(e.name) === safeStr(empName));
+        employeeLookups.push(query(collection(db, "employees"), where("userCode", "==", userCode), limit(1)));
+      }
+      if (email) {
+        employeeLookups.push(query(collection(db, "employees"), where("email", "==", email), limit(1)));
+      }
+      if (empName) {
+        employeeLookups.push(query(collection(db, "employees"), where("name", "==", empName), limit(1)));
+      }
+
+      for (const employeeQuery of employeeLookups) {
+        const snap = await getDocs(employeeQuery);
+        if (!snap.empty) {
+          const docSnap = snap.docs[0];
+          empRecord = { id: docSnap.id, ...docSnap.data() };
+          break;
+        }
       }
 
       // ============================================================
       // 2) Load my holidays (filter like HolidayPage: name OR code)
       // ============================================================
-      const holSnap = await getDocs(collection(db, "holidays"));
-      const allHol = holSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
-
-      const mine = allHol.filter((h) => {
-        if (empRecord) {
-          const matchByName = safeStr(h.employee) === safeStr(empRecord.name);
-          const matchByCode = safeStr(h.employeeCode) === safeStr(empRecord.userCode);
-          return matchByName || matchByCode;
-        }
-
-        const codeMatch =
-          !!userCode &&
-          [h.employeeCode, h.userCode].map(safeStr).some((v) => v === safeStr(userCode));
-        const nameMatch =
-          !!empName && [h.employee, h.name].map(safeStr).some((v) => v === safeStr(empName));
-        return codeMatch || nameMatch;
-      });
+      const holidaySnap = await getDocs(collection(db, "holidays"));
+      const mine = holidaySnap.docs
+        .map((d) => ({ id: d.id, ...d.data() }))
+        .filter((h) => employeeMatchesHoliday(h, empRecord, employee, user));
 
       setMyHolidays(mine);
 
@@ -228,8 +379,8 @@ export default function MePage() {
         const { displayType } = displayTypeAndColor(h);
         if (displayType !== "Paid") continue;
 
-        const origS = toDateSafe(h.startDate || h.from);
-        const origE = toDateSafe(h.endDate || h.to) || origS;
+        const origS = getHolidayStart(h);
+        const origE = getHolidayEnd(h) || origS;
         if (!origS) continue;
 
         if (origE < yearStart || origS > yearEnd) continue;
@@ -253,20 +404,19 @@ export default function MePage() {
       today.setHours(0, 0, 0, 0);
 
       const pendingCount = mine.filter((h) => {
-        const s = safeStr(h.status || h.Status);
-        return s === "pending" || s === "requested";
+        return isRequestedHoliday(h);
       }).length;
       setPendingHolidayCount(pendingCount);
 
       const upcomingApproved = mine
         .filter((h) => isApproved(h))
         .filter((h) => {
-          const end = toDateSafe(h.endDate || h.to || h.startDate || h.from);
+          const end = getHolidayEnd(h) || getHolidayStart(h);
           return end && end >= today;
         })
         .sort((a, b) => {
-          const as = toDateSafe(a.startDate || a.from) ?? new Date(8640000000000000);
-          const bs = toDateSafe(b.startDate || b.from) ?? new Date(8640000000000000);
+          const as = getHolidayStart(a) ?? new Date(8640000000000000);
+          const bs = getHolidayStart(b) ?? new Date(8640000000000000);
           return as - bs;
         });
 
@@ -278,14 +428,14 @@ export default function MePage() {
       let tsMine = [];
       if (userCode) {
         const tsSnap = await getDocs(
-          query(collection(db, "timesheets"), where("employeeCode", "==", userCode))
+          query(collection(db, "timesheets"), where("employeeCode", "==", userCode), limit(60))
         );
         tsMine = tsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
       }
 
       const mondayKey = mondayISO(new Date());
       const thisWeek = tsMine.find((t) => (t.weekStart || t.weekISO) === mondayKey);
-      const weekHours = toNumber(thisWeek?.totalHours, 0);
+      const weekHours = computeTimesheetWeekHours(thisWeek);
 
       const pending = tsMine.filter((t) => {
         const submitted = !!t.submitted;
@@ -308,7 +458,7 @@ export default function MePage() {
       let latestQuery = null;
       if (userCode) {
         const qSnap = await getDocs(
-          query(collection(db, "timesheetQueries"), where("employeeCode", "==", userCode))
+          query(collection(db, "timesheetQueries"), where("employeeCode", "==", userCode), limit(30))
         );
         const allQueries = qSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
 
@@ -345,25 +495,81 @@ export default function MePage() {
       setBusy(false);
     }
   }, [
-    employee?.userCode,
-    employee?.name,
-    employee?.displayName,
-    employee?.email,
-    user?.email,
+    employee,
+    user,
     currentYear,
     isBankHoliday,
   ]);
 
   useEffect(() => {
     loadPersonal();
-    loadNotifBadge();
-  }, [loadPersonal, loadNotifBadge]);
+  }, [loadPersonal]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    await Promise.all([loadPersonal(), loadNotifBadge()]);
+    await loadPersonal();
     setRefreshing(false);
-  }, [loadPersonal, loadNotifBadge]);
+  }, [loadPersonal]);
+
+  const noteTone = "#0F766E";
+  const noteMarkedDates = useMemo(() => {
+    const marks = {};
+    const start = parseYMD(noteStartDate);
+    const end = parseYMD(noteDateMode === "multi" ? noteEndDate || noteStartDate : noteStartDate);
+
+    if (!start || !end) return marks;
+
+    eachDateInclusive(start, end).forEach((day) => {
+      const date = isoDate(day);
+      marks[date] = {
+        color: withAlpha(noteTone, 0.42),
+        textColor: "#fff",
+      };
+    });
+
+    marks[noteStartDate] = {
+      ...(marks[noteStartDate] || {}),
+      startingDay: true,
+      color: noteTone,
+      textColor: "#fff",
+    };
+
+    const endDate = noteDateMode === "multi" ? noteEndDate || noteStartDate : noteStartDate;
+    marks[endDate] = {
+      ...(marks[endDate] || {}),
+      endingDay: true,
+      color: noteTone,
+      textColor: "#fff",
+    };
+
+    return marks;
+  }, [noteStartDate, noteEndDate, noteDateMode, noteTone]);
+
+  const handleNoteDayPress = (day) => {
+    const selected = day?.dateString;
+    if (!selected) return;
+
+    if (activeNoteDateField === "end") {
+      if (noteStartDate && parseYMD(selected) < parseYMD(noteStartDate)) {
+        setNoteEndDate(noteStartDate);
+        setNoteStartDate(selected);
+      } else {
+        setNoteEndDate(selected === noteStartDate ? "" : selected);
+      }
+      setActiveNoteDateField(null);
+      return;
+    }
+
+    if (noteEndDate && parseYMD(selected) > parseYMD(noteEndDate)) {
+      setNoteStartDate(selected);
+      setNoteEndDate("");
+      setActiveNoteDateField(null);
+      return;
+    }
+
+    setNoteStartDate(selected);
+    setActiveNoteDateField(null);
+  };
 
   if (loading || !isAuthed) return null;
 
@@ -372,10 +578,177 @@ export default function MePage() {
   const queryFieldLabel = fieldLabel(queryCard?.field);
   const queryDay = queryCard?.day;
   const profileTone = "#64748B";
-  const stravaTone = "#FC4C02";
   const timesheetTone = "#CA8A04";
   const holidayTone = "#16A34A";
-  const strava = getStravaSummary(employee);
+  const currentNoteEmployeeName = String(
+    employee?.name ||
+      employee?.displayName ||
+      user?.displayName ||
+      (account.name === "Unknown User" ? "" : account.name) ||
+      ""
+  ).trim();
+  const currentNoteCreatorId = user?.uid || employee?.employeeId || "";
+  const currentNoteAuditEmail = String(
+    user?.email ||
+      employee?.email ||
+      (account.email === "No email" ? "" : account.email) ||
+      ""
+  ).trim();
+
+  const loadSentNotes = async () => {
+    const noteMap = new Map();
+    const lookups = [];
+
+    if (currentNoteCreatorId) {
+      lookups.push(
+        query(collection(db, "notes"), where("createdByUid", "==", currentNoteCreatorId), limit(120))
+      );
+    }
+    if (currentNoteEmployeeName) {
+      lookups.push(
+        query(collection(db, "notes"), where("employee", "==", currentNoteEmployeeName), limit(120)),
+        query(collection(db, "notes"), where("employeeName", "==", currentNoteEmployeeName), limit(120))
+      );
+    }
+
+    if (lookups.length === 0) {
+      setSentNotes([]);
+      return;
+    }
+
+    setNoteHistoryLoading(true);
+    try {
+      const snaps = await Promise.all(lookups.map((qRef) => getDocs(qRef)));
+      snaps.forEach((snap) => {
+        snap.docs.forEach((docSnap) => {
+          const data = docSnap.data();
+          const isMine =
+            (currentNoteCreatorId && data.createdByUid === currentNoteCreatorId) ||
+            (data.source === "mobile" &&
+              currentNoteEmployeeName &&
+              [data.employee, data.employeeName, data.createdByName].includes(currentNoteEmployeeName));
+
+          if (isMine) noteMap.set(docSnap.id, { id: docSnap.id, ...data });
+        });
+      });
+
+      setSentNotes(groupSentNotes(Array.from(noteMap.values())));
+    } catch (error) {
+      console.warn("Failed to load sent notes:", error);
+      Alert.alert("Could not load notes", "Please try again.");
+    } finally {
+      setNoteHistoryLoading(false);
+    }
+  };
+
+  const toggleNoteHistory = async () => {
+    const nextOpen = !noteHistoryOpen;
+    setNoteHistoryOpen(nextOpen);
+    if (nextOpen) await loadSentNotes();
+  };
+
+  const deleteSentNote = (noteGroup) => {
+    Alert.alert("Delete note", "Remove this sent note from the dashboard?", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Delete",
+        style: "destructive",
+        onPress: async () => {
+          setDeletingNoteKey(noteGroup.key);
+          try {
+            const batch = writeBatch(db);
+            noteGroup.docIds.forEach((id) => {
+              batch.delete(doc(db, "notes", id));
+            });
+            await batch.commit();
+            setSentNotes((prev) => prev.filter((item) => item.key !== noteGroup.key));
+          } catch (error) {
+            console.warn("Failed to delete sent note:", error);
+            Alert.alert("Could not delete note", "Please try again.");
+          } finally {
+            setDeletingNoteKey("");
+          }
+        },
+      },
+    ]);
+  };
+
+  const submitNote = async () => {
+    const text = noteText.trim();
+    const start = parseYMD(noteStartDate);
+    const end = parseYMD(noteDateMode === "multi" ? noteEndDate || noteStartDate : noteStartDate);
+    const employeeName = currentNoteEmployeeName;
+    const auditEmail = currentNoteAuditEmail;
+
+    if (!start) {
+      Alert.alert("Check date", "Enter a start date as YYYY-MM-DD.");
+      return;
+    }
+    if (!end) {
+      Alert.alert("Check date", "Enter an end date as YYYY-MM-DD, or leave it blank.");
+      return;
+    }
+    if (end < start) {
+      Alert.alert("Check date", "End date cannot be before the start date.");
+      return;
+    }
+    if (!text) {
+      Alert.alert("Add note", "Write the note you want to send.");
+      return;
+    }
+    if (noteBlocksBookings && !employeeName) {
+      Alert.alert("Missing employee", "Your employee name is needed to block bookings.");
+      return;
+    }
+
+    const days = eachDateInclusive(start, end);
+    if (days.length > 366) {
+      Alert.alert("Date range too long", "Please send notes for one year or less at a time.");
+      return;
+    }
+
+    const startISO = isoDate(start);
+    const endISO = isoDate(end);
+    const isMultiDay = days.length > 1;
+    const noteBatchId = doc(collection(db, "notes")).id;
+
+    setSavingNote(true);
+    try {
+      const batch = writeBatch(db);
+
+      days.forEach((day) => {
+        const date = isoDate(day);
+        const ref = doc(collection(db, "notes"));
+        batch.set(ref, {
+          employee: employeeName,
+          employeeName,
+          blocksEmployeeBooking: noteBlocksBookings,
+          date,
+          text,
+          noteBatchId,
+          isMultiDay,
+          ...(isMultiDay ? { startDate: startISO, endDate: endISO } : {}),
+          createdAt: serverTimestamp(),
+          createdByUid: user?.uid || employee?.employeeId || null,
+          createdByEmail: auditEmail || null,
+          createdByName: employeeName,
+          source: "mobile",
+        });
+      });
+
+      await batch.commit();
+      setNoteText("");
+      setNoteEndDate("");
+      if (noteHistoryOpen) await loadSentNotes();
+      Alert.alert("Note sent", isMultiDay ? "Your notes have been added for each day." : "Your note has been added.");
+    } catch (error) {
+      console.warn("Failed to submit profile note:", error);
+      Alert.alert("Could not send note", "Please try again.");
+    } finally {
+      setSavingNote(false);
+    }
+  };
+
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
       <View style={{ flex: 1 }}>
@@ -472,7 +845,7 @@ export default function MePage() {
             </View>
           </View>
 
-          {/* Strava Snapshot */}
+          {/* Add Note */}
           <View
             style={[
               styles.sectionCard,
@@ -482,79 +855,294 @@ export default function MePage() {
           >
             <View style={styles.sectionHeader}>
               <View style={styles.sectionTitleWrap}>
-                <Text style={[styles.sectionTitle, { color: colors.text }]}>Strava</Text>
+                <Text style={[styles.sectionTitle, { color: colors.text }]}>Add Note</Text>
                 <Text style={[styles.sectionSubTitle, { color: colors.textMuted }]}>
-                  Connection and activity summary
+                  Availability update
                 </Text>
               </View>
-              <View
+              <TouchableOpacity
                 style={[
-                  styles.sectionCountPill,
+                  styles.noteHistoryButton,
                   {
-                    backgroundColor: withAlpha(stravaTone, 0.13),
-                    borderColor: withAlpha(stravaTone, 0.4),
+                    backgroundColor: withAlpha(noteTone, 0.13),
+                    borderColor: withAlpha(noteTone, 0.4),
                   },
                 ]}
+                activeOpacity={0.85}
+                onPress={toggleNoteHistory}
               >
-                <Text style={[styles.sectionCountText, { color: stravaTone }]}>
-                  {strava.connected ? "Connected" : "Empty"}
+                <Icon name={noteHistoryOpen ? "chevron-up" : "clock"} size={13} color={noteTone} />
+                <Text style={[styles.noteHistoryButtonText, { color: noteTone }]}>
+                  {noteHistoryOpen ? "Hide" : "History"}
                 </Text>
-              </View>
+              </TouchableOpacity>
             </View>
 
             <View
               style={[
                 styles.sectionPanel,
+                styles.notePanelCompact,
                 {
                   backgroundColor: colors.surface,
                   borderColor: colors.border,
                 },
               ]}
             >
-              {strava.connected ? (
-                <>
-                  <View style={styles.statRow}>
-                    <View style={[styles.statCard, styles.flatStatCard]}>
-                      <Text style={[styles.statLabel, { color: colors.textMuted }]}>Activities</Text>
-                      <Text style={[styles.statValue, { color: colors.text }]}>
-                        {strava.activityCount ?? "--"}
+              <View
+                style={[
+                  styles.noteModeRow,
+                  {
+                    backgroundColor: colors.surfaceAlt,
+                    borderColor: colors.border,
+                  },
+                ]}
+              >
+                {[
+                  { key: "single", label: "Single day" },
+                  { key: "multi", label: "Multi day" },
+                ].map((mode) => {
+                  const active = noteDateMode === mode.key;
+                  return (
+                    <TouchableOpacity
+                      key={mode.key}
+                      style={[
+                        styles.noteModeButton,
+                        {
+                          backgroundColor: active ? withAlpha(noteTone, 0.16) : "transparent",
+                          borderColor: active ? withAlpha(noteTone, 0.55) : "transparent",
+                        },
+                      ]}
+                      activeOpacity={0.85}
+                      onPress={() => {
+                        setNoteDateMode(mode.key);
+                        setActiveNoteDateField(null);
+                        if (mode.key === "single") setNoteEndDate("");
+                      }}
+                    >
+                      <Icon
+                        name={active ? "check-circle" : "circle"}
+                        size={14}
+                        color={active ? noteTone : colors.textMuted}
+                      />
+                      <Text
+                        style={[
+                          styles.noteModeText,
+                          { color: active ? noteTone : colors.textMuted },
+                        ]}
+                      >
+                        {mode.label}
                       </Text>
-                    </View>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
 
-                    <View style={[styles.statCard, styles.flatStatCard]}>
-                      <Text style={[styles.statLabel, { color: colors.textMuted }]}>Distance</Text>
-                      <Text style={[styles.statValue, { color: colors.text }]}>
-                        {strava.distanceLabel || "--"}
-                      </Text>
-                    </View>
-
-                    <View style={[styles.statCard, styles.flatStatCard]}>
-                      <Text style={[styles.statLabel, { color: colors.textMuted }]}>Updated</Text>
-                      <Text style={[styles.statValue, { color: colors.text }]}>
-                        {formatDateShort(strava.updatedAt) || "--"}
-                      </Text>
-                    </View>
+              <View style={styles.dateSelectRow}>
+                <TouchableOpacity
+                  style={[
+                    styles.dateSelectButton,
+                    {
+                      backgroundColor: colors.surfaceAlt,
+                      borderColor:
+                        activeNoteDateField === "start" ? noteTone : colors.border,
+                    },
+                  ]}
+                  activeOpacity={0.85}
+                  onPress={() =>
+                    setActiveNoteDateField((field) => (field === "start" ? null : "start"))
+                  }
+                >
+                  <Text style={[styles.inputLabel, { color: colors.textMuted }]}>Start</Text>
+                  <View style={styles.dateSelectValueRow}>
+                    <Text style={[styles.dateSelectValue, { color: colors.text }]}>
+                      {formatDateCompact(noteStartDate) || "Select date"}
+                    </Text>
+                    <Icon name="calendar" size={15} color={noteTone} />
                   </View>
+                </TouchableOpacity>
 
-                  <View style={styles.cardRow}>
-                    <Icon name="activity" size={16} color={colors.textMuted} />
-                    <Text style={[styles.cardRowText, { color: colors.text }]}>
-                      Athlete: {strava.athleteName || "Connected account"}
+                {noteDateMode === "multi" ? (
+                  <TouchableOpacity
+                    style={[
+                      styles.dateSelectButton,
+                      {
+                        backgroundColor: colors.surfaceAlt,
+                        borderColor: activeNoteDateField === "end" ? noteTone : colors.border,
+                      },
+                    ]}
+                    activeOpacity={0.85}
+                    onPress={() =>
+                      setActiveNoteDateField((field) => (field === "end" ? null : "end"))
+                    }
+                  >
+                    <Text style={[styles.inputLabel, { color: colors.textMuted }]}>End</Text>
+                    <View style={styles.dateSelectValueRow}>
+                      <Text style={[styles.dateSelectValue, { color: colors.text }]}>
+                        {formatDateCompact(noteEndDate || noteStartDate) || "Select date"}
+                      </Text>
+                      <Icon name="calendar" size={15} color={noteTone} />
+                    </View>
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+
+              {activeNoteDateField ? (
+                <View
+                  style={[
+                    styles.calendarWrap,
+                    {
+                      backgroundColor: colors.surfaceAlt,
+                      borderColor: colors.border,
+                    },
+                  ]}
+                >
+                  <Calendar
+                    current={
+                      activeNoteDateField === "end"
+                        ? noteEndDate || noteStartDate
+                        : noteStartDate
+                    }
+                    onDayPress={handleNoteDayPress}
+                    markedDates={noteMarkedDates}
+                    markingType="period"
+                    theme={{
+                      calendarBackground: colors.surfaceAlt,
+                      dayTextColor: colors.text,
+                      monthTextColor: colors.text,
+                      arrowColor: noteTone,
+                      selectedDayBackgroundColor: noteTone,
+                      selectedDayTextColor: "#fff",
+                      todayTextColor: noteTone,
+                    }}
+                  />
+                </View>
+              ) : null}
+
+              <Text style={[styles.inputLabel, { color: colors.textMuted }]}>Note</Text>
+              <TextInput
+                value={noteText}
+                onChangeText={setNoteText}
+                placeholder="Short note"
+                placeholderTextColor={colors.textMuted}
+                style={[
+                  styles.noteInput,
+                  {
+                    backgroundColor: colors.surfaceAlt,
+                    borderColor: colors.border,
+                    color: colors.text,
+                  },
+                ]}
+              />
+
+              <View style={styles.noteFooterRow}>
+                <TouchableOpacity
+                  style={styles.checkRow}
+                  activeOpacity={0.85}
+                  onPress={() => setNoteBlocksBookings((v) => !v)}
+                >
+                  <Icon
+                    name={noteBlocksBookings ? "check-square" : "square"}
+                    size={17}
+                    color={noteBlocksBookings ? noteTone : colors.textMuted}
+                  />
+                  <Text style={[styles.checkRowText, { color: colors.text }]}>
+                    Block bookings
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[
+                    styles.sectionAction,
+                    styles.noteSendAction,
+                    {
+                      backgroundColor: withAlpha(noteTone, savingNote ? 0.08 : 0.13),
+                      borderColor: withAlpha(noteTone, 0.4),
+                      opacity: savingNote ? 0.65 : 1,
+                    },
+                  ]}
+                  onPress={submitNote}
+                  activeOpacity={0.9}
+                  disabled={savingNote}
+                >
+                  {savingNote ? (
+                    <ActivityIndicator size="small" color={noteTone} />
+                  ) : (
+                    <Icon name="send" size={14} color={noteTone} />
+                  )}
+                  <Text style={[styles.sectionActionText, { color: noteTone }]}>
+                    {savingNote ? "Sending" : "Send"}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            {noteHistoryOpen ? (
+              <View
+                style={[
+                  styles.noteHistoryPanel,
+                  {
+                    backgroundColor: colors.surface,
+                    borderColor: colors.border,
+                  },
+                ]}
+              >
+                {noteHistoryLoading ? (
+                  <View style={styles.noteHistoryLoading}>
+                    <ActivityIndicator size="small" color={noteTone} />
+                    <Text style={[styles.noteHistoryMeta, { color: colors.textMuted }]}>
+                      Loading notes
                     </Text>
                   </View>
-                </>
-              ) : (
-                <View style={styles.emptyState}>
-                  <Icon name="activity" size={18} color={colors.textMuted} />
-                  <Text style={[styles.emptyStateTitle, { color: colors.text }]}>
-                    Strava not connected
+                ) : sentNotes.length === 0 ? (
+                  <Text style={[styles.noteHistoryMeta, { color: colors.textMuted }]}>
+                    No sent notes yet
                   </Text>
-                  <Text style={[styles.emptyStateText, { color: colors.textMuted }]}>
-                    No Strava data is available for this profile.
-                  </Text>
-                </View>
-              )}
-            </View>
+                ) : (
+                  sentNotes.map((item) => (
+                    <View
+                      key={item.key}
+                      style={[
+                        styles.noteHistoryItem,
+                        {
+                          backgroundColor: colors.surfaceAlt,
+                          borderColor: colors.border,
+                        },
+                      ]}
+                    >
+                      <View style={styles.noteHistoryTextWrap}>
+                        <Text style={[styles.noteHistoryDate, { color: noteTone }]}>
+                          {formatNoteHistoryRange(item)}
+                        </Text>
+                        <Text
+                          style={[styles.noteHistoryText, { color: colors.text }]}
+                          numberOfLines={2}
+                        >
+                          {item.text}
+                        </Text>
+                      </View>
+                      <TouchableOpacity
+                        style={[
+                          styles.noteHistoryDelete,
+                          {
+                            backgroundColor: withAlpha(colors.danger || "#dc2626", 0.12),
+                            borderColor: withAlpha(colors.danger || "#dc2626", 0.35),
+                          },
+                        ]}
+                        activeOpacity={0.85}
+                        onPress={() => deleteSentNote(item)}
+                        disabled={deletingNoteKey === item.key}
+                      >
+                        {deletingNoteKey === item.key ? (
+                          <ActivityIndicator size="small" color={colors.danger || "#dc2626"} />
+                        ) : (
+                          <Icon name="trash-2" size={14} color={colors.danger || "#dc2626"} />
+                        )}
+                      </TouchableOpacity>
+                    </View>
+                  ))
+                )}
+              </View>
+            ) : null}
           </View>
 
           {/* Timesheet Snapshot */}
@@ -605,7 +1193,9 @@ export default function MePage() {
                   <View style={styles.statRow}>
                     <View style={[styles.statCard, styles.flatStatCard]}>
                       <Text style={[styles.statLabel, { color: colors.textMuted }]}>This Week</Text>
-                      <Text style={[styles.statValue, { color: colors.text }]}>{timesheetStats.weekHours}h</Text>
+                      <Text style={[styles.statValue, { color: colors.text }]}>
+                        {formatTimesheetHours(timesheetStats.weekHours)}
+                      </Text>
                     </View>
 
                     <View style={[styles.statCard, styles.flatStatCard]}>
@@ -793,6 +1383,113 @@ function safeStr(v) {
   return String(v ?? "").trim().toLowerCase();
 }
 
+function canonicalEmployeeCode(v) {
+  const raw = String(v ?? "").trim();
+  if (!raw) return "";
+  const digits = raw.replace(/\D/g, "");
+  return digits ? digits.padStart(4, "0") : safeStr(raw);
+}
+
+function firstValue(...values) {
+  return values.find((value) => value !== undefined && value !== null && String(value).trim() !== "");
+}
+
+function employeeMatchesHoliday(h, empRecord, sessionEmployee, user) {
+  const employeeIds = [
+    empRecord?.id,
+    empRecord?.employeeId,
+    empRecord?.uid,
+    empRecord?.authUid,
+    sessionEmployee?.employeeId,
+    sessionEmployee?.id,
+    sessionEmployee?.uid,
+    user?.uid,
+  ]
+    .map(safeStr)
+    .filter(Boolean);
+
+  const holidayIds = [
+    h?.employeeId,
+    h?.employeeDocId,
+    h?.staffId,
+    h?.userId,
+    h?.uid,
+    h?.authUid,
+    h?.employeeUid,
+  ]
+    .map(safeStr)
+    .filter(Boolean);
+
+  if (holidayIds.some((id) => employeeIds.includes(id))) return true;
+
+  const employeeCodes = [
+    empRecord?.userCode,
+    empRecord?.employeeCode,
+    empRecord?.code,
+    sessionEmployee?.userCode,
+    sessionEmployee?.employeeCode,
+    sessionEmployee?.code,
+  ]
+    .map(canonicalEmployeeCode)
+    .filter(Boolean);
+
+  const holidayCodes = [
+    h?.employeeCode,
+    h?.userCode,
+    h?.code,
+    h?.staffCode,
+    h?.requestedByCode,
+    h?.createdByCode,
+    h?.driverCode,
+  ]
+    .map(canonicalEmployeeCode)
+    .filter(Boolean);
+
+  if (holidayCodes.some((code) => employeeCodes.includes(code))) return true;
+
+  const employeeNames = [
+    empRecord?.name,
+    empRecord?.displayName,
+    sessionEmployee?.name,
+    sessionEmployee?.displayName,
+    sessionEmployee?.fullName,
+    user?.displayName,
+  ]
+    .map(safeStr)
+    .filter(Boolean);
+
+  const holidayNames = [
+    h?.employee,
+    h?.name,
+    h?.employeeName,
+    h?.displayName,
+    h?.staffName,
+    h?.requestedBy,
+    h?.requestedByName,
+    h?.createdByName,
+  ]
+    .map(safeStr)
+    .filter(Boolean);
+
+  if (holidayNames.some((name) => employeeNames.includes(name))) return true;
+
+  const employeeEmails = [empRecord?.email, sessionEmployee?.email, user?.email]
+    .map(safeStr)
+    .filter(Boolean);
+
+  const holidayEmails = [
+    h?.email,
+    h?.employeeEmail,
+    h?.userEmail,
+    h?.requestedByEmail,
+    h?.createdByEmail,
+  ]
+    .map(safeStr)
+    .filter(Boolean);
+
+  return holidayEmails.some((email) => employeeEmails.includes(email));
+}
+
 function roundToHalf(n) {
   const x = Number(n);
   if (!Number.isFinite(x)) return 0;
@@ -847,6 +1544,37 @@ function toDateSafe(val) {
   if (val?.toDate && typeof val.toDate === "function") return val.toDate();
   const d = new Date(val);
   return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function getHolidayStart(h) {
+  return toDateSafe(
+    firstValue(
+      h?.startDate,
+      h?.dateFrom,
+      h?.fromDate,
+      h?.from,
+      h?.start,
+      h?.date,
+      h?.holidayStart,
+      h?.start_date
+    )
+  );
+}
+
+function getHolidayEnd(h) {
+  return (
+    toDateSafe(
+      firstValue(
+        h?.endDate,
+        h?.dateTo,
+        h?.toDate,
+        h?.to,
+        h?.end,
+        h?.holidayEnd,
+        h?.end_date
+      )
+    ) || getHolidayStart(h)
+  );
 }
 
 function isoDate(d) {
@@ -939,8 +1667,8 @@ function computeBusinessDaysClamped(h, clampS, clampE, origS, origE, isBankHolid
 
   const { startHalfFlag, endHalfFlag, startAMPM, endAMPM, legacySingleHalf } = getHalfMeta(h);
 
-  const origStart = origS || toDateSafe(h.startDate || h.from);
-  const origEnd = origE || toDateSafe(h.endDate || h.to) || origStart;
+  const origStart = origS || getHolidayStart(h);
+  const origEnd = origE || getHolidayEnd(h) || origStart;
 
   const origSingle =
     origStart && origEnd && origStart.toDateString() === origEnd.toDateString();
@@ -1005,7 +1733,7 @@ function computeBusinessDaysClamped(h, clampS, clampE, origS, origE, isBankHolid
 function displayTypeAndColor(h) {
   let displayType = "Other";
   let typeColor = "#22d3ee";
-  const typeStr = (h.leaveType || h.paidStatus || "").toLowerCase();
+  const typeStr = (h.leaveType || h.paidStatus || h.type || h.holidayType || "").toLowerCase();
 
   if (h.isAccrued || typeStr.includes("accrued") || typeStr.includes("toil")) {
     displayType = "Accrued";
@@ -1025,7 +1753,27 @@ function displayTypeAndColor(h) {
 
 function isApproved(h) {
   const s = safeStr(h.status || h.Status);
-  return s === "approved" || s === "accept" || s === "approved ✅";
+  return (
+    s === "approved" ||
+    s === "accept" ||
+    s === "accepted" ||
+    s === "confirmed" ||
+    s === "authorised" ||
+    s === "authorized" ||
+    s.startsWith("approved")
+  );
+}
+
+function isRequestedHoliday(h) {
+  const s = safeStr(h.status || h.Status);
+  return (
+    !s ||
+    s === "requested" ||
+    s === "request" ||
+    s === "pending" ||
+    s === "submitted" ||
+    s.includes("awaiting")
+  );
 }
 
 function formatDateShort(iso) {
@@ -1035,10 +1783,77 @@ function formatDateShort(iso) {
   return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
 }
 
+function formatDateCompact(iso) {
+  const d = parseYMD(iso);
+  if (!d) return "";
+  const day = String(d.getDate()).padStart(2, "0");
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const year = String(d.getFullYear()).slice(-2);
+  return `${day}/${month}/${year}`;
+}
+
+function noteCreatedMillis(note) {
+  const value = note?.createdAt;
+  if (value?.toDate && typeof value.toDate === "function") return value.toDate().getTime();
+  const d = value ? new Date(value) : null;
+  return d && !Number.isNaN(d.getTime()) ? d.getTime() : 0;
+}
+
+function groupSentNotes(notes) {
+  const groups = new Map();
+
+  notes.forEach((note) => {
+    const groupKey =
+      note.noteBatchId ||
+      `${note.text || ""}::${note.startDate || note.date || ""}::${note.endDate || note.date || ""}::${
+        note.createdByUid || ""
+      }`;
+    const existing =
+      groups.get(groupKey) || {
+        key: groupKey,
+        text: note.text || "",
+        startDate: note.startDate || note.date,
+        endDate: note.endDate || note.date,
+        docIds: [],
+        createdAtMs: 0,
+        blocksEmployeeBooking: !!note.blocksEmployeeBooking,
+      };
+
+    existing.docIds.push(note.id);
+    existing.createdAtMs = Math.max(existing.createdAtMs, noteCreatedMillis(note));
+    existing.blocksEmployeeBooking =
+      existing.blocksEmployeeBooking || !!note.blocksEmployeeBooking;
+    if (note.date && (!existing.startDate || note.date < existing.startDate)) {
+      existing.startDate = note.date;
+    }
+    if (note.date && (!existing.endDate || note.date > existing.endDate)) {
+      existing.endDate = note.date;
+    }
+    groups.set(groupKey, existing);
+  });
+
+  return Array.from(groups.values())
+    .sort((a, b) => {
+      const aDate = a.startDate || "";
+      const bDate = b.startDate || "";
+      if (aDate !== bDate) return aDate > bDate ? -1 : 1;
+      return b.createdAtMs - a.createdAtMs;
+    })
+    .slice(0, 20);
+}
+
+function formatNoteHistoryRange(note) {
+  const start = formatDateCompact(note.startDate);
+  const end = formatDateCompact(note.endDate);
+  if (!start) return "No date";
+  if (!end || end === start) return start;
+  return `${start} - ${end}`;
+}
+
 function formatHoliday(h) {
   if (!h) return null;
-  const s = toDateSafe(h.startDate || h.from);
-  const e = toDateSafe(h.endDate || h.to);
+  const s = getHolidayStart(h);
+  const e = getHolidayEnd(h);
   if (!s) return null;
   const sTxt = s.toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
   const eTxt = e ? e.toLocaleDateString("en-GB", { day: "2-digit", month: "short" }) : null;
@@ -1060,83 +1875,6 @@ function fieldLabel(field) {
   if (f === "notes") return "notes";
   if (f === "holiday") return "holiday / day off";
   return "this day";
-}
-
-function getStravaSummary(employee) {
-  const source =
-    employee?.strava ||
-    employee?.stravaProfile ||
-    employee?.integrations?.strava ||
-    employee?.connectedAccounts?.strava ||
-    null;
-
-  const athleteId = source?.athleteId || source?.athlete_id || source?.id;
-  const connected =
-    source?.connected === true ||
-    source?.isConnected === true ||
-    source?.accessToken ||
-    source?.refreshToken ||
-    athleteId;
-
-  if (!connected) {
-    return {
-      connected: false,
-      athleteName: "",
-      activityCount: null,
-      distanceLabel: "",
-      updatedAt: null,
-    };
-  }
-
-  const stats = source?.stats || source?.summary || {};
-  const athleteName =
-    source?.athleteName ||
-    source?.displayName ||
-    source?.name ||
-    [source?.firstname, source?.lastname].filter(Boolean).join(" ");
-  const activityCount =
-    firstFiniteNumber(
-      stats.activityCount,
-      stats.activities,
-      stats.totalActivities,
-      source?.activityCount
-    ) ?? null;
-  const distanceMeters = firstFiniteNumber(
-    stats.distanceMeters,
-    stats.totalDistanceMeters,
-    stats.distance,
-    source?.distanceMeters
-  );
-  const distanceKm = firstFiniteNumber(stats.distanceKm, stats.totalDistanceKm, source?.distanceKm);
-
-  return {
-    connected: true,
-    athleteName,
-    activityCount,
-    distanceLabel: formatDistance(distanceKm, distanceMeters),
-    updatedAt: source?.updatedAt || source?.lastSyncAt || stats.updatedAt || stats.lastSyncAt || null,
-  };
-}
-
-function firstFiniteNumber(...values) {
-  for (const value of values) {
-    const n = Number(value);
-    if (Number.isFinite(n)) return n;
-  }
-  return null;
-}
-
-function formatDistance(distanceKm, distanceMeters) {
-  const km =
-    Number.isFinite(Number(distanceKm))
-      ? Number(distanceKm)
-      : Number.isFinite(Number(distanceMeters))
-      ? Number(distanceMeters) / 1000
-      : null;
-
-  if (km === null) return "";
-  if (km >= 100) return `${Math.round(km)}km`;
-  return `${Math.round(km * 10) / 10}km`;
 }
 
 /* ---------- styles ---------- */
@@ -1316,6 +2054,20 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: "900",
   },
+  noteHistoryButton: {
+    minHeight: 30,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 5,
+    paddingHorizontal: 10,
+    borderWidth: 1,
+  },
+  noteHistoryButtonText: {
+    fontSize: 11,
+    fontWeight: "900",
+  },
 
   infoRow: {
     flexDirection: "row",
@@ -1412,6 +2164,155 @@ const styles = StyleSheet.create({
   sectionActionText: {
     fontSize: 12,
     fontWeight: "800",
+  },
+  notePanelCompact: {
+    padding: 10,
+    borderRadius: 12,
+  },
+  noteModeRow: {
+    flexDirection: "row",
+    gap: 6,
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 3,
+    marginBottom: 8,
+  },
+  noteModeButton: {
+    flex: 1,
+    minHeight: 30,
+    borderWidth: 1,
+    borderRadius: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingHorizontal: 8,
+  },
+  noteModeText: {
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  dateSelectRow: {
+    flexDirection: "row",
+    gap: 8,
+    marginBottom: 8,
+  },
+  dateSelectButton: {
+    flex: 1,
+    minWidth: 0,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingTop: 8,
+    paddingBottom: 7,
+  },
+  dateSelectValueRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  dateSelectValue: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  calendarWrap: {
+    borderWidth: 1,
+    borderRadius: 12,
+    marginBottom: 8,
+    overflow: "hidden",
+  },
+  inputLabel: {
+    fontSize: 11,
+    fontWeight: "800",
+    textTransform: "uppercase",
+    letterSpacing: 0.2,
+    marginBottom: 4,
+  },
+  noteInput: {
+    minHeight: 44,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  noteFooterRow: {
+    marginTop: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  checkRow: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    minHeight: 32,
+  },
+  checkRowText: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  noteSendAction: {
+    marginTop: 0,
+    minHeight: 34,
+    paddingVertical: 6,
+    paddingHorizontal: 11,
+  },
+  noteHistoryPanel: {
+    borderWidth: 1,
+    borderRadius: 12,
+    marginTop: 8,
+    padding: 8,
+    gap: 8,
+  },
+  noteHistoryLoading: {
+    minHeight: 34,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
+  noteHistoryMeta: {
+    fontSize: 12,
+    fontWeight: "700",
+    textAlign: "center",
+  },
+  noteHistoryItem: {
+    minHeight: 48,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  noteHistoryTextWrap: {
+    flex: 1,
+    minWidth: 0,
+  },
+  noteHistoryDate: {
+    fontSize: 11,
+    fontWeight: "900",
+    marginBottom: 2,
+  },
+  noteHistoryText: {
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  noteHistoryDelete: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
   },
   statusText: {
     fontSize: 14,

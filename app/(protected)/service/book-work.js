@@ -13,11 +13,10 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
-import { collection, getDocs } from "firebase/firestore";
 import PageHeaderCard from "../../../components/PageHeaderCard";
-import { db } from "../../../firebaseConfig";
 
 import { designTokens as t } from "../../../lib/design/tokens";
+import { getServiceCollectionRows } from "../../../lib/serviceCache";
 import { useTheme } from "../../../providers/ThemeProvider";
 
 const COLORS = {
@@ -317,7 +316,7 @@ export default function BookWorkScreen() {
     const fetchServiceDueVehicles = async () => {
       setServiceLoading(true);
       try {
-        const snap = await getDocs(collection(db, "vehicles"));
+        const vehicleRows = await getServiceCollectionRows("vehicles");
 
         const today = new Date();
         today.setHours(0, 0, 0, 0);
@@ -327,9 +326,9 @@ export default function BookWorkScreen() {
         const soon = [];
         const allVehicles = [];
 
-        snap.forEach((docSnap) => {
-          const data = docSnap.data() || {};
-          const id = docSnap.id;
+        vehicleRows.forEach((vehicle) => {
+          const data = vehicle || {};
+          const id = vehicle.id;
 
           allVehicles.push({ id, ...data });
 
@@ -395,14 +394,13 @@ export default function BookWorkScreen() {
     const fetchBookings = async () => {
       try {
         setPrepLoading(true);
-        const [legacySnap, maintenanceSnap] = await Promise.all([
-          getDocs(collection(db, "bookings")),
-          getDocs(collection(db, "maintenanceBookings")),
+        const [legacyData, maintenanceRows] = await Promise.all([
+          getServiceCollectionRows("bookings"),
+          getServiceCollectionRows("maintenanceBookings"),
         ]);
-        const legacyData = legacySnap.docs.map((d) => ({ id: d.id, ...d.data() }));
-        const maintenanceData = maintenanceSnap.docs.map((d) => ({
-          id: d.id,
-          ...normalizeMaintenanceBookingForPrep(d.data()),
+        const maintenanceData = maintenanceRows.map((booking) => ({
+          id: booking.id,
+          ...normalizeMaintenanceBookingForPrep(booking),
         }));
         const data = [...legacyData, ...maintenanceData];
         setBookings(data);

@@ -2,11 +2,11 @@
 import { Feather } from "@expo/vector-icons";
 import { useLocalSearchParams, useNavigation, useRouter } from "expo-router";
 import {
-  addDoc,
   arrayUnion,
   collection,
   doc,
   serverTimestamp,
+  setDoc,
   updateDoc,
 } from "firebase/firestore";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -24,6 +24,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { db } from "../../../../firebaseConfig";
+import { runOrQueueFirestoreMutations } from "../../../../lib/sync/firestoreQueue";
 import { useTheme } from "../../../../providers/ThemeProvider";
 
 const COLORS = {
@@ -233,7 +234,20 @@ export default function VehiclePrepScreen() {
         updatedAt: serverTimestamp(),
       };
 
-      await addDoc(collection(db, "vehiclePrepRecords"), record);
+      const prepRef = doc(collection(db, "vehiclePrepRecords"));
+      const mutations = [
+        {
+          run: () => setDoc(prepRef, record),
+          mutation: {
+            operation: "set",
+            docPath: `vehiclePrepRecords/${prepRef.id}`,
+            data: record,
+            options: { merge: false },
+            entityType: "vehiclePrepRecord",
+            entityId: prepRef.id,
+          },
+        },
+      ];
 
       if (vehicleId && vehicleId !== "vehicle") {
         const summary = {
@@ -245,15 +259,29 @@ export default function VehiclePrepScreen() {
           recordedAt: new Date(),
         };
 
-        await updateDoc(doc(db, "vehicles", String(vehicleId)), {
+        const vehicleUpdate = {
           lastVehiclePrep: summary,
           prepHistory: arrayUnion(summary),
+        };
+        mutations.push({
+          run: () => updateDoc(doc(db, "vehicles", String(vehicleId)), vehicleUpdate),
+          mutation: {
+            operation: "update",
+            docPath: `vehicles/${vehicleId}`,
+            data: vehicleUpdate,
+            entityType: "vehicle",
+            entityId: String(vehicleId),
+          },
         });
       }
 
+      const { queued } = await runOrQueueFirestoreMutations(mutations);
+
       Alert.alert(
-        markComplete ? "Vehicle prepped" : "Prep saved",
-        markComplete
+        queued ? "Saved offline" : markComplete ? "Vehicle prepped" : "Prep saved",
+        queued
+          ? "No internet right now. This vehicle prep will upload automatically when internet returns."
+          : markComplete
           ? "The vehicle prep has been recorded."
           : "The vehicle prep notes have been saved.",
         [

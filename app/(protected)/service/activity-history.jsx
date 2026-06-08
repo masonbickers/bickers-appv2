@@ -1,5 +1,4 @@
 import { useRouter } from "expo-router";
-import { collection, onSnapshot } from "firebase/firestore";
 import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
@@ -13,7 +12,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
-import { db } from "../../../firebaseConfig";
+import { useCachedServiceCollection } from "../../../lib/serviceCache";
 import { useTheme } from "../../../providers/ThemeProvider";
 
 const COLORS = {
@@ -172,22 +171,9 @@ function buildActivityItems({
 }
 
 function useCollectionRows(collectionName, onErrorLabel) {
-  const [rows, setRows] = useState([]);
-
-  useEffect(() => {
-    const unsub = onSnapshot(
-      collection(db, collectionName),
-      (snap) => {
-        setRows(snap.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
-      },
-      (err) => {
-        console.error(`Failed to load ${onErrorLabel}:`, err);
-      }
-    );
-
-    return () => unsub();
-  }, [collectionName, onErrorLabel]);
-
+  const { rows } = useCachedServiceCollection(collectionName, {
+    label: onErrorLabel,
+  });
   return rows;
 }
 

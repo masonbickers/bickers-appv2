@@ -61,7 +61,9 @@ function normaliseTimeValue(v) {
 }
 
 function normaliseAutofillType(v) {
-  return String(v || "").trim().toLowerCase() === "office" ? "office" : "yard";
+  const value = String(v || "").trim().toLowerCase();
+  if (value === "office" || value === "workshop") return value;
+  return "yard";
 }
 
 function getMonday(d) {
@@ -170,7 +172,13 @@ export default function TimesheetOverview() {
       );
 
       const start = normaliseTimeValue(
-        mode === "office"
+        mode === "workshop"
+          ? profile?.timesheetDefaults?.workshopStart ||
+              profile?.workshopStartTime ||
+              employee?.workshopStartTime ||
+              employee?.timesheetDefaults?.workshopStart ||
+              DEFAULT_YARD_START
+          : mode === "office"
           ? profile?.timesheetDefaults?.officeStart ||
               profile?.officeStartTime ||
               profile?.officeStart ||
@@ -185,7 +193,13 @@ export default function TimesheetOverview() {
               DEFAULT_YARD_START
       );
       const end = normaliseTimeValue(
-        mode === "office"
+        mode === "workshop"
+          ? profile?.timesheetDefaults?.workshopEnd ||
+              profile?.workshopEndTime ||
+              employee?.workshopEndTime ||
+              employee?.timesheetDefaults?.workshopEnd ||
+              DEFAULT_YARD_END
+          : mode === "office"
           ? profile?.timesheetDefaults?.officeEnd ||
               profile?.officeEndTime ||
               profile?.officeEnd ||
@@ -213,14 +227,18 @@ export default function TimesheetOverview() {
       setAutofillType(mode);
       setAutofillStartTime(
         normaliseTimeValue(
-          mode === "office"
+          mode === "workshop"
+            ? employee?.workshopStartTime || employee?.timesheetDefaults?.workshopStart
+            : mode === "office"
             ? employee?.officeStartTime || employee?.timesheetDefaults?.officeStart
             : employee?.yardStartTime || employee?.timesheetDefaults?.yardStart
         ) || (mode === "office" ? DEFAULT_OFFICE_START : DEFAULT_YARD_START)
       );
       setAutofillEndTime(
         normaliseTimeValue(
-          mode === "office"
+          mode === "workshop"
+            ? employee?.workshopEndTime || employee?.timesheetDefaults?.workshopEnd
+            : mode === "office"
             ? employee?.officeEndTime || employee?.timesheetDefaults?.officeEnd
             : employee?.yardEndTime || employee?.timesheetDefaults?.yardEnd
         ) || (mode === "office" ? DEFAULT_OFFICE_END : DEFAULT_YARD_END)
@@ -236,9 +254,13 @@ export default function TimesheetOverview() {
     employee?.timesheetDefaults?.defaultType,
     employee?.timesheetDefaults?.officeEnd,
     employee?.timesheetDefaults?.officeStart,
+    employee?.timesheetDefaults?.workshopEnd,
+    employee?.timesheetDefaults?.workshopStart,
     employee?.timesheetDefaults?.yardEnd,
     employee?.timesheetDefaults?.yardStart,
     employee?.userCode,
+    employee?.workshopEndTime,
+    employee?.workshopStartTime,
     employee?.yardEndTime,
     employee?.yardStartTime,
     isAuthed,
@@ -275,6 +297,17 @@ export default function TimesheetOverview() {
               "timesheetDefaults.officeStart": start,
               "timesheetDefaults.officeEnd": end,
             }
+          : mode === "workshop"
+          ? {
+              workshopStartTime: start,
+              workshopEndTime: end,
+              workshopStart: start,
+              workshopEnd: end,
+              timesheetDefaultType: "workshop",
+              "timesheetDefaults.defaultType": "workshop",
+              "timesheetDefaults.workshopStart": start,
+              "timesheetDefaults.workshopEnd": end,
+            }
           : {
               yardStartTime: start,
               yardEndTime: end,
@@ -293,6 +326,8 @@ export default function TimesheetOverview() {
       ];
       if (mode === "office") {
         sessionPairs.push(["timesheetOfficeStart", start], ["timesheetOfficeEnd", end]);
+      } else if (mode === "workshop") {
+        sessionPairs.push(["timesheetWorkshopStart", start], ["timesheetWorkshopEnd", end]);
       } else {
         sessionPairs.push(["timesheetYardStart", start], ["timesheetYardEnd", end]);
       }
@@ -329,7 +364,8 @@ export default function TimesheetOverview() {
       // 1) Load timesheets for this employee
       const qTs = query(
         collection(db, "timesheets"),
-        where("employeeCode", "==", userCode)
+        where("employeeCode", "==", userCode),
+        limit(60)
       );
       const snapTs = await getDocs(qTs);
       const mySheets = snapTs.docs.map((d) => ({ id: d.id, ...d.data() }));
@@ -338,7 +374,8 @@ export default function TimesheetOverview() {
       // 2) Load manager queries for this employee to flag weeks
       const qQueries = query(
         collection(db, "timesheetQueries"),
-        where("employeeCode", "==", userCode)
+        where("employeeCode", "==", userCode),
+        limit(30)
       );
       const snapQueries = await getDocs(qQueries);
 
@@ -606,7 +643,7 @@ export default function TimesheetOverview() {
         ) : (
           <>
             <Text style={[styles.defaultsSummary, { color: colors.text }]}>
-              {autofillType === "office" ? "Office" : "Yard"} • {autofillStartTime}-{autofillEndTime}
+              {autofillType === "office" ? "Office" : autofillType === "workshop" ? "Workshop" : "Yard"} • {autofillStartTime}-{autofillEndTime}
             </Text>
             <Text style={[styles.defaultsHelp, { color: colors.textMuted }]}>
               Tap Edit to change your default type and times.
@@ -649,7 +686,7 @@ export default function TimesheetOverview() {
             </Text>
 
             <View style={styles.typeRow}>
-              {["yard", "office"].map((type) => {
+              {["yard", "office", "workshop"].map((type) => {
                 const active = autofillType === type;
                 return (
                   <TouchableOpacity
@@ -676,6 +713,17 @@ export default function TimesheetOverview() {
                             employee?.officeEndTime || employee?.timesheetDefaults?.officeEnd
                           ) || DEFAULT_OFFICE_END
                         );
+                      } else if (type === "workshop") {
+                        setAutofillStartTime(
+                          normaliseTimeValue(
+                            employee?.workshopStartTime || employee?.timesheetDefaults?.workshopStart
+                          ) || DEFAULT_YARD_START
+                        );
+                        setAutofillEndTime(
+                          normaliseTimeValue(
+                            employee?.workshopEndTime || employee?.timesheetDefaults?.workshopEnd
+                          ) || DEFAULT_YARD_END
+                        );
                       } else {
                         setAutofillStartTime(
                           normaliseTimeValue(
@@ -692,7 +740,7 @@ export default function TimesheetOverview() {
                     disabled={settingsSaving}
                   >
                     <Text style={[styles.typeButtonText, { color: colors.text }]}>
-                      {type === "office" ? "Office" : "Yard"}
+                      {type === "office" ? "Office" : type === "workshop" ? "Workshop" : "Yard"}
                     </Text>
                   </TouchableOpacity>
                 );

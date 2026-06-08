@@ -24,6 +24,7 @@ import { getDownloadURL, ref, uploadBytesResumable } from "firebase/storage";
 
 // ⛽ Firebase + Auth provider
 import { auth, db, storage } from "../../firebaseConfig";
+import { formatDateDDMMYYYY } from "../../lib/dateFormat";
 import { useAuth } from "../../providers/AuthProvider"; // if file is app/vehicle-check.js use "./providers/AuthProvider"
 import { useTheme } from "../../providers/ThemeProvider"; // 🎨 theme
 
@@ -66,6 +67,23 @@ const normaliseParam = (value) => {
 const toISO = (d) =>
   (d?.toISOString?.() || new Date(d)).split?.("T")?.[0] ??
   new Date().toISOString().split("T")[0];
+
+const dateInputToISO = (value) => {
+  const raw = String(value || "").trim();
+  const uk = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(raw);
+  if (uk) {
+    const [, dd, mm, yyyy] = uk;
+    return `${yyyy}-${mm}-${dd}`;
+  }
+
+  const iso = /^(\d{4})[-/](\d{2})[-/](\d{2})$/.exec(raw);
+  if (iso) {
+    const [, yyyy, mm, dd] = iso;
+    return `${yyyy}-${mm}-${dd}`;
+  }
+
+  return raw;
+};
 
 const ensureFileUri = async (uri) => {
   if (!uri) return null;
@@ -280,23 +298,6 @@ export default function VehicleCheckPage() {
     );
   };
 
-  const takePhoto = async () => {
-    if (Platform.OS !== "web") {
-      const { status } =
-        await ImagePicker.requestCameraPermissionsAsync();
-      if (status !== "granted")
-        return Alert.alert("Permission", "Camera permission is required.");
-    }
-    const res = await ImagePicker.launchCameraAsync({
-      mediaTypes: IMAGES_ONLY,
-      quality: 1,
-    });
-    if (res.canceled) return;
-    const a = res.assets?.[0];
-    if (a)
-      setPhotos((p) => [...p, { uri: a.uri }].slice(0, 10));
-  };
-
   const uploadPhotos = async () => {
     const uid = user?.uid || auth.currentUser?.uid || "public";
     const uploaded = [];
@@ -490,9 +491,9 @@ export default function VehicleCheckPage() {
 
           <Field label="Date">
             <TextInput
-              value={dateISO}
-              onChangeText={setDateISO}
-              placeholder="YYYY-MM-DD"
+              value={formatDateDDMMYYYY(dateISO) || dateISO}
+              onChangeText={(text) => setDateISO(dateInputToISO(text))}
+              placeholder="DD/MM/YYYY"
               style={[
                 styles.input,
                 {
@@ -711,7 +712,6 @@ export default function VehicleCheckPage() {
             style={{ flexDirection: "row", gap: 8, marginBottom: 10 }}
           >
             <SmallBtn icon="image" text="Library" onPress={pickPhotos} />
-            <SmallBtn icon="camera" text="Camera" onPress={takePhoto} />
           </View>
 
           <View

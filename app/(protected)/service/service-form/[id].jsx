@@ -9,8 +9,6 @@ import {
   doc,
   getDoc,
   getDocs,
-  orderBy,
-  query,
   serverTimestamp,
   setDoc,
   updateDoc,
@@ -34,6 +32,8 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
 import { db, storage } from "../../../../firebaseConfig";
+import { getServiceCollectionRows } from "../../../../lib/serviceCache";
+import { runOrQueueFirestoreMutations } from "../../../../lib/sync/firestoreQueue";
 import { useTheme } from "../../../../providers/ThemeProvider";
 
 const COLORS = {
@@ -589,9 +589,9 @@ export default function ServiceFormScreen() {
   useEffect(() => {
     const loadVehicles = async () => {
       try {
-        const q = query(collection(db, "vehicles"), orderBy("name", "asc"));
-        const snap = await getDocs(q);
-        const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        const list = await getServiceCollectionRows("vehicles", {
+          orderByField: "name",
+        });
         setVehicles(list);
       } catch (err) {
         console.error("Failed to load vehicles for service form:", err);
@@ -1195,79 +1195,11 @@ export default function ServiceFormScreen() {
     }
   };
 
-  const handleTakePhoto = async () => {
-    try {
-      const { status } =
-        await ImagePicker.requestCameraPermissionsAsync();
-      if (status !== "granted") {
-        Alert.alert(
-          "Permission needed",
-          "We need access to your camera to take photos."
-        );
-        return;
-      }
-
-      const result = await ImagePicker.launchCameraAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        quality: 0.7,
-      });
-
-      if (result.canceled) return;
-
-      const asset = result.assets?.[0];
-      if (!asset?.uri) return;
-
-      setPhotos((prev) => [...prev, { uri: asset.uri }]);
-    } catch (err) {
-      console.error("Failed to take photo:", err);
-      Alert.alert("Error", "Could not open camera.");
-    }
-  };
-
   const handleRemovePhoto = (uri) => {
     setPhotos((prev) => prev.filter((p) => p.uri !== uri));
   };
 
   /* ---------------- PER-CHECK PHOTO HANDLERS ---------------- */
-
-  const handleTakeCheckPhoto = async () => {
-    if (!photoPickerLabel) return;
-    try {
-      const { status } =
-        await ImagePicker.requestCameraPermissionsAsync();
-      if (status !== "granted") {
-        Alert.alert(
-          "Permission needed",
-          "We need access to your camera to take photos."
-        );
-        return;
-      }
-
-      const result = await ImagePicker.launchCameraAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        quality: 0.7,
-      });
-
-      if (result.canceled) return;
-
-      const asset = result.assets?.[0];
-      if (!asset?.uri) return;
-
-      setCheckPhotos((prev) => {
-        const existing = prev[photoPickerLabel] || [];
-        return {
-          ...prev,
-          [photoPickerLabel]: [...existing, { uri: asset.uri }],
-        };
-      });
-    } catch (err) {
-      console.error("Failed to take photo for check:", err);
-      Alert.alert("Error", "Could not open camera.");
-    } finally {
-      setPhotoPickerVisible(false);
-      setPhotoPickerLabel(null);
-    }
-  };
 
   const handleAddCheckPhotoFromLibrary = async () => {
     if (!photoPickerLabel) return;
@@ -1397,6 +1329,7 @@ export default function ServiceFormScreen() {
 
       const serviceDefectActionsForRecord = { ...activeServiceDefectActions };
       const embeddedOpenDefects = [];
+      const firestoreMutations = [];
       for (const action of Object.values(serviceDefectActionsForRecord)) {
         if (action.action !== "not_repaired" || action.defectReportId) continue;
 
@@ -1423,7 +1356,17 @@ export default function ServiceFormScreen() {
           updatedAt: serverTimestamp(),
         };
 
-        await setDoc(defectRef, payload);
+        firestoreMutations.push({
+          run: () => setDoc(defectRef, payload),
+          mutation: {
+            operation: "set",
+            docPath: `defectReports/${defectRef.id}`,
+            data: payload,
+            options: { merge: false },
+            entityType: "defectReport",
+            entityId: defectRef.id,
+          },
+        });
         serviceDefectActionsForRecord[action.key] = {
           ...action,
           defectReportId: defectRef.id,
@@ -1483,11 +1426,20 @@ export default function ServiceFormScreen() {
           : { createdAt: serverTimestamp() }),
       };
 
-      if (isEditingRecord) {
-        await updateDoc(serviceRecordRef, record);
-      } else {
-        await setDoc(serviceRecordRef, record);
-      }
+      firestoreMutations.push({
+        run: () =>
+          isEditingRecord
+            ? updateDoc(serviceRecordRef, record)
+            : setDoc(serviceRecordRef, record),
+        mutation: {
+          operation: isEditingRecord ? "update" : "set",
+          docPath: `serviceRecords/${serviceRecordRef.id}`,
+          data: record,
+          options: isEditingRecord ? undefined : { merge: false },
+          entityType: "serviceRecord",
+          entityId: serviceRecordRef.id,
+        },
+      });
 
       const vehicleRef = doc(db, "vehicles", selectedVehicleId);
       const historyNotes = [workSummary.trim(), extraNotes.trim()]
@@ -1527,7 +1479,18 @@ export default function ServiceFormScreen() {
         updatePayload.mileage = odoNumber;
       }
 
-      await updateDoc(vehicleRef, updatePayload);
+      firestoreMutations.push({
+        run: () => updateDoc(vehicleRef, updatePayload),
+        mutation: {
+          operation: "update",
+          docPath: `vehicles/${selectedVehicleId}`,
+          data: updatePayload,
+          entityType: "vehicle",
+          entityId: selectedVehicleId,
+        },
+      });
+
+      const { queued } = await runOrQueueFirestoreMutations(firestoreMutations);
 
       // 🔥 clear just this draft now it’s finished
       try {
@@ -1551,8 +1514,14 @@ export default function ServiceFormScreen() {
       }
 
       Alert.alert(
-        isEditingRecord ? "Service updated" : "Service saved",
-        isEditingRecord
+        queued
+          ? "Saved offline"
+          : isEditingRecord
+          ? "Service updated"
+          : "Service saved",
+        queued
+          ? "No internet right now. This service will upload automatically when internet returns."
+          : isEditingRecord
           ? "Service record updated."
           : "Service record saved and vehicle updated.",
         [
@@ -2160,20 +2129,6 @@ export default function ServiceFormScreen() {
           <View style={styles.photoButtonsRow}>
             <TouchableOpacity
               style={styles.photoButton}
-              onPress={handleTakePhoto}
-              activeOpacity={0.85}
-            >
-              <Icon
-                name="camera"
-                size={18}
-                color={COLORS.textHigh}
-                style={{ marginRight: 6 }}
-              />
-              <Text style={styles.photoAddText}>Take photo</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.photoButton}
               onPress={handleAddPhotoFromLibrary}
               activeOpacity={0.85}
             >
@@ -2279,18 +2234,6 @@ export default function ServiceFormScreen() {
         >
           <View style={styles.modalSheet}>
             <Text style={styles.modalTitle}>Add photo for check</Text>
-            <TouchableOpacity
-              style={styles.modalOption}
-              onPress={handleTakeCheckPhoto}
-            >
-              <Icon
-                name="camera"
-                size={18}
-                color={COLORS.textHigh}
-                style={{ marginRight: 8 }}
-              />
-              <Text style={styles.modalOptionText}>Take photo</Text>
-            </TouchableOpacity>
             <TouchableOpacity
               style={styles.modalOption}
               onPress={handleAddCheckPhotoFromLibrary}
@@ -2857,7 +2800,7 @@ function ChecklistRow({
           onPress={onPressPhoto}
           activeOpacity={0.7}
         >
-          <Icon name="camera" size={16} color={COLORS.textMid} />
+          <Icon name="image" size={16} color={COLORS.textMid} />
         </TouchableOpacity>
       </View>
 

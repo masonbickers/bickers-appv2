@@ -6,6 +6,7 @@ import {
     ActivityIndicator,
     Alert,
     Image,
+    KeyboardAvoidingView,
     Platform,
     SafeAreaView,
     ScrollView,
@@ -24,6 +25,7 @@ import { doc, getDoc, serverTimestamp, setDoc } from "firebase/firestore";
 import { getDownloadURL, ref, uploadBytesResumable } from "firebase/storage";
 
 import { auth, db, storage } from "../../firebaseConfig";
+import { formatDateDDMMYYYY } from "../../lib/dateFormat";
 import { useAuth } from "../../providers/AuthProvider";
 import { useTheme } from "../../providers/ThemeProvider";
 
@@ -199,25 +201,22 @@ export default function RecceFormScreen() {
 
   /* --- Photo Management --- */
 
-  const ensureMediaPerms = async (type) => {
+  const ensureMediaPerms = async () => {
     if (Platform.OS === "web") return;
-    const { status } =
-      type === "camera"
-        ? await ImagePicker.requestCameraPermissionsAsync()
-        : await ImagePicker.requestMediaLibraryPermissionsAsync();
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
 
     if (status !== "granted") {
       Alert.alert(
         "Permission Required",
-        `Permission to access ${type} is required to continue.`
+        "Permission to access photos is required to continue."
       );
-      throw new Error(`Permission to access ${type} is required.`);
+      throw new Error("Permission to access photos is required.");
     }
   };
 
   const handlePickPhotos = async () => {
     try {
-      await ensureMediaPerms("photos");
+      await ensureMediaPerms();
       const res = await ImagePicker.launchImageLibraryAsync({
         allowsMultipleSelection: true,
         selectionLimit: 8 - reccePhotos.length,
@@ -236,27 +235,6 @@ export default function RecceFormScreen() {
       );
     } catch (e) {
       console.error("Photo pick failed:", e);
-    }
-  };
-
-  const handleTakePhoto = async () => {
-    try {
-      await ensureMediaPerms("camera");
-      const res = await ImagePicker.launchCameraAsync({
-        mediaTypes: IMAGES_ONLY,
-        quality: 1,
-      });
-
-      if (res.canceled) return;
-
-      const a = res.assets?.[0];
-      if (a) {
-        setReccePhotos((prev) =>
-          [...prev, { uri: a.uri, remote: false }].slice(0, 8)
-        );
-      }
-    } catch (e) {
-      console.error("Camera failed:", e);
     }
   };
 
@@ -429,34 +407,43 @@ export default function RecceFormScreen() {
     <SafeAreaView
       style={[styles.container, { backgroundColor: colors.background }]}
     >
-      <View
-        style={[
-          styles.header,
-          { borderBottomColor: colors.border || COLORS.border },
-        ]}
+      <KeyboardAvoidingView
+        style={styles.keyboardAvoider}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
-        <TouchableOpacity
-          onPress={router.back}
-          style={styles.backButton}
-          disabled={saving}
-        >
-          <Icon
-            name="arrow-left"
-            size={24}
-            color={colors.text || COLORS.textHigh}
-          />
-        </TouchableOpacity>
-        <Text
+        <View
           style={[
-            styles.pageTitle,
-            { color: colors.text || COLORS.textHigh },
+            styles.header,
+            { borderBottomColor: colors.border || COLORS.border },
           ]}
         >
-          Recce Form
-        </Text>
-      </View>
+          <TouchableOpacity
+            onPress={router.back}
+            style={styles.backButton}
+            disabled={saving}
+          >
+            <Icon
+              name="arrow-left"
+              size={24}
+              color={colors.text || COLORS.textHigh}
+            />
+          </TouchableOpacity>
+          <Text
+            style={[
+              styles.pageTitle,
+              { color: colors.text || COLORS.textHigh },
+            ]}
+          >
+            Recce Form
+          </Text>
+        </View>
 
-      <ScrollView contentContainerStyle={styles.scrollContent}>
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+          automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
+        >
         {/* Job Info Card */}
         <View
           style={[
@@ -489,7 +476,7 @@ export default function RecceFormScreen() {
               { color: colors.textMuted || COLORS.textMid },
             ]}
           >
-            Recce Date: {dateISO}
+            Recce Date: {formatDateDDMMYYYY(dateISO) || dateISO}
           </Text>
           <Text
             style={[
@@ -604,30 +591,6 @@ export default function RecceFormScreen() {
                   backgroundColor: colors.surfaceAlt || COLORS.lightGray,
                 },
               ]}
-              onPress={handleTakePhoto}
-              disabled={reccePhotos.length >= 8 || saving}
-            >
-              <Icon
-                name="camera"
-                size={20}
-                color={colors.text || COLORS.textHigh}
-              />
-              <Text
-                style={[
-                  styles.photoActionText,
-                  { color: colors.text || COLORS.textHigh },
-                ]}
-              >
-                Take Photo
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[
-                styles.photoActionButton,
-                {
-                  backgroundColor: colors.surfaceAlt || COLORS.lightGray,
-                },
-              ]}
               onPress={handlePickPhotos}
               disabled={reccePhotos.length >= 8 || saving}
             >
@@ -680,7 +643,8 @@ export default function RecceFormScreen() {
         </TouchableOpacity>
 
         <View style={{ height: 40 }} />
-      </ScrollView>
+        </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -691,6 +655,9 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: COLORS.background,
+  },
+  keyboardAvoider: {
+    flex: 1,
   },
   loadingContainer: {
     flex: 1,
@@ -719,6 +686,7 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     padding: 16,
+    paddingBottom: 180,
   },
   infoCard: {
     backgroundColor: COLORS.card,

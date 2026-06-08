@@ -23,15 +23,14 @@ import {
     arrayUnion,
     collection,
     doc,
-    getDocs,
-    orderBy,
-    query,
     serverTimestamp,
     setDoc,
     updateDoc,
 } from "firebase/firestore";
 import { getDownloadURL, ref, uploadBytesResumable } from "firebase/storage";
 import { db, storage } from "../../../firebaseConfig";
+import { getServiceCollectionRows } from "../../../lib/serviceCache";
+import { runOrQueueFirestoreMutations } from "../../../lib/sync/firestoreQueue";
 import { useTheme } from "../../../providers/ThemeProvider";
 
 const COLORS = {
@@ -153,12 +152,12 @@ export default function DefectFormScreen() {
     const loadVehicles = async () => {
       try {
         setLoadingVehicles(true);
-        const q = query(collection(db, "vehicles"), orderBy("name", "asc"));
-        const snap = await getDocs(q);
-        const list = snap.docs.map((d) => {
-          const data = d.data() || {};
+        const rows = await getServiceCollectionRows("vehicles", {
+          orderByField: "name",
+        });
+        const list = rows.map((data) => {
           return {
-            id: d.id,
+            id: data.id,
             name: data.name || data.vehicleName || "Unnamed vehicle",
             reg: data.registration || data.reg || "",
             manufacturer: data.manufacturer || "",
@@ -408,8 +407,19 @@ export default function DefectFormScreen() {
         updatedAt: serverTimestamp(),
       };
 
-      // 1) Save into standalone defectReports collection
-      await setDoc(defectRef, payload);
+      const mutations = [
+        {
+          run: () => setDoc(defectRef, payload),
+          mutation: {
+            operation: "set",
+            docPath: `defectReports/${defectRef.id}`,
+            data: payload,
+            options: { merge: false },
+            entityType: "defectReport",
+            entityId: defectRef.id,
+          },
+        },
+      ];
 
       // 2) ALSO push into the vehicle's defects[] array so it appears in Defects screen
       if (effectiveVehicleId) {
@@ -429,13 +439,26 @@ export default function DefectFormScreen() {
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
         };
-
-        await updateDoc(vehicleRef, {
+        const vehicleUpdate = {
           defects: arrayUnion(embeddedDefect),
+        };
+        mutations.push({
+          run: () => updateDoc(vehicleRef, vehicleUpdate),
+          mutation: {
+            operation: "update",
+            docPath: `vehicles/${effectiveVehicleId}`,
+            data: vehicleUpdate,
+            entityType: "vehicle",
+            entityId: String(effectiveVehicleId),
+          },
         });
       }
 
-      Alert.alert("Saved", "Defect report saved.", [
+      const { queued } = await runOrQueueFirestoreMutations(mutations);
+
+      Alert.alert(queued ? "Saved offline" : "Saved", queued
+        ? "No internet right now. This defect report will upload automatically when internet returns."
+        : "Defect report saved.", [
         {
           text: "OK",
           onPress: () => {
@@ -811,7 +834,7 @@ export default function DefectFormScreen() {
               activeOpacity={0.9}
             >
               <Icon
-                name="camera"
+                name="image"
                 size={18}
                 color={colors.text || COLORS.textHigh}
               />

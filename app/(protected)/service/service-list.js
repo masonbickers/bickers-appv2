@@ -1,7 +1,6 @@
 // app/(protected)/service-list.jsx
 import { useRouter } from "expo-router";
-import { collection, onSnapshot, orderBy, query } from "firebase/firestore";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   ActivityIndicator,
   ScrollView,
@@ -14,9 +13,9 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
-import { db } from "../../../firebaseConfig";
 import PageHeaderCard from "../../../components/PageHeaderCard";
 import { designTokens as t } from "../../../lib/design/tokens";
+import { useCachedServiceCollection } from "../../../lib/serviceCache";
 import { useTheme } from "../../../providers/ThemeProvider";
 
 /* ---------- CONSTANTS & HELPERS ---------- */
@@ -125,8 +124,10 @@ export default function ServiceListScreen() {
   const router = useRouter();
   const { colors } = useTheme();
 
-  const [vehicles, setVehicles] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const { rows: vehicles, loading } = useCachedServiceCollection("vehicles", {
+    label: "vehicles for service list",
+    orderByField: "name",
+  });
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [expandedStatus, setExpandedStatus] = useState({
@@ -136,27 +137,6 @@ export default function ServiceListScreen() {
     unknown: true,
   });
 
-  useEffect(() => {
-    const q = query(collection(db, "vehicles"), orderBy("name", "asc"));
-
-    const unsub = onSnapshot(
-      q,
-      (snap) => {
-        const data = snap.docs.map((doc) => ({
-          id: doc.id,
-          ...doc.data(),
-        }));
-        setVehicles(data);
-        setLoading(false);
-      },
-      (err) => {
-        console.error("Failed to load vehicles for service-list:", err);
-        setLoading(false);
-      }
-    );
-
-    return () => unsub();
-  }, []);
 
   const processed = useMemo(() => {
     return vehicles.map((v) => {

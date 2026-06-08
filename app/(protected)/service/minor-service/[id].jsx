@@ -8,9 +8,6 @@ import {
   arrayUnion,
   collection,
   doc,
-  getDocs,
-  orderBy,
-  query,
   serverTimestamp,
   setDoc,
   updateDoc,
@@ -32,6 +29,8 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { db, storage } from "../../../../firebaseConfig";
+import { getServiceCollectionRows } from "../../../../lib/serviceCache";
+import { runOrQueueFirestoreMutations } from "../../../../lib/sync/firestoreQueue";
 import { useTheme } from "../../../../providers/ThemeProvider";
 
 const COLORS = {
@@ -292,9 +291,9 @@ export default function MinorServiceFormScreen() {
   useEffect(() => {
     const loadVehicles = async () => {
       try {
-        const q = query(collection(db, "vehicles"), orderBy("name", "asc"));
-        const snap = await getDocs(q);
-        const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        const list = await getServiceCollectionRows("vehicles", {
+          orderByField: "name",
+        });
         setVehicles(list);
       } catch (err) {
         console.error("Failed to load vehicles for minor service:", err);
@@ -665,35 +664,6 @@ export default function MinorServiceFormScreen() {
     }
   };
 
-  const handleTakePhoto = async () => {
-    try {
-      const { status } =
-        await ImagePicker.requestCameraPermissionsAsync();
-      if (status !== "granted") {
-        Alert.alert(
-          "Permission needed",
-          "We need access to your camera to take photos."
-        );
-        return;
-      }
-
-      const result = await ImagePicker.launchCameraAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        quality: 0.7,
-      });
-
-      if (result.canceled) return;
-
-      const asset = result.assets?.[0];
-      if (!asset?.uri) return;
-
-      setPhotos((prev) => [...prev, { uri: asset.uri }]);
-    } catch (err) {
-      console.error("Failed to take photo:", err);
-      Alert.alert("Error", "Could not open camera.");
-    }
-  };
-
   const handleRemovePhoto = (uri) => {
     setPhotos((prev) => prev.filter((p) => p.uri !== uri));
   };
@@ -761,8 +731,6 @@ export default function MinorServiceFormScreen() {
         createdAt: serverTimestamp(),
       };
 
-      await setDoc(serviceRecordRef, record);
-
       const vehicleRef = doc(db, "vehicles", selectedVehicleId);
       const historyNotes = [workSummary.trim(), extraNotes.trim()]
         .filter(Boolean)
@@ -795,7 +763,29 @@ export default function MinorServiceFormScreen() {
         updatePayload.mileage = odoNumber;
       }
 
-      await updateDoc(vehicleRef, updatePayload);
+      const { queued } = await runOrQueueFirestoreMutations([
+        {
+          run: () => setDoc(serviceRecordRef, record),
+          mutation: {
+            operation: "set",
+            docPath: `serviceRecords/${serviceRecordRef.id}`,
+            data: record,
+            options: { merge: false },
+            entityType: "serviceRecord",
+            entityId: serviceRecordRef.id,
+          },
+        },
+        {
+          run: () => updateDoc(vehicleRef, updatePayload),
+          mutation: {
+            operation: "update",
+            docPath: `vehicles/${selectedVehicleId}`,
+            data: updatePayload,
+            entityType: "vehicle",
+            entityId: selectedVehicleId,
+          },
+        },
+      ]);
 
       // clear just this draft
       try {
@@ -819,8 +809,10 @@ export default function MinorServiceFormScreen() {
       }
 
       Alert.alert(
-        "Minor service saved",
-        "Service record saved and vehicle updated.",
+        queued ? "Saved offline" : "Minor service saved",
+        queued
+          ? "No internet right now. This service will upload automatically when internet returns."
+          : "Service record saved and vehicle updated.",
         [
           {
             text: "OK",
@@ -1283,20 +1275,6 @@ export default function MinorServiceFormScreen() {
 
         <View style={styles.card}>
           <View style={styles.photoButtonsRow}>
-            <TouchableOpacity
-              style={styles.photoButton}
-              onPress={handleTakePhoto}
-              activeOpacity={0.85}
-            >
-              <Feather
-                name="camera"
-                size={16}
-                color={COLORS.textHigh}
-                style={{ marginRight: 6 }}
-              />
-              <Text style={styles.photoAddText}>Take photo</Text>
-            </TouchableOpacity>
-
             <TouchableOpacity
               style={styles.photoButton}
               onPress={handleAddPhotoFromLibrary}

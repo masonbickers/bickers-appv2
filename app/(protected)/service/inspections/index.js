@@ -1,12 +1,5 @@
 // app/(protected)/service/inspections/index.js
-import { useFocusEffect, useRouter } from "expo-router";
-import {
-  collection,
-  onSnapshot,
-  orderBy,
-  query,
-} from "firebase/firestore";
-import { useCallback, useState } from "react";
+import { useRouter } from "expo-router";
 import {
   ActivityIndicator,
   ScrollView,
@@ -18,7 +11,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
-import { db } from "../../../../firebaseConfig";
+import { useCachedServiceCollection } from "../../../../lib/serviceCache";
 import { useTheme } from "../../../../providers/ThemeProvider";
 
 const COLORS = {
@@ -52,30 +45,13 @@ function formatDate(raw) {
 export default function InspectionsScreen() {
   const router = useRouter();
   const { colors } = useTheme();
-  const [inspections, setInspections] = useState([]);
-  const [loading, setLoading] = useState(true);
-
-  useFocusEffect(
-    useCallback(() => {
-      const q = query(
-        collection(db, "equipmentInspections"),
-        orderBy("createdAt", "desc")
-      );
-      const unsub = onSnapshot(
-        q,
-        (snap) => {
-          setInspections(
-            snap.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
-          );
-          setLoading(false);
-        },
-        (err) => {
-          console.error("Failed to load inspections:", err);
-          setLoading(false);
-        }
-      );
-      return () => unsub();
-    }, [])
+  const { rows: inspections, loading } = useCachedServiceCollection(
+    "equipmentInspections",
+    {
+      label: "equipment inspections",
+      orderByField: "createdAt",
+      orderDirection: "desc",
+    }
   );
 
   const handleNew = () => {

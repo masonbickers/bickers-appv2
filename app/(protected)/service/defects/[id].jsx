@@ -1,10 +1,8 @@
 import { useLocalSearchParams, useRouter } from "expo-router";
 import {
   arrayUnion,
-  collection,
   doc,
   getDoc,
-  getDocs,
   serverTimestamp,
   writeBatch,
 } from "firebase/firestore";
@@ -23,6 +21,7 @@ import Icon from "react-native-vector-icons/Feather";
 
 import { db } from "../../../../firebaseConfig";
 import { designTokens as t } from "../../../../lib/design/tokens";
+import { getServiceCollectionRows } from "../../../../lib/serviceCache";
 import { useTheme } from "../../../../providers/ThemeProvider";
 
 const COLORS = {
@@ -239,11 +238,9 @@ export default function DefectDetailScreen() {
 
         const data = { id: snap.id, ...snap.data() };
         setRecord(data);
-        const vehiclesSnap = await getDocs(collection(db, "vehicles"));
-        const vehicles = vehiclesSnap.docs.map((vehicleDoc) => ({
-          id: vehicleDoc.id,
-          ...vehicleDoc.data(),
-        }));
+        const vehicles = await getServiceCollectionRows("vehicles", {
+          orderByField: "name",
+        });
         setMatchedVehicle(findVehicleForRecord(data, vehicles) || null);
 
         if (route.source === "vehicleChecks") {

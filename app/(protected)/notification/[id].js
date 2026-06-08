@@ -16,6 +16,7 @@ import { doc, getDoc } from "firebase/firestore";
 import { db } from "../../../firebaseConfig";
 
 import { getInbox, markRead } from "../../../lib/notificationInbox";
+import { formatDateDDMMYYYY } from "../../../lib/dateFormat";
 import { useTheme } from "../../../providers/ThemeProvider";
 
 function withAlpha(hex, alpha) {
@@ -278,7 +279,7 @@ export default function NotificationDetailPage() {
                 </Text>
                 {!!extractISOFromNotificationData(item.data) && (
                   <Text style={[styles.metaText, { color: colors.textMuted }]}>
-                    Date: {extractISOFromNotificationData(item.data)}
+                    Date: {formatDateDDMMYYYY(extractISOFromNotificationData(item.data))}
                   </Text>
                 )}
               </>

@@ -39,12 +39,6 @@ export default function Uploader() {
     if (status !== 'granted') throw new Error('Permission to access photos is required.');
   };
 
-  const ensureCameraPerms = async () => {
-    if (Platform.OS === 'web') return;
-    const { status } = await ImagePicker.requestCameraPermissionsAsync();
-    if (status !== 'granted') throw new Error('Permission to use camera is required.');
-  };
-
   const pickFromLibrary = async () => {
     try {
       await ensureMediaPerms();
@@ -70,29 +64,6 @@ export default function Uploader() {
     } catch (e) {
       console.warn(e);
       Alert.alert('Error', e?.message || 'Could not open library.');
-    }
-  };
-
-  const takePhoto = async () => {
-    try {
-      await ensureCameraPerms();
-      const res = await ImagePicker.launchCameraAsync({
-        mediaTypes: IMAGES_ONLY,
-        quality: 1,
-        // IMPORTANT: no base64
-      });
-      if (res?.canceled) return;
-
-      const a = (Array.isArray(res?.assets) ? res.assets : [])[0];
-      if (a && typeof a.uri === 'string' && a.uri) {
-        setItems(prev => {
-          const merged = [...(Array.isArray(prev) ? prev : []), { uri: a.uri }].slice(0, 16);
-          return merged.filter(v => v && typeof v.uri === 'string' && v.uri.length > 0);
-        });
-      }
-    } catch (e) {
-      console.warn(e);
-      Alert.alert('Error', e?.message || 'Could not open camera.');
     }
   };
 
@@ -216,14 +187,6 @@ export default function Uploader() {
             </TouchableOpacity>
 
             <TouchableOpacity
-              style={[styles.btn, styles.btnGhost, uploading && { opacity: 0.6 }]}
-              onPress={takePhoto}
-              disabled={uploading}
-            >
-              <Text style={styles.btnText}>Camera</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
               style={[styles.btn, styles.btnPrimary, uploading && { opacity: 0.7 }]}
               onPress={uploadAll}
               disabled={uploading}
@@ -238,7 +201,7 @@ export default function Uploader() {
         {/* Selected previews */}
         <View style={styles.grid}>
           {(!Array.isArray(items) || items.length === 0) ? (
-            <Text style={styles.emptyHint}>No photos yet — use Library or Camera.</Text>
+            <Text style={styles.emptyHint}>No photos yet - use Library.</Text>
           ) : (
             items.map((it, idx) => (
               <View

@@ -1,5 +1,5 @@
 import { useRouter } from "expo-router";
-import { collection, getDocs } from "firebase/firestore";
+import { collection, getDocs, query, where } from "firebase/firestore";
 import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
@@ -16,6 +16,7 @@ import {
 import { Calendar } from "react-native-calendars";
 import Icon from "react-native-vector-icons/Feather";
 import { db } from "../../firebaseConfig";
+import { useAuth } from "../../providers/AuthProvider";
 import { useTheme } from "../../providers/ThemeProvider";
 
 function withAlpha(hex, alpha) {
@@ -30,6 +31,7 @@ function withAlpha(hex, alpha) {
 
 export default function WorkDiaryPage() {
   const router = useRouter();
+  const { employee } = useAuth();
   const { colors } = useTheme();
 
   const [selectedDate, setSelectedDate] = useState(
@@ -100,8 +102,14 @@ export default function WorkDiaryPage() {
       };
 
       try {
+        const bookingsQuery = employee?.userCode
+          ? query(
+              collection(db, "bookings"),
+              where("employeeCodes", "array-contains", String(employee.userCode))
+            )
+          : collection(db, "bookings");
         const [bookingsSnap, vehiclesSnap] = await Promise.all([
-          getDocs(collection(db, "bookings")),
+          getDocs(bookingsQuery),
           getDocs(collection(db, "vehicles")),
         ]);
 
@@ -152,7 +160,7 @@ export default function WorkDiaryPage() {
     return () => {
       alive = false;
     };
-  }, [tomorrowISO, reloadToken]);
+  }, [employee?.userCode, tomorrowISO, reloadToken]);
 
   useEffect(() => {
     const day = selectedDate;

@@ -30,13 +30,17 @@ type EmployeeSession = {
   yardEndTime?: string;
   officeStartTime?: string;
   officeEndTime?: string;
-  timesheetDefaultType?: "yard" | "office";
+  workshopStartTime?: string;
+  workshopEndTime?: string;
+  timesheetDefaultType?: "yard" | "office" | "workshop";
   timesheetDefaults?: {
     yardStart?: string;
     yardEnd?: string;
     officeStart?: string;
     officeEnd?: string;
-    defaultType?: "yard" | "office";
+    workshopStart?: string;
+    workshopEnd?: string;
+    defaultType?: "yard" | "office" | "workshop";
   };
 };
 
@@ -101,6 +105,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         "timesheetYardEnd",
         "timesheetOfficeStart",
         "timesheetOfficeEnd",
+        "timesheetWorkshopStart",
+        "timesheetWorkshopEnd",
         "timesheetDefaultType",
       ]);
 
@@ -121,9 +127,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const yardEnd = m.timesheetYardEnd || "";
         const officeStart = m.timesheetOfficeStart || "";
         const officeEnd = m.timesheetOfficeEnd || "";
+        const workshopStart = m.timesheetWorkshopStart || "";
+        const workshopEnd = m.timesheetWorkshopEnd || "";
+        const rawDefaultType = String(m.timesheetDefaultType || "").trim().toLowerCase();
         const defaultType =
-          String(m.timesheetDefaultType || "").trim().toLowerCase() === "office"
-            ? "office"
+          rawDefaultType === "office" || rawDefaultType === "workshop"
+            ? rawDefaultType
             : "yard";
 
         setEmployee({
@@ -138,12 +147,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           yardEndTime: yardEnd,
           officeStartTime: officeStart,
           officeEndTime: officeEnd,
+          workshopStartTime: workshopStart,
+          workshopEndTime: workshopEnd,
           timesheetDefaultType: defaultType,
           timesheetDefaults: {
             yardStart,
             yardEnd,
             officeStart,
             officeEnd,
+            workshopStart,
+            workshopEnd,
             defaultType,
           },
         });
@@ -166,11 +179,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await loadSession();
   };
 
-  // Real Firebase user OR employee session
+  // Require Firebase Auth plus the employee session created after phone verification.
   const isAuthed = useMemo(() => {
     const realUser = !!user && !user.isAnonymous;
     const employeeOK = !!employee?.employeeId;
-    return realUser || employeeOK;
+    return realUser && employeeOK;
   }, [user, employee]);
 
   const loading = !(authReady && sessionReady);

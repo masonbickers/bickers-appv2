@@ -1,5 +1,5 @@
 import { useRouter } from "expo-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Alert,
   SafeAreaView,
@@ -11,7 +11,17 @@ import {
   View,
 } from "react-native";
 import Icon from "react-native-vector-icons/Feather";
+import { sendPasswordResetEmail } from "firebase/auth";
 
+import { auth } from "../../firebaseConfig";
+import {
+  cancelAllMaintenanceReminders,
+  DEFAULT_MAINTENANCE_REMINDER_TIME,
+  getMaintenanceReminderTime,
+  getMaintenanceRemindersEnabled,
+  setMaintenanceReminderTime,
+  setMaintenanceRemindersEnabled,
+} from "../../lib/maintenanceReminders";
 import { NOTIFICATIONS_ENABLED } from "../../lib/notifications";
 import { useTheme } from "../../providers/ThemeProvider";
 
@@ -30,7 +40,13 @@ export default function SettingsPage() {
   const [notificationsEnabled, setNotificationsEnabled] = useState(
     !!NOTIFICATIONS_ENABLED
   );
+  const [maintenanceReminderEnabled, setMaintenanceReminderEnabled] = useState(false);
+  const [maintenanceReminderTime, setMaintenanceReminderTimeState] = useState(
+    DEFAULT_MAINTENANCE_REMINDER_TIME
+  );
+  const [maintenanceReminderSaving, setMaintenanceReminderSaving] = useState(false);
   const { theme, colors, setTheme } = useTheme();
+  const maintenanceReminderTimes = ["07:00", "09:00", "12:00", "17:00"];
 
   const settings = [
     {
@@ -46,11 +62,7 @@ export default function SettingsPage() {
           label: "Change Password",
           icon: "lock",
           subLabel: "Update your login credentials",
-          onPress: () =>
-            Alert.alert(
-              "Coming soon",
-              "Password changes are not available in-app yet."
-            ),
+          onPress: handleChangePassword,
         },
       ],
     },
@@ -64,6 +76,18 @@ export default function SettingsPage() {
           subLabel: NOTIFICATIONS_ENABLED
             ? "Control in-app notification alerts"
             : "Temporarily disabled across the app",
+        },
+        {
+          label: "Maintenance Job Reminders",
+          icon: "clock",
+          type: "maintenance-reminder-toggle",
+          subLabel: "Day-before alerts for booked maintenance jobs",
+        },
+        {
+          label: "Reminder Time",
+          icon: "watch",
+          type: "maintenance-reminder-time",
+          subLabel: "When maintenance job alerts should arrive",
         },
         {
           label: "Appearance",
@@ -99,6 +123,96 @@ export default function SettingsPage() {
   const handleNotificationsToggle = (next) => {
     if (!NOTIFICATIONS_ENABLED) return;
     setNotificationsEnabled(next);
+  };
+
+  useEffect(() => {
+    let alive = true;
+    Promise.all([
+      getMaintenanceRemindersEnabled(),
+      getMaintenanceReminderTime(),
+    ])
+      .then(([enabled, reminderTime]) => {
+        if (!alive) return;
+        setMaintenanceReminderEnabled(enabled);
+        setMaintenanceReminderTimeState(reminderTime);
+      })
+      .catch((e) => {
+        console.warn("[maintenance-reminders] failed to load setting:", e);
+      });
+
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const handleMaintenanceReminderToggle = async (next) => {
+    if (maintenanceReminderSaving) return;
+
+    try {
+      setMaintenanceReminderSaving(true);
+      setMaintenanceReminderEnabled(next);
+      await setMaintenanceRemindersEnabled(next);
+      if (!next) {
+        await cancelAllMaintenanceReminders();
+      }
+    } catch (e) {
+      setMaintenanceReminderEnabled(!next);
+      Alert.alert(
+        "Could not update reminders",
+        e?.message || "Please try again."
+      );
+    } finally {
+      setMaintenanceReminderSaving(false);
+    }
+  };
+
+  const handleMaintenanceReminderTimeChange = async (time) => {
+    if (maintenanceReminderSaving || time === maintenanceReminderTime) return;
+
+    const previous = maintenanceReminderTime;
+    try {
+      setMaintenanceReminderSaving(true);
+      setMaintenanceReminderTimeState(time);
+      await setMaintenanceReminderTime(time);
+    } catch (e) {
+      setMaintenanceReminderTimeState(previous);
+      Alert.alert(
+        "Could not update reminder time",
+        e?.message || "Please try again."
+      );
+    } finally {
+      setMaintenanceReminderSaving(false);
+    }
+  };
+
+  const handleChangePassword = () => {
+    const email = String(auth.currentUser?.email || "").trim().toLowerCase();
+    if (!email) {
+      Alert.alert("No email found", "Please log out and sign in again.");
+      return;
+    }
+
+    Alert.alert(
+      "Change password?",
+      `We will send a password reset link to ${email}.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Send email",
+          onPress: async () => {
+            try {
+              await sendPasswordResetEmail(auth, email);
+              Alert.alert(
+                "Email sent",
+                "Check your email and follow the link to choose a new password."
+              );
+            } catch (err) {
+              Alert.alert("Could not send email", err?.message || "Please try again.");
+            }
+          },
+        },
+      ]
+    );
   };
 
   return (
@@ -207,6 +321,51 @@ export default function SettingsPage() {
                     }}
                     thumbColor={notificationsEnabled ? "#fff" : "#888"}
                   />
+                ) : item.type === "maintenance-reminder-toggle" ? (
+                  <Switch
+                    value={maintenanceReminderEnabled}
+                    onValueChange={handleMaintenanceReminderToggle}
+                    disabled={maintenanceReminderSaving}
+                    trackColor={{
+                      false: withAlpha(colors.textMuted, 0.45),
+                      true: colors.accent,
+                    }}
+                    thumbColor={maintenanceReminderEnabled ? "#fff" : "#888"}
+                  />
+                ) : item.type === "maintenance-reminder-time" ? (
+                  <View style={styles.timeButtonsRow}>
+                    {maintenanceReminderTimes.map((time) => {
+                      const active = maintenanceReminderTime === time;
+                      return (
+                        <TouchableOpacity
+                          key={time}
+                          onPress={() => handleMaintenanceReminderTimeChange(time)}
+                          activeOpacity={0.85}
+                          disabled={maintenanceReminderSaving}
+                          style={[
+                            styles.timeButton,
+                            {
+                              borderColor: active ? colors.accent : colors.border,
+                              backgroundColor: active
+                                ? withAlpha(colors.accent, 0.18)
+                                : colors.surface,
+                            },
+                          ]}
+                        >
+                          <Text
+                            style={[
+                              styles.timeButtonText,
+                              {
+                                color: active ? colors.accent : colors.textMuted,
+                              },
+                            ]}
+                          >
+                            {time}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
                 ) : item.type === "theme" ? (
                   <View style={styles.themeButtonsRow}>
                     {["system", "light", "dark"].map((mode) => {
@@ -414,6 +573,26 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 16,
     marginTop: 2,
+  },
+
+  timeButtonsRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "flex-end",
+    gap: 6,
+    maxWidth: 180,
+  },
+  timeButton: {
+    minWidth: 54,
+    alignItems: "center",
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  timeButtonText: {
+    fontSize: 12,
+    fontWeight: "800",
   },
 
   themeButtonsRow: {

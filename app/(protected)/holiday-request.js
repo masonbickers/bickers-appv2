@@ -622,6 +622,9 @@ export default function HolidayRequestPage() {
 
       const holidayData = {
         employee: name,
+        employeeCode: employee?.userCode || empRecord?.userCode || null,
+        userCode: employee?.userCode || empRecord?.userCode || null,
+        employeeEmail: employee?.email || empRecord?.email || user?.email || null,
 
         // keep as strings (your web + HR parser supports these)
         startDate: startStr,

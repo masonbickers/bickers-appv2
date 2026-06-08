@@ -2,18 +2,19 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import type { User } from "firebase/auth";
 import { onAuthStateChanged } from "firebase/auth";
+import { doc, getDoc } from "firebase/firestore";
 import React, {
   createContext,
+  useCallback,
   useContext,
   useEffect,
   useMemo,
   useState,
 } from "react";
-import {
-  normaliseSessionRole,
-  resolveWorkspaceAccess,
-} from "../lib/access";
-import { auth } from "../firebaseConfig";
+import { resolveWorkspaceAccess } from "../lib/access";
+import { auth, db } from "../firebaseConfig";
+
+const DEFAULT_COMPANY_ID = "bickers-action";
 
 type EmployeeSession = {
   role?: string;
@@ -22,6 +23,9 @@ type EmployeeSession = {
     user: boolean;
     service: boolean;
   };
+  companyId?: string;
+  uid?: string;
+  isEnabled?: boolean;
   displayName?: string;
   email?: string;
   employeeId?: string;
@@ -30,13 +34,17 @@ type EmployeeSession = {
   yardEndTime?: string;
   officeStartTime?: string;
   officeEndTime?: string;
-  timesheetDefaultType?: "yard" | "office";
+  workshopStartTime?: string;
+  workshopEndTime?: string;
+  timesheetDefaultType?: "yard" | "office" | "workshop";
   timesheetDefaults?: {
     yardStart?: string;
     yardEnd?: string;
     officeStart?: string;
     officeEnd?: string;
-    defaultType?: "yard" | "office";
+    workshopStart?: string;
+    workshopEnd?: string;
+    defaultType?: "yard" | "office" | "workshop";
   };
 };
 
@@ -66,6 +74,24 @@ const AuthCtx = createContext<Ctx>({
 
 export const useAuth = () => useContext(AuthCtx);
 
+function toSecurityRole(value?: string) {
+  const role = String(value || "").trim();
+  if (["platformAdmin", "admin", "user"].includes(role)) return role;
+  return "user";
+}
+
+async function loadUserProfile(firebaseUser: User | null) {
+  if (!firebaseUser || firebaseUser.isAnonymous) return null;
+
+  try {
+    const snap = await getDoc(doc(db, "users", firebaseUser.uid));
+    if (!snap.exists()) return null;
+    return { id: snap.id, ...snap.data() } as Record<string, any>;
+  } catch {
+    return null;
+  }
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
@@ -85,14 +111,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return unsub;
   }, []);
 
-  // Load stored session (for employee logins)
-  const loadSession = async () => {
+  // Load stored employee session plus the Firestore user profile required by rules.
+  const loadSession = useCallback(async (firebaseUser: User | null) => {
     try {
       const entries = await AsyncStorage.multiGet([
         "sessionRole",
         "sessionIsService",
         "sessionUserAccess",
         "sessionServiceAccess",
+        "sessionCompanyId",
         "displayName",
         "employeeId",
         "employeeEmail",
@@ -101,49 +128,71 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         "timesheetYardEnd",
         "timesheetOfficeStart",
         "timesheetOfficeEnd",
+        "timesheetWorkshopStart",
+        "timesheetWorkshopEnd",
         "timesheetDefaultType",
       ]);
 
       const m = Object.fromEntries(entries);
+      const userProfile = await loadUserProfile(firebaseUser);
+      const requiresUserProfile = !!firebaseUser && !firebaseUser.isAnonymous;
+      const profileAccess =
+        userProfile?.appAccess && typeof userProfile.appAccess === "object"
+          ? userProfile.appAccess
+          : null;
       const workspaceAccess = resolveWorkspaceAccess({
-        sessionRole: m.sessionRole,
+        sessionRole: userProfile?.role || m.sessionRole,
         sessionIsService: m.sessionIsService,
-        sessionUserAccess: m.sessionUserAccess,
-        sessionServiceAccess: m.sessionServiceAccess,
+        sessionUserAccess: profileAccess?.user ?? m.sessionUserAccess,
+        sessionServiceAccess: profileAccess?.service ?? m.sessionServiceAccess,
+        appAccess: profileAccess,
       });
-      const role = normaliseSessionRole({
-        sessionRole: m.sessionRole,
-        appAccess: workspaceAccess,
-      });
+      const role = toSecurityRole(userProfile?.role || m.sessionRole);
+      const companyId = String(
+        userProfile?.companyId ||
+          (!requiresUserProfile ? m.sessionCompanyId || DEFAULT_COMPANY_ID : "")
+      ).trim();
 
       if (m.employeeId) {
         const yardStart = m.timesheetYardStart || "";
         const yardEnd = m.timesheetYardEnd || "";
         const officeStart = m.timesheetOfficeStart || "";
         const officeEnd = m.timesheetOfficeEnd || "";
+        const workshopStart = m.timesheetWorkshopStart || "";
+        const workshopEnd = m.timesheetWorkshopEnd || "";
+        const rawDefaultType = String(m.timesheetDefaultType || "").trim().toLowerCase();
         const defaultType =
-          String(m.timesheetDefaultType || "").trim().toLowerCase() === "office"
-            ? "office"
+          rawDefaultType === "office" || rawDefaultType === "workshop"
+            ? rawDefaultType
             : "yard";
 
         setEmployee({
           role,
           isService: workspaceAccess.service,
           appAccess: workspaceAccess,
+          companyId,
+          uid: firebaseUser?.uid || userProfile?.uid || "",
+          isEnabled: requiresUserProfile
+            ? !!userProfile && userProfile.isEnabled !== false
+            : false,
           displayName: m.displayName || "",
           employeeId: m.employeeId || "",
-          email: m.employeeEmail || "",
+          email: userProfile?.email || m.employeeEmail || "",
           userCode: m.employeeUserCode || "",
           yardStartTime: yardStart,
           yardEndTime: yardEnd,
           officeStartTime: officeStart,
           officeEndTime: officeEnd,
+          workshopStartTime: workshopStart,
+          workshopEndTime: workshopEnd,
           timesheetDefaultType: defaultType,
           timesheetDefaults: {
             yardStart,
             yardEnd,
             officeStart,
             officeEnd,
+            workshopStart,
+            workshopEnd,
             defaultType,
           },
         });
@@ -155,22 +204,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } finally {
       setSessionReady(true);
     }
-  };
+  }, []);
 
   useEffect(() => {
-    loadSession();
-  }, []);
+    if (!authReady) return;
+    setSessionReady(false);
+    loadSession(user);
+  }, [authReady, loadSession, user]);
 
   const reloadSession = async () => {
     setSessionReady(false);
-    await loadSession();
+    await loadSession(user);
   };
 
-  // Real Firebase user OR employee session
+  // Require Firebase Auth plus the employee session created after phone verification.
   const isAuthed = useMemo(() => {
     const realUser = !!user && !user.isAnonymous;
     const employeeOK = !!employee?.employeeId;
-    return realUser || employeeOK;
+    const tenantOK = !!employee?.companyId;
+    const enabledOK = employee?.isEnabled !== false;
+    return realUser && employeeOK && tenantOK && enabledOK;
   }, [user, employee]);
 
   const loading = !(authReady && sessionReady);

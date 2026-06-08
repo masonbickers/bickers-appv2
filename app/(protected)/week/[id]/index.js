@@ -30,7 +30,9 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
 import { db } from "../../../../firebaseConfig";
+import { formatDateDDMMYYYY } from "../../../../lib/dateFormat";
 import { runOrQueueFirestoreMutation } from "../../../../lib/sync/firestoreQueue";
+import { cancelTimesheetReminders } from "../../../../lib/timesheetReminders";
 import { useAuth } from "../../../../providers/AuthProvider";
 import { useTheme } from "../../../../providers/ThemeProvider";
 
@@ -125,7 +127,9 @@ function firstValidTime(...values) {
 }
 
 function normaliseAutofillType(v) {
-  return String(v || "").trim().toLowerCase() === "office" ? "office" : "yard";
+  const value = String(v || "").trim().toLowerCase();
+  if (value === "office" || value === "workshop") return value;
+  return "yard";
 }
 
 function formatDisplayDate(value) {
@@ -175,10 +179,10 @@ function annotateTimesheetMidnight(ts) {
     const e = { ...(next.days[dayName] || {}) };
     const mode = String(e.mode || "yard").toLowerCase();
 
-    if (mode === "yard" && Array.isArray(e.yardSegments)) {
+    if ((mode === "yard" || mode === "workshop") && Array.isArray(e.yardSegments)) {
       const segs = e.yardSegments.map((seg) => ({ ...seg, ...segmentMeta(seg) }));
       const yardTravelArriveOffset =
-        boolish(e.yardTravelEnabled) && e.yardTravelLeaveTime && e.yardTravelArriveTime
+        mode === "yard" && boolish(e.yardTravelEnabled) && e.yardTravelLeaveTime && e.yardTravelArriveTime
           ? timeFieldOffset(e.yardTravelLeaveTime, e.yardTravelArriveTime)
           : null;
       next.days[dayName] = {
@@ -358,6 +362,28 @@ function ensureYardTravel(entry) {
   return e;
 }
 
+function parseHoursValue(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return 0;
+  const hours = Number(raw.replace(",", "."));
+  if (!Number.isFinite(hours) || hours <= 0) return 0;
+  return hours;
+}
+
+function ensureWorkshopJobs(entry) {
+  const e = { ...(entry || {}) };
+  const rows = Array.isArray(e.workshopJobs) ? e.workshopJobs : [];
+  e.workshopJobs =
+    rows.length > 0
+      ? rows.map((row) => ({
+          jobNumber: String(row?.jobNumber ?? ""),
+          hours: String(row?.hours ?? ""),
+          note: String(row?.note ?? ""),
+        }))
+      : [{ jobNumber: "", hours: "", note: "" }];
+  return e;
+}
+
 function ensureTravelExtras(entry) {
   const e = { ...(entry || {}) };
   const mode = String(e.mode || "yard").toLowerCase();
@@ -407,9 +433,28 @@ function ensureModeDefaults(entry) {
     e = ensureYardLunch(e);
     e = ensureYardTravel(e);
     e.precallDuration = e.precallDuration ?? null;
+  } else if (mode === "workshop") {
+    e = ensureWorkshopJobs(e);
+    e.leaveTime = normaliseTimeValue(e.leaveTime) || DEFAULT_YARD_START;
+    e.arriveBack = normaliseTimeValue(e.arriveBack) || DEFAULT_YARD_END;
+    e = ensureYardSegments(e);
+    e.lunchSup = false;
+    e.yardTravelEnabled = false;
+    e.yardTravelLeaveTime = null;
+    e.yardTravelArriveTime = null;
+    e.isTurnaround = false;
+    e.turnaroundJob = null;
+    e.arriveTime = null;
+    e.callTime = null;
+    e.wrapTime = null;
+    e.precallDuration = null;
+    e.overnight = false;
+    e.nightShoot = false;
+    e.mealSup = false;
   } else {
     e = ensureYardLunch(e);
     e = ensureYardTravel(e);
+    e.workshopJobs = Array.isArray(e.workshopJobs) ? e.workshopJobs : [];
   }
 
   e = ensureTravelExtras(e);
@@ -970,7 +1015,7 @@ function TurnaroundJobPicker({ visible, onClose, jobs, onPick }) {
                     <Text style={{ color: colors.textMuted, marginTop: 2, fontSize: 12 }}>
                       {item.location || ""}
                       {item.location && item.dateISO ? " • " : ""}
-                      {item.dateISO || ""}
+                      {item.dateISO ? formatDateDDMMYYYY(item.dateISO) || item.dateISO : ""}
                     </Text>
                   )}
                 </TouchableOpacity>
@@ -1025,6 +1070,17 @@ function computeDayMinutes(entry) {
     return durationMinutes(e.leaveTime, e.arriveTime);
   }
 
+  if (mode === "workshop") {
+    const segs = Array.isArray(e.yardSegments) ? e.yardSegments : [];
+    if (segs.length > 0) {
+      return segs.reduce((total, seg) => total + durationMinutes(seg?.start, seg?.end), 0);
+    }
+
+    // Legacy workshop entries only had job allocation rows.
+    const rows = Array.isArray(e.workshopJobs) ? e.workshopJobs : [];
+    return rows.reduce((total, row) => total + parseHoursValue(row?.hours) * 60, 0);
+  }
+
   if (mode === "onset") {
     // Prefer: Leave -> ArriveBack
     // Fallback: Call -> Wrap
@@ -1066,10 +1122,12 @@ function HoursSummary({ timesheet, holidaysByDay, bankHolidaysByDay }) {
     let yardMins = 0;
     let travelMins = 0;
     let onsetMins = 0;
+    let workshopMins = 0;
 
     let yardDays = 0;
     let travelDays = 0;
     let onsetDays = 0;
+    let workshopDays = 0;
 
     let offDays = 0;
     let unpaidDays = 0;
@@ -1126,6 +1184,9 @@ function HoursSummary({ timesheet, holidaysByDay, bankHolidaysByDay }) {
         if (!!e.nightShoot) nightShootCount += 1;
         if (boolish(e.overnight)) overnightCount += 1;
       }
+      if (mode === "workshop") {
+        workshopDays += 1;
+      }
 
       const mins = computeDayMinutes(e);
 
@@ -1135,6 +1196,7 @@ function HoursSummary({ timesheet, holidaysByDay, bankHolidaysByDay }) {
       if (mode === "yard") yardMins += mins;
       if (mode === "travel") travelMins += mins;
       if (mode === "onset") onsetMins += mins;
+      if (mode === "workshop") workshopMins += mins;
     }
 
     return {
@@ -1143,9 +1205,11 @@ function HoursSummary({ timesheet, holidaysByDay, bankHolidaysByDay }) {
       yardMins,
       travelMins,
       onsetMins,
+      workshopMins,
       yardDays,
       travelDays,
       onsetDays,
+      workshopDays,
       offDays,
       unpaidDays,
       paidHolidayDays,
@@ -1201,6 +1265,13 @@ function HoursSummary({ timesheet, holidaysByDay, bankHolidaysByDay }) {
             <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>On set</Text>
             <Text style={[styles.summaryValue, { color: colors.text }]}>
               {formatHoursMins(summary.onsetMins)} ({summary.onsetDays} day{summary.onsetDays === 1 ? "" : "s"})
+            </Text>
+          </View>
+
+          <View style={styles.summaryRow}>
+            <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Workshop</Text>
+            <Text style={[styles.summaryValue, { color: colors.text }]}>
+              {formatHoursMins(summary.workshopMins)} ({summary.workshopDays} day{summary.workshopDays === 1 ? "" : "s"})
             </Text>
           </View>
 
@@ -1338,6 +1409,17 @@ export default function WeekTimesheet() {
       const isWeekend = WEEKEND_SET.has(d);
       acc[d] = isWeekend
         ? { mode: "off", dayNotes: "", isTurnaround: false, turnaroundJob: null }
+        : autofillType === "workshop"
+        ? {
+            mode: "workshop",
+            leaveTime: yardDefaultStart,
+            arriveBack: yardDefaultEnd,
+            dayNotes: "",
+            yardSegments: [{ start: yardDefaultStart, end: yardDefaultEnd, note: "" }],
+            workshopJobs: [{ jobNumber: "", hours: "", note: "" }],
+            isTurnaround: false,
+            turnaroundJob: null,
+          }
         : {
             mode: "yard",
             leaveTime: yardDefaultStart,
@@ -1976,6 +2058,13 @@ export default function WeekTimesheet() {
           e.yardSegments = [{ start: yardDefaultStart, end: yardDefaultEnd }];
         }
         next.days[d] = ensureModeDefaults(e);
+      } else if (String(e.mode || "").toLowerCase() === "workshop") {
+        if (!e.leaveTime) e.leaveTime = yardDefaultStart;
+        if (!e.arriveBack && !e.arriveTime) e.arriveBack = yardDefaultEnd;
+        if (!Array.isArray(e.yardSegments) || e.yardSegments.length === 0) {
+          e.yardSegments = [{ start: yardDefaultStart, end: yardDefaultEnd, note: "" }];
+        }
+        next.days[d] = ensureModeDefaults(e);
       } else {
         next.days[d] = ensureModeDefaults(e);
       }
@@ -2034,6 +2123,11 @@ export default function WeekTimesheet() {
       dayEntry.bookingId = dayEntry.bookingId || jobs[0]?.bookingId || null;
       dayEntry.jobNumber = jobs[0]?.jobNumber || null;
       dayEntry.dateISO = isoByDay[day];
+
+      if (jobs.length > 0 && String(dayEntry.mode || "").toLowerCase() === "workshop") {
+        dayEntry.mode = "yard";
+        dayEntry.workshopJobs = [];
+      }
 
       copy.days[day] = ensureModeDefaults(dayEntry);
     }
@@ -2333,6 +2427,117 @@ export default function WeekTimesheet() {
     [isLocked, bankHolidaysByDay]
   );
 
+  const addWorkshopSegment = useCallback(
+    (day) => {
+      if (isLocked) return;
+
+      setTimesheet((prev) => {
+        const isBankHolidayDay = !!bankHolidaysByDay?.[day]?.notWorking;
+        const current = ensureModeDefaults(prev.days?.[day] || { mode: "workshop" });
+        const segs = Array.isArray(current.yardSegments) ? current.yardSegments : [];
+        const baseSegs = segs.length > 0 ? segs : [{ start: yardDefaultStart, end: yardDefaultEnd, note: "" }];
+        const last = baseSegs[baseSegs.length - 1] || { start: yardDefaultStart, end: yardDefaultEnd };
+        const nextSeg = { start: last.end || yardDefaultStart, end: yardDefaultEnd, note: "" };
+
+        return {
+          ...prev,
+          days: {
+            ...prev.days,
+            [day]: ensureModeDefaults({
+              ...current,
+              mode: "workshop",
+              ...(isBankHolidayDay ? { bankHolidayWorked: true } : {}),
+              yardSegments: [...baseSegs, nextSeg],
+            }),
+          },
+        };
+      });
+    },
+    [isLocked, bankHolidaysByDay, yardDefaultStart, yardDefaultEnd]
+  );
+
+  const addWorkshopJob = useCallback(
+    (day) => {
+      if (isLocked) return;
+
+      setTimesheet((prev) => {
+        const isBankHolidayDay = !!bankHolidaysByDay?.[day]?.notWorking;
+        const current = ensureModeDefaults(prev.days?.[day] || { mode: "workshop" });
+        const existingRows = Array.isArray(current.workshopJobs) ? current.workshopJobs : [];
+        const nextRows = existingRows.length > 0 ? existingRows : [{ jobNumber: "", hours: "", note: "" }];
+
+        return {
+          ...prev,
+          days: {
+            ...prev.days,
+            [day]: ensureModeDefaults({
+              ...current,
+              mode: "workshop",
+              ...(isBankHolidayDay ? { bankHolidayWorked: true } : {}),
+              workshopJobs: [...nextRows, { jobNumber: "", hours: "", note: "" }],
+            }),
+          },
+        };
+      });
+    },
+    [isLocked, bankHolidaysByDay]
+  );
+
+  const removeWorkshopJob = useCallback(
+    (day, index) => {
+      if (isLocked) return;
+
+      setTimesheet((prev) => {
+        const current = ensureModeDefaults(prev.days?.[day] || { mode: "workshop" });
+        const rows = Array.isArray(current.workshopJobs) ? current.workshopJobs.slice() : [];
+        if (!rows[index]) return prev;
+        rows.splice(index, 1);
+
+        return {
+          ...prev,
+          days: {
+            ...prev.days,
+            [day]: ensureModeDefaults({
+              ...current,
+              workshopJobs: rows.length > 0 ? rows : [{ jobNumber: "", hours: "", note: "" }],
+            }),
+          },
+        };
+      });
+    },
+    [isLocked]
+  );
+
+  const updateWorkshopJob = useCallback(
+    (day, index, field, value) => {
+      if (isLocked) return;
+
+      setTimesheet((prev) => {
+        const isBankHolidayDay = !!bankHolidaysByDay?.[day]?.notWorking;
+        const current = ensureModeDefaults(prev.days?.[day] || { mode: "workshop" });
+        const rows = Array.isArray(current.workshopJobs) ? current.workshopJobs.slice() : [{ jobNumber: "", hours: "", note: "" }];
+        rows[index] = {
+          ...(rows[index] || { jobNumber: "", hours: "", note: "" }),
+          [field]: value,
+        };
+
+        return {
+          ...prev,
+          days: {
+            ...prev.days,
+            [day]: ensureModeDefaults({
+              ...current,
+              mode: "workshop",
+              ...(isBankHolidayDay ? { bankHolidayWorked: true } : {}),
+              workshopJobs: rows,
+            }),
+          },
+        };
+      });
+    },
+    [isLocked, bankHolidaysByDay]
+  );
+
   const toggleDayTogglePanel = useCallback((day) => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     setTogglePanelByDay((prev) => ({ ...prev, [day]: !prev?.[day] }));
@@ -2513,6 +2718,7 @@ export default function WeekTimesheet() {
       } else {
         Alert.alert("Submitted", "Your timesheet has been submitted.");
       }
+      await cancelTimesheetReminders(employee.userCode, id);
       allowNavigationRef.current = true;
       router.back();
     } catch (err) {
@@ -2545,11 +2751,23 @@ export default function WeekTimesheet() {
             updated.leaveTime = updated.leaveTime || yardDefaultStart;
             updated.arriveBack = updated.arriveBack || yardDefaultEnd;
             updated.lunchSup = false;
+            updated.workshopJobs = [];
             if (!updated.isTurnaround && (!Array.isArray(updated.yardSegments) || updated.yardSegments.length === 0)) {
               updated.yardSegments = [{ start: yardDefaultStart, end: yardDefaultEnd }];
             }
           } else {
-            updated.yardSegments = [];
+            if (nextMode === "workshop") {
+              updated.leaveTime = updated.leaveTime || yardDefaultStart;
+              updated.arriveBack = updated.arriveBack || yardDefaultEnd;
+              if (!Array.isArray(updated.yardSegments) || updated.yardSegments.length === 0) {
+                updated.yardSegments = [{ start: yardDefaultStart, end: yardDefaultEnd, note: "" }];
+              }
+            } else {
+              updated.yardSegments = [];
+              updated.leaveTime = null;
+              updated.arriveBack = null;
+            }
+
             updated.lunchSup = false;
             updated.yardTravelEnabled = false;
             updated.yardTravelLeaveTime = null;
@@ -2560,15 +2778,14 @@ export default function WeekTimesheet() {
             updated.turnaroundJob = null;
 
             // clear travel/onset fields (then we re-apply defaults per-mode)
-            updated.leaveTime = null;
             updated.arriveTime = null;
             updated.callTime = null;
             updated.wrapTime = null;
-            updated.arriveBack = null;
             updated.precallDuration = null;
             updated.overnight = false;
             updated.nightShoot = false;
             updated.mealSup = false;
+            if (nextMode !== "workshop") updated.workshopJobs = [];
           }
 
           if (nextMode === "travel") {
@@ -2579,6 +2796,13 @@ export default function WeekTimesheet() {
           if (nextMode === "onset") {
             updated.nightShoot = typeof updated.nightShoot === "boolean" ? updated.nightShoot : false;
             updated.mealSup = typeof updated.mealSup === "boolean" ? updated.mealSup : true; // default on
+          }
+
+          if (nextMode === "workshop") {
+            updated.workshopJobs =
+              Array.isArray(updated.workshopJobs) && updated.workshopJobs.length > 0
+                ? updated.workshopJobs
+                : [{ jobNumber: "", hours: "", note: "" }];
           }
         }
 
@@ -2632,6 +2856,9 @@ export default function WeekTimesheet() {
           const wrapOffset = timeFieldOffset(base, updated.wrapTime);
           updated.crossesMidnight =
             (arriveBackOffset?.dayOffset ?? 0) === 1 || (wrapOffset?.dayOffset ?? 0) === 1;
+        } else if (updated.mode === "workshop") {
+          const segs = Array.isArray(updated.yardSegments) ? updated.yardSegments : [];
+          updated.crossesMidnight = segs.some((seg) => segmentMeta(seg).crossesMidnight);
         } else if (updated.mode !== "yard") {
           updated.crossesMidnight = false;
         }
@@ -3002,6 +3229,133 @@ export default function WeekTimesheet() {
     ));
   };
 
+  const renderWorkshopTimeBlocks = (day, entry, controlsDisabled = false) => {
+    const segments = Array.isArray(entry?.yardSegments) && entry.yardSegments.length > 0
+      ? entry.yardSegments
+      : [{ start: yardDefaultStart, end: yardDefaultEnd, note: "" }];
+
+    return (
+      <View style={styles.workshopBlock}>
+        <Text style={[styles.sectionCap, { color: colors.textMuted }]}>Workshop time</Text>
+        {renderYardSegments(day, segments, controlsDisabled)}
+        <TouchableOpacity
+          style={[
+            styles.addBlockBtn,
+            { backgroundColor: addBlockButtonColors.backgroundColor, borderColor: addBlockButtonColors.borderColor, opacity: controlsDisabled ? 0.5 : 1 },
+          ]}
+          onPress={() => addWorkshopSegment(day)}
+          disabled={controlsDisabled}
+        >
+          <Icon name="plus" size={14} color={addBlockButtonColors.color} />
+          <Text style={[styles.addBlockText, { color: addBlockButtonColors.color }]}>Add time block</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  };
+
+  const renderWorkshopJobs = (day, entry, controlsDisabled = false) => {
+    const rows = Array.isArray(entry?.workshopJobs) && entry.workshopJobs.length > 0
+      ? entry.workshopJobs
+      : [{ jobNumber: "", hours: "", note: "" }];
+
+    return (
+      <View style={styles.workshopBlock}>
+        <Text style={[styles.sectionCap, { color: colors.textMuted }]}>Assign workshop hours to jobs</Text>
+        {rows.map((row, idx) => (
+          <View key={`${day}-workshop-${idx}`} style={styles.workshopAllocationBlock}>
+            <View style={styles.workshopRow}>
+              <TextInput
+                placeholder="Job number"
+                placeholderTextColor={colors.textMuted}
+                style={[
+                  styles.workshopJobInput,
+                  {
+                    backgroundColor: colors.inputBackground,
+                    borderColor: colors.inputBorder,
+                    color: colors.text,
+                    opacity: controlsDisabled ? 0.6 : 1,
+                  },
+                ]}
+                editable={!controlsDisabled}
+                value={String(row?.jobNumber || "")}
+                onChangeText={(t) => updateWorkshopJob(day, idx, "jobNumber", t)}
+                autoCapitalize="characters"
+              />
+              <TextInput
+                placeholder="Hours"
+                placeholderTextColor={colors.textMuted}
+                style={[
+                  styles.workshopHoursInput,
+                  {
+                    backgroundColor: colors.inputBackground,
+                    borderColor: colors.inputBorder,
+                    color: colors.text,
+                    opacity: controlsDisabled ? 0.6 : 1,
+                  },
+                ]}
+                editable={!controlsDisabled}
+                value={String(row?.hours || "")}
+                onChangeText={(t) => updateWorkshopJob(day, idx, "hours", t.replace(/[^0-9.,]/g, ""))}
+                keyboardType="decimal-pad"
+              />
+              <TouchableOpacity
+                onPress={() => removeWorkshopJob(day, idx)}
+                style={[
+                  styles.segmentDelete,
+                  { backgroundColor: colors.surface, borderColor: colors.border, opacity: controlsDisabled || rows.length <= 1 ? 0.5 : 1 },
+                ]}
+                disabled={controlsDisabled || rows.length <= 1}
+              >
+                <Icon name="trash-2" size={16} color={colors.danger} />
+              </TouchableOpacity>
+            </View>
+
+          </View>
+        ))}
+
+        <TouchableOpacity
+          style={[
+            styles.addBlockBtn,
+            { backgroundColor: addBlockButtonColors.backgroundColor, borderColor: addBlockButtonColors.borderColor, opacity: controlsDisabled ? 0.5 : 1 },
+          ]}
+          onPress={() => addWorkshopJob(day)}
+          disabled={controlsDisabled}
+        >
+          <Icon name="plus" size={14} color={addBlockButtonColors.color} />
+          <Text style={[styles.addBlockText, { color: addBlockButtonColors.color }]}>Add hour block</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  };
+
+  const renderWorkshopModeRow = (day, entry, controlsDisabled = false) => (
+    <View style={styles.modeRow}>
+      <TouchableOpacity
+        style={[
+          styles.modeBtn,
+          { backgroundColor: colors.surfaceAlt, borderColor: colors.border, opacity: controlsDisabled ? 0.5 : 1 },
+          String(entry?.mode || "").toLowerCase() === "yard" && { backgroundColor: colors.accentSoft, borderColor: colors.accent },
+        ]}
+        onPress={() => !controlsDisabled && updateDay(day, "mode", "yard")}
+        disabled={controlsDisabled}
+      >
+        <Text style={[styles.modeText, { color: colors.text }]}>Yard</Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={[
+          styles.modeBtn,
+          { backgroundColor: colors.surfaceAlt, borderColor: colors.border, opacity: controlsDisabled ? 0.5 : 1 },
+          String(entry?.mode || "").toLowerCase() === "workshop" && { backgroundColor: colors.accentSoft, borderColor: colors.accent },
+        ]}
+        onPress={() => !controlsDisabled && updateDay(day, "mode", "workshop")}
+        disabled={controlsDisabled}
+      >
+        <Text style={[styles.modeText, { color: colors.text }]}>Workshop</Text>
+      </TouchableOpacity>
+    </View>
+  );
+
   const renderDayNotesField = (day, value, disabled = false) => (
     <TextInput
       placeholder="Notes for this day"
@@ -3113,8 +3467,12 @@ export default function WeekTimesheet() {
           const isBankHolidayOff = !!bankHolidayInfo && bankHolidayInfo.notWorking === true;
           const isWorkedBankHoliday = isBankHolidayOff && boolish(entry.bankHolidayWorked);
           const isUnpaidDay = isUnpaidDayEntry(entry);
+          const hasAssignedJob = jobs.length > 0;
 
-          const effectiveEntry = isHalfHoliday ? ensureModeDefaults({ ...entry, mode: "yard" }) : entry;
+          const effectiveEntry =
+            isHalfHoliday || (hasAssignedJob && String(entry.mode || "").toLowerCase() === "workshop")
+              ? ensureModeDefaults({ ...entry, mode: "yard", workshopJobs: [] })
+              : entry;
           const yardEntry = effectiveEntry.mode === "yard" ? ensureModeDefaults(effectiveEntry) : effectiveEntry;
 
           const primaryJobId = jobs.length > 0 ? jobs[0].id : null;
@@ -3158,6 +3516,9 @@ export default function WeekTimesheet() {
                   <Text style={[styles.dayTitle, { color: colors.text }]}>{day}</Text>
                   {String(yardEntry.mode || "").toLowerCase() === "yard" && !isFullHoliday && !isUnpaidDay && (
                     <Text style={[styles.dayModeTitle, { color: colors.textMuted }]}>Yard Day</Text>
+                  )}
+                  {String(effectiveEntry.mode || "").toLowerCase() === "workshop" && !isFullHoliday && !isUnpaidDay && (
+                    <Text style={[styles.dayModeTitle, { color: colors.textMuted }]}>Workshop Day</Text>
                   )}
                 </View>
 
@@ -3308,6 +3669,17 @@ export default function WeekTimesheet() {
                     >
                       <Text style={[styles.modeText, { color: colors.text }]}>Yard</Text>
                     </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={[
+                        styles.modeBtn,
+                        { backgroundColor: colors.surfaceAlt, borderColor: colors.border, opacity: 0.45 },
+                        effectiveEntry.mode === "workshop" && { backgroundColor: colors.accentSoft, borderColor: colors.accent },
+                      ]}
+                      disabled
+                    >
+                      <Text style={[styles.modeText, { color: colors.text }]}>Workshop</Text>
+                    </TouchableOpacity>
                   </View>
 
                   {/* Travel UI */}
@@ -3393,6 +3765,14 @@ export default function WeekTimesheet() {
                     </View>
                   )}
 
+                  {!isHalfHoliday && jobs.length === 0 && effectiveEntry.mode === "workshop" && (
+                    <View style={styles.onSetBlock}>
+                      {renderWorkshopTimeBlocks(day, effectiveEntry, controlsDisabled)}
+                      {renderWorkshopJobs(day, effectiveEntry, controlsDisabled)}
+                      {renderDayNotesField(day, effectiveEntry.dayNotes, controlsDisabled)}
+                    </View>
+                  )}
+
                   {/* Yard block */}
                   {yardEntry.mode === "yard" && (
                     <>
@@ -3472,20 +3852,31 @@ export default function WeekTimesheet() {
                 <>
                   <Text style={{ color: colors.textMuted, marginBottom: 6 }}>Weekend (optional)</Text>
 
-                  {String(entry.mode || "").toLowerCase() !== "yard" ? (
-                    <TouchableOpacity
-                      style={[
-                        styles.addBlockBtn,
-                        { backgroundColor: addBlockButtonColors.backgroundColor, borderColor: addBlockButtonColors.borderColor, opacity: controlsDisabled ? 0.5 : 1 },
-                      ]}
-                      onPress={() => addYardSegment(day)}
-                      disabled={controlsDisabled}
-                    >
-                      <Icon name="plus" size={14} color={addBlockButtonColors.color} />
-                      <Text style={[styles.addBlockText, { color: addBlockButtonColors.color }]}>Add time block</Text>
-                    </TouchableOpacity>
+                  {String(entry.mode || "").toLowerCase() === "workshop" ? (
+                    <>
+                      {renderWorkshopModeRow(day, entry, controlsDisabled)}
+                      {renderWorkshopTimeBlocks(day, entry, controlsDisabled)}
+                      {renderWorkshopJobs(day, entry, controlsDisabled)}
+                      {renderDayNotesField(day, entry.dayNotes, controlsDisabled)}
+                    </>
+                  ) : String(entry.mode || "").toLowerCase() !== "yard" ? (
+                    <>
+                      {renderWorkshopModeRow(day, entry, controlsDisabled)}
+                      <TouchableOpacity
+                        style={[
+                          styles.addBlockBtn,
+                          { backgroundColor: addBlockButtonColors.backgroundColor, borderColor: addBlockButtonColors.borderColor, opacity: controlsDisabled ? 0.5 : 1 },
+                        ]}
+                        onPress={() => addYardSegment(day)}
+                        disabled={controlsDisabled}
+                      >
+                        <Icon name="plus" size={14} color={addBlockButtonColors.color} />
+                        <Text style={[styles.addBlockText, { color: addBlockButtonColors.color }]}>Add time block</Text>
+                      </TouchableOpacity>
+                    </>
                   ) : (
                     <>
+                      {renderWorkshopModeRow(day, entry, controlsDisabled)}
                       <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
                         {!controlsDisabled && !isHalfHoliday && (
                           <TouchableOpacity
@@ -3579,6 +3970,16 @@ export default function WeekTimesheet() {
                 <Text style={{ color: colors.textMuted }}>Off (Bank Holiday)</Text>
               ) : (
                 <>
+                  {String(entry.mode || "").toLowerCase() === "workshop" ? (
+                    <>
+                      {renderWorkshopModeRow(day, entry, controlsDisabled)}
+                      {renderWorkshopTimeBlocks(day, entry, controlsDisabled)}
+                      {renderWorkshopJobs(day, entry, controlsDisabled)}
+                      {renderDayNotesField(day, entry.dayNotes, controlsDisabled)}
+                    </>
+                  ) : (
+                    <>
+                      {renderWorkshopModeRow(day, entry, controlsDisabled)}
 
                   {entry.isTurnaround === true && (
                     <View style={[styles.turnaroundPanel, { backgroundColor: colors.surface, borderColor: colors.border }]}>
@@ -3621,6 +4022,8 @@ export default function WeekTimesheet() {
                   {renderYardToggleFields(day, entry, controlsDisabled)}
 
                   {renderDayNotesField(day, entry.dayNotes, controlsDisabled)}
+                    </>
+                  )}
                 </>
               )}
               </View>
@@ -3748,6 +4151,11 @@ const styles = StyleSheet.create({
   sectionCap: { marginBottom: 4, fontWeight: "700", fontSize: 12, opacity: 0.9 },
   segmentBlock: { marginBottom: 6 },
   segmentRow: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 6 },
+  workshopBlock: { marginTop: 2, marginBottom: 4 },
+  workshopAllocationBlock: { marginBottom: 8 },
+  workshopRow: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 6 },
+  workshopJobInput: { flex: 1, paddingVertical: 8, paddingHorizontal: 10, borderRadius: 8, fontSize: 12, borderWidth: 1, minHeight: 36 },
+  workshopHoursInput: { width: 82, paddingVertical: 8, paddingHorizontal: 10, borderRadius: 8, fontSize: 12, borderWidth: 1, minHeight: 36, textAlign: "center" },
   segmentDelete: {
     marginLeft: 6,
     paddingVertical: 6,

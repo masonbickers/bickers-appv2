@@ -168,7 +168,9 @@ export default function ProfilePage() {
       const blob = await response.blob();
 
       const storageRef = ref(storage, `profilePictures/${uid}.jpg`);
-      await uploadBytes(storageRef, blob);
+      await uploadBytes(storageRef, blob, {
+        contentType: blob.type || "image/jpeg",
+      });
 
       const url = await getDownloadURL(storageRef);
 
@@ -277,13 +279,13 @@ export default function ProfilePage() {
 
               <View
                 style={[
-                  styles.cameraBadge,
+                  styles.imageBadge,
                   {
                     backgroundColor: colors.accent,
                   },
                 ]}
               >
-                <Icon name="camera" size={13} color="#fff" />
+                <Icon name="image" size={13} color="#fff" />
               </View>
             </TouchableOpacity>
 
@@ -527,7 +529,7 @@ const styles = StyleSheet.create({
     fontWeight: "900",
   },
 
-  cameraBadge: {
+  imageBadge: {
     position: "absolute",
     right: 0,
     bottom: 0,

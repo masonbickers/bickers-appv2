@@ -1,6 +1,6 @@
 // app/(protected)/_layout.jsx
 import { Stack } from "expo-router";
-import { collection, getDocs, onSnapshot, query, where } from "firebase/firestore";
+import { collection, doc, onSnapshot, query, where } from "firebase/firestore";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { db } from "../../firebaseConfig";
@@ -11,6 +11,19 @@ import {
   NOTIFICATIONS_ENABLED,
   scheduleLocalNotification,
 } from "../../lib/notifications";
+import {
+  cancelMaintenanceReminder,
+  DEFAULT_MAINTENANCE_REMINDER_TIME,
+  getMaintenanceReminderTime,
+  getMaintenanceRemindersEnabled,
+  scheduleMaintenanceReminder,
+} from "../../lib/maintenanceReminders";
+import {
+  cancelTimesheetReminders,
+  getActiveTimesheetReminderWeekStart,
+  isTimesheetComplete,
+  scheduleTimesheetReminders,
+} from "../../lib/timesheetReminders";
 
 /* ------------------------------ helpers ------------------------------ */
 function toDateSafe(val) {
@@ -57,6 +70,10 @@ function formatDateShort(d) {
 
 export default function ProtectedLayout() {
   const { user, employee, isAuthed, loading, setJobsUpdatedAt } = useAuth();
+  const [maintenanceRemindersEnabled, setMaintenanceRemindersEnabledState] =
+    useState(false);
+  const [maintenanceReminderTime, setMaintenanceReminderTimeState] =
+    useState(DEFAULT_MAINTENANCE_REMINDER_TIME);
 
   useSyncManager({
     enabled: isAuthed && !loading,
@@ -70,50 +87,6 @@ export default function ProtectedLayout() {
       }
     },
   });
-
-  // ============================================================
-  // VEHICLE LOOKUP (id -> "Name · REG")
-  // ============================================================
-  const [vehicleMap, setVehicleMap] = useState({});
-
-  useEffect(() => {
-    if (!NOTIFICATIONS_ENABLED) {
-      setVehicleMap({});
-      return;
-    }
-    if (loading || !isAuthed) {
-      setVehicleMap({});
-      return;
-    }
-
-    let alive = true;
-
-    (async () => {
-      try {
-        const snap = await getDocs(collection(db, "vehicles"));
-        const map = {};
-        snap.docs.forEach((d) => {
-          const v = d.data() || {};
-          const name =
-            v.name ||
-            [v.manufacturer, v.model].filter(Boolean).join(" ") ||
-            v.vehicleName ||
-            "Vehicle";
-          const reg = v.registration || v.reg || v.plate || "";
-          map[d.id] = reg ? `${name} · ${reg}` : name;
-        });
-
-        if (alive) setVehicleMap(map);
-      } catch (e) {
-        console.warn("[vehicles] failed to load vehicles for notifications:", e);
-        if (alive) setVehicleMap({});
-      }
-    })();
-
-    return () => {
-      alive = false;
-    };
-  }, [loading, isAuthed]);
 
   const formatVehiclesForNotif = useCallback((booking) => {
     const raw = booking?.vehicles;
@@ -134,14 +107,9 @@ export default function ProtectedLayout() {
           return String(out || "").trim();
         }
 
-        // Otherwise treat as string id / reg / name
+        // Otherwise treat as string id / reg / name without resolving globally.
         const key = String(v ?? "").trim();
         if (!key) return "";
-
-        // 1) Exact Firestore doc id match
-        if (vehicleMap[key]) return vehicleMap[key];
-
-        // 2) If bookings store reg/name instead of doc id, just show it
         return key;
       })
       .filter(Boolean);
@@ -150,7 +118,7 @@ export default function ProtectedLayout() {
     // Keep notifications short: show up to 2 vehicles then +N
     if (readable.length <= 2) return readable.join(", ");
     return `${readable.slice(0, 2).join(", ")} +${readable.length - 2}`;
-  }, [vehicleMap]);
+  }, []);
 
   const formatJobDatesForNotif = useCallback((booking) => {
     // Prefer bookingDates array (string / Date / Firestore Timestamp)
@@ -220,6 +188,33 @@ export default function ProtectedLayout() {
   const jobChanged = useCallback((before, after) => {
     return JSON.stringify(projectJob(before)) !== JSON.stringify(projectJob(after));
   }, [projectJob]);
+
+  useEffect(() => {
+    let alive = true;
+
+    const refreshSetting = () => {
+      Promise.all([
+        getMaintenanceRemindersEnabled(),
+        getMaintenanceReminderTime(),
+      ])
+        .then(([enabled, reminderTime]) => {
+          if (!alive) return;
+          setMaintenanceRemindersEnabledState(enabled);
+          setMaintenanceReminderTimeState(reminderTime);
+        })
+        .catch((e) => {
+          console.warn("[maintenance-reminders] setting load failed:", e);
+        });
+    };
+
+    refreshSetting();
+
+    const interval = setInterval(refreshSetting, 1500);
+    return () => {
+      alive = false;
+      clearInterval(interval);
+    };
+  }, []);
 
   // ============================================================
   // JOB NOTIFICATIONS
@@ -295,8 +290,6 @@ export default function ProtectedLayout() {
       where("employeeCodes", "array-contains", me)
     );
 
-    console.log("📡 Booking listener ACTIVE for:", me);
-
     const unsub = onSnapshot(q, (snap) => {
       snap.docChanges().forEach((chg) => {
         const id = chg.doc.id;
@@ -370,6 +363,7 @@ export default function ProtectedLayout() {
   const seededHolidays = useRef(false);
   const prevHolidayMap = useRef(new Map());
   const holidayDedupe = useRef(new Set());
+  const timesheetReminderSigRef = useRef("");
 
   useEffect(() => {
     if (!NOTIFICATIONS_ENABLED) return;
@@ -431,6 +425,92 @@ export default function ProtectedLayout() {
       data: { holidayId: docId },
     });
   }
+
+  // ============================================================
+  // TIMESHEET REMINDERS
+  // Sunday 18:00 and following Monday 08:00, cancelled once submitted.
+  // ============================================================
+  useEffect(() => {
+    if (!NOTIFICATIONS_ENABLED) return;
+    if (loading || !isAuthed || !employee?.userCode) return;
+
+    const employeeCode = String(employee.userCode);
+    const weekStartISO = getActiveTimesheetReminderWeekStart(new Date());
+    const ref = doc(db, "timesheets", `${employeeCode}_${weekStartISO}`);
+
+    const unsub = onSnapshot(
+      ref,
+      (snap) => {
+        const timesheet = snap.exists() ? snap.data() : null;
+
+        const nextSig = JSON.stringify({
+          exists: snap.exists(),
+          submitted: timesheet?.submitted === true,
+          approved: timesheet?.approved === true,
+          status: String(timesheet?.status || ""),
+          submittedAt: timesheet?.submittedAt || null,
+          approvedAt: timesheet?.approvedAt || null,
+        });
+        if (timesheetReminderSigRef.current === nextSig) return;
+        timesheetReminderSigRef.current = nextSig;
+
+        if (isTimesheetComplete(timesheet)) {
+          cancelTimesheetReminders(employeeCode, weekStartISO).catch((e) =>
+            console.warn("[timesheet-reminders] cancel failed:", e)
+          );
+          return;
+        }
+
+        scheduleTimesheetReminders({ employeeCode, weekStartISO }).catch((e) =>
+          console.warn("[timesheet-reminders] schedule failed:", e)
+        );
+      },
+      (e) => {
+        console.warn("[timesheet-reminders] listener failed:", e);
+      }
+    );
+
+    return () => unsub();
+  }, [loading, isAuthed, employee?.userCode]);
+
+  // ============================================================
+  // MAINTENANCE JOB REMINDERS
+  // One local reminder the day before each booked maintenance job.
+  // ============================================================
+  useEffect(() => {
+    if (!NOTIFICATIONS_ENABLED) return;
+    if (!maintenanceRemindersEnabled) return;
+    if (loading || !isAuthed) return;
+
+    const unsub = onSnapshot(
+      collection(db, "maintenanceBookings"),
+      (snap) => {
+        snap.docChanges().forEach((chg) => {
+          const id = chg.doc.id;
+
+          if (chg.type === "removed") {
+            cancelMaintenanceReminder(id).catch((e) =>
+              console.warn("[maintenance-reminders] cancel failed:", e)
+            );
+            return;
+          }
+
+          scheduleMaintenanceReminder({
+            bookingId: id,
+            booking: { id, ...(chg.doc.data() || {}) },
+            reminderTime: maintenanceReminderTime,
+          }).catch((e) =>
+            console.warn("[maintenance-reminders] schedule failed:", e)
+          );
+        });
+      },
+      (e) => {
+        console.warn("[maintenance-reminders] listener failed:", e);
+      }
+    );
+
+    return () => unsub();
+  }, [loading, isAuthed, maintenanceRemindersEnabled, maintenanceReminderTime]);
 
   return (
     <Stack

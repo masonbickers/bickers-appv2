@@ -1,12 +1,6 @@
 // app/(protected)/service/defects.jsx
 import { useRouter } from "expo-router";
-import {
-  collection,
-  onSnapshot,
-  orderBy,
-  query,
-} from "firebase/firestore";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import {
   ActivityIndicator,
   ScrollView,
@@ -18,8 +12,8 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
-import { db } from "../../../firebaseConfig";
 import { designTokens as t } from "../../../lib/design/tokens";
+import { useCachedServiceCollection } from "../../../lib/serviceCache";
 import { useTheme } from "../../../providers/ThemeProvider";
 
 const COLORS = {
@@ -195,104 +189,23 @@ export default function DefectsScreen() {
   const router = useRouter();
   const { colors } = useTheme();
 
-  const [vehicles, setVehicles] = useState([]);
-  const [vehicleChecks, setVehicleChecks] = useState([]);
-  const [vehicleIssues, setVehicleIssues] = useState([]);
-  const [defectReports, setDefectReports] = useState([]);
-  const [loadingSources, setLoadingSources] = useState({
-    vehicles: true,
-    checks: true,
-    issues: true,
-    reports: true,
+  const { rows: vehicles, loading: vehiclesLoading } = useCachedServiceCollection("vehicles", {
+    label: "vehicles for defects",
+    orderByField: "name",
   });
-  const loading =
-    loadingSources.vehicles ||
-    loadingSources.checks ||
-    loadingSources.issues ||
-    loadingSources.reports;
-
-  // Vehicles are used to link approved defects back to service vehicle pages.
-  useEffect(() => {
-    const q = query(collection(db, "vehicles"), orderBy("name", "asc"));
-
-    const unsub = onSnapshot(
-      q,
-      (snap) => {
-        const data = snap.docs.map((doc) => ({
-          id: doc.id,
-          ...doc.data(),
-        }));
-        setVehicles(data);
-        setLoadingSources((prev) => ({ ...prev, vehicles: false }));
-      },
-      (err) => {
-        console.error("Failed to load vehicles for defects:", err);
-        setLoadingSources((prev) => ({ ...prev, vehicles: false }));
-      }
-    );
-
-    return () => unsub();
-  }, []);
-
-  useEffect(() => {
-    const unsub = onSnapshot(
-      collection(db, "vehicleChecks"),
-      (snap) => {
-        const data = snap.docs.map((doc) => ({
-          id: doc.id,
-          ...doc.data(),
-        }));
-        setVehicleChecks(data);
-        setLoadingSources((prev) => ({ ...prev, checks: false }));
-      },
-      (err) => {
-        console.error("Failed to load approved vehicle checks:", err);
-        setLoadingSources((prev) => ({ ...prev, checks: false }));
-      }
-    );
-
-    return () => unsub();
-  }, []);
-
-  useEffect(() => {
-    const unsub = onSnapshot(
-      collection(db, "vehicleIssues"),
-      (snap) => {
-        const data = snap.docs.map((doc) => ({
-          id: doc.id,
-          ...doc.data(),
-        }));
-        setVehicleIssues(data);
-        setLoadingSources((prev) => ({ ...prev, issues: false }));
-      },
-      (err) => {
-        console.error("Failed to load approved vehicle issues:", err);
-        setLoadingSources((prev) => ({ ...prev, issues: false }));
-      }
-    );
-
-    return () => unsub();
-  }, []);
-
-  useEffect(() => {
-    const unsub = onSnapshot(
-      collection(db, "defectReports"),
-      (snap) => {
-        const data = snap.docs.map((doc) => ({
-          id: doc.id,
-          ...doc.data(),
-        }));
-        setDefectReports(data);
-        setLoadingSources((prev) => ({ ...prev, reports: false }));
-      },
-      (err) => {
-        console.error("Failed to load manual defect reports:", err);
-        setLoadingSources((prev) => ({ ...prev, reports: false }));
-      }
-    );
-
-    return () => unsub();
-  }, []);
+  const { rows: vehicleChecks, loading: checksLoading } = useCachedServiceCollection(
+    "vehicleChecks",
+    { label: "approved vehicle checks" }
+  );
+  const { rows: vehicleIssues, loading: issuesLoading } = useCachedServiceCollection(
+    "vehicleIssues",
+    { label: "approved vehicle issues" }
+  );
+  const { rows: defectReports, loading: reportsLoading } = useCachedServiceCollection(
+    "defectReports",
+    { label: "manual defect reports" }
+  );
+  const loading = vehiclesLoading || checksLoading || issuesLoading || reportsLoading;
 
   // Attach approved split defects per vehicle/source.
   const withDefects = useMemo(() => {

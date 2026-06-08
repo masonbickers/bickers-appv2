@@ -1,0 +1,131 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    function hasUpload() {
+      return request.resource != null;
+    }
+
+    function isImage() {
+      return hasUpload()
+        && request.resource.contentType.matches('image/(jpeg|jpg|png|heic|heif|webp)');
+    }
+
+    function isPdf() {
+      return hasUpload()
+        && request.resource.contentType == 'application/pdf';
+    }
+
+    function isVehicleFile() {
+      return hasUpload()
+        && request.resource.contentType.matches(
+          '((application/pdf)|(image/(jpeg|jpg|png|heic|heif|webp)))'
+        );
+    }
+
+    function isDocumentFile() {
+      return hasUpload()
+        && request.resource.contentType.matches(
+          '((application/pdf)|(image/(jpeg|jpg|png|heic|heif|webp))|(application/msword)|(application/vnd.openxmlformats-officedocument.wordprocessingml.document)|(application/vnd.ms-excel)|(application/vnd.openxmlformats-officedocument.spreadsheetml.sheet))'
+        );
+    }
+
+    /* Insurance docs: app lists and downloads from insurance/ */
+    match /insurance/{allPaths=**} {
+      allow list, read: if signedIn();
+    }
+
+    /* Spec sheets: app lists and downloads from "spec sheets/" */
+    match /{folder}/{allPaths=**} {
+      allow list, read: if signedIn() && folder == "spec sheets";
+    }
+
+    /*
+     * Vehicle checks: app writes vehicle-checks/{uid}/{checkDocId}/{filename}.
+     * The older 5-segment rule with dateISO would not match current uploads.
+     */
+    match /vehicle-checks/{uid}/{checkId}/{filename} {
+      allow write: if isOwner(uid) && isImage();
+      allow read: if signedIn();
+      allow list: if isOwner(uid);
+    }
+
+    /* Recce photos from the home screen */
+    match /recce-photos/{uid}/{bookingId}/{dateISO}/{filename} {
+      allow write: if isOwner(uid) && isImage();
+      allow read, list: if isOwner(uid);
+    }
+
+    /* Recce photos from the dedicated recce form */
+    match /recces/{jobId}/{dateISO}/{uid}/{filename} {
+      allow write: if isOwner(uid) && isImage();
+      allow read, list: if isOwner(uid);
+    }
+
+    /* Demo uploader */
+    match /uploads/photos/{uid}/{yyyy}/{mm}/{filename} {
+      allow write: if isOwner(uid) && isImage();
+      allow read, list: if isOwner(uid);
+    }
+
+    /* Service and minor service photos */
+    match /serviceRecords/{recordId}/{allPaths=**} {
+      allow read, list: if signedIn();
+      allow write: if signedIn() && isImage();
+    }
+
+    /* Defect report photos */
+    match /defectReports/{reportId}/{allPaths=**} {
+      allow read, list: if signedIn();
+      allow write: if signedIn() && isImage();
+    }
+
+    /* Equipment inspection photos */
+    match /equipmentInspections/{inspectionId}/{allPaths=**} {
+      allow read, list: if signedIn();
+      allow write: if signedIn() && isImage();
+    }
+
+    /* Quotes */
+    match /quotes/{allPaths=**} {
+      allow list, read, write: if signedIn();
+    }
+
+    /* Booking PDFs (legacy/optional) */
+    match /booking_pdfs/{allPaths=**} {
+      allow list, read, write: if signedIn();
+    }
+
+    /* Job attachments */
+    match /job_attachments/{bookingId}/{rest=**} {
+      allow read, list: if signedIn();
+      allow write: if signedIn() && isPdf();
+    }
+
+    /* Profile pictures */
+    match /profilePictures/{path=**} {
+      allow read: if signedIn();
+      allow write: if signedIn() && isImage();
+    }
+
+    /* Vehicle files */
+    match /vehicles/{vehicleId}/{field}/{filename} {
+      allow read, list: if signedIn();
+      allow write: if signedIn() && isVehicleFile();
+    }
+
+    /* H&S certificates / check evidence */
+    match /h-and-s/certificates/{allPaths=**} {
+      allow read, list: if signedIn();
+      allow write: if signedIn() && isDocumentFile();
+    }
+  }
+}

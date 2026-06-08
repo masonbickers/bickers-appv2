@@ -169,6 +169,9 @@ const normalizeCategory = (cat) => {
   return c.length ? c : "Other";
 };
 
+const isFleetVehicleCategory = (cat) =>
+  normalizeCategory(cat).toLowerCase() === "fleet vehicles";
+
 export default function VehicleIssuesPage() {
   const router = useRouter();
 
@@ -189,15 +192,20 @@ export default function VehicleIssuesPage() {
     [vehicles]
   );
 
+  const reportableVehicles = useMemo(
+    () => normalizedVehicles.filter((v) => !isFleetVehicleCategory(v.category)),
+    [normalizedVehicles]
+  );
+
   const categories = useMemo(() => {
-    const set = new Set(normalizedVehicles.map((v) => v.category));
+    const set = new Set(reportableVehicles.map((v) => v.category));
     return Array.from(set).sort((a, b) => a.localeCompare(b));
-  }, [normalizedVehicles]);
+  }, [reportableVehicles]);
 
   const filteredVehicles = useMemo(() => {
     if (!selectedCategory) return [];
-    return normalizedVehicles.filter((v) => v.category === selectedCategory);
-  }, [normalizedVehicles, selectedCategory]);
+    return reportableVehicles.filter((v) => v.category === selectedCategory);
+  }, [reportableVehicles, selectedCategory]);
 
   const isValid =
     selectedCategory && selectedVehicle && issueText.trim().length > 0;
@@ -238,7 +246,7 @@ export default function VehicleIssuesPage() {
     }
     try {
       setSubmitting(true);
-      const v = normalizedVehicles.find((x) => x.id === selectedVehicle);
+      const v = reportableVehicles.find((x) => x.id === selectedVehicle);
       const reporterName =
         employee?.name ||
         employee?.displayName ||
@@ -326,7 +334,7 @@ export default function VehicleIssuesPage() {
                 Loading vehicles…
               </Text>
             </View>
-          ) : vehicles.length === 0 ? (
+          ) : reportableVehicles.length === 0 ? (
             <View
               style={[
                 styles.emptyCard,

@@ -2,7 +2,7 @@
   "expo": {
     "name": "Bickers",
     "slug": "bickers-app",
-    "version": "1.0.2",
+    "version": "5.0.4",
     "orientation": "default",
     "icon": "./assets/images/icon.png",
     "scheme": "bickersapp",
@@ -10,9 +10,9 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.bickers.booking",
+      "googleServicesFile": "./GoogleService-Info.plist",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
-        "NSCameraUsageDescription": "Allow camera to take recce photos.",
         "NSPhotoLibraryUsageDescription": "Allow access to add recce photos from your library.",
         "NSPhotoLibraryAddUsageDescription": "Allow saving processed recce photos to your library."
       }
@@ -24,13 +24,16 @@
       },
       "package": "com.bickers.bickersapp",
       "versionCode": 1,
-      "permissions": [
+      "softwareKeyboardLayoutMode": "resize",
+      "blockedPermissions": [
         "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
+      ],
+      "permissions": [
         "android.permission.READ_MEDIA_IMAGES",
         "android.permission.READ_EXTERNAL_STORAGE",
         "android.permission.POST_NOTIFICATIONS",
-        "android.permission.VIBRATE",
-        "android.permission.RECORD_AUDIO"
+        "android.permission.VIBRATE"
       ]
     },
     "web": {
@@ -67,7 +70,7 @@
         "expo-image-picker",
         {
           "photosPermission": "Allow Bickers to access your photos.",
-          "cameraPermission": "Allow Bickers to access your camera."
+          "cameraPermission": false
         }
       ],
       [
@@ -77,7 +80,10 @@
         }
       ],
       "@react-native-community/datetimepicker",
-      "expo-image"
+      "expo-image",
+      "@react-native-firebase/app",
+      "@react-native-firebase/auth",
+      "./plugins/withFirebaseModularHeaders"
     ],
     "experiments": {
       "typedRoutes": true

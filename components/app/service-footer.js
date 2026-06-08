@@ -1,11 +1,13 @@
 // components/app/service-footer.jsx
 import { usePathname, useRouter } from "expo-router";
-import { collection, onSnapshot } from "firebase/firestore";
-import { useEffect, useMemo, useState } from "react";
-import { Platform, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { useEffect, useState } from "react";
+import { InteractionManager, Platform, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import Ionicons from "react-native-vector-icons/Ionicons";
 
-import { db } from "../../firebaseConfig";
+import {
+  readServiceCollectionCache,
+  subscribeServiceCollectionCache,
+} from "../../lib/serviceCache";
 import { useTheme } from "../../providers/ThemeProvider";
 
 function normaliseKey(value) {
@@ -63,96 +65,70 @@ export default function ServiceFooter() {
   const router = useRouter();
   const pathname = usePathname();
   const { colors } = useTheme();
-  const [vehicleChecks, setVehicleChecks] = useState([]);
-  const [vehicleIssues, setVehicleIssues] = useState([]);
-  const [defectReports, setDefectReports] = useState([]);
-  const [serviceRecords, setServiceRecords] = useState([]);
-  const [equipmentInspections, setEquipmentInspections] = useState([]);
+  const [issueCount, setIssueCount] = useState(0);
 
   useEffect(() => {
-    const unsub = onSnapshot(
-      collection(db, "vehicleChecks"),
-      (snap) => {
-        setVehicleChecks(snap.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
-      },
-      (err) => {
-        console.error("Failed to load footer defect checks:", err);
+    let alive = true;
+    let unsubscribers = [];
+
+    const applyCounts = (data) => {
+      const nextIssueCount =
+        countOpenCheckDefects(data.vehicleChecks || []) +
+        countOpenIssueDefects(data.vehicleIssues || []) +
+        countOpenManualDefects(data.defectReports || []) +
+        countMonitorItems(data.serviceRecords || []) +
+        countMonitorItems(data.equipmentInspections || []);
+
+      setIssueCount(nextIssueCount);
+    };
+
+    const task = InteractionManager.runAfterInteractions(async () => {
+      try {
+        const collectionNames = [
+          "vehicleChecks",
+          "vehicleIssues",
+          "defectReports",
+          "serviceRecords",
+          "equipmentInspections",
+        ];
+        const cachedEntries = await Promise.all(
+          collectionNames.map(async (name) => [
+            name,
+            (await readServiceCollectionCache(name)).rows,
+          ])
+        );
+
+        if (!alive) return;
+
+        const current = Object.fromEntries(cachedEntries);
+        applyCounts(current);
+
+        unsubscribers = collectionNames.map((collectionName) =>
+          subscribeServiceCollectionCache({
+            collectionName,
+            label: `footer ${collectionName}`,
+            onRows: (rows) => {
+              current[collectionName] = rows;
+              applyCounts(current);
+            },
+            onError: (err) => {
+              console.error(`Failed to load footer ${collectionName}:`, err);
+            },
+          })
+        );
+      } catch (err) {
+        console.error("Failed to load service footer issue counts:", err);
       }
-    );
+    });
 
-    return () => unsub();
+    return () => {
+      alive = false;
+      task.cancel?.();
+      unsubscribers.forEach((unsub) => {
+        if (typeof unsub === "function") unsub();
+      });
+    };
   }, []);
-
-  useEffect(() => {
-    const unsub = onSnapshot(
-      collection(db, "vehicleIssues"),
-      (snap) => {
-        setVehicleIssues(snap.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
-      },
-      (err) => {
-        console.error("Failed to load footer defect issues:", err);
-      }
-    );
-
-    return () => unsub();
-  }, []);
-
-  useEffect(() => {
-    const unsub = onSnapshot(
-      collection(db, "defectReports"),
-      (snap) => {
-        setDefectReports(snap.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
-      },
-      (err) => {
-        console.error("Failed to load footer defect reports:", err);
-      }
-    );
-
-    return () => unsub();
-  }, []);
-
-  useEffect(() => {
-    const unsub = onSnapshot(
-      collection(db, "serviceRecords"),
-      (snap) => {
-        setServiceRecords(snap.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
-      },
-      (err) => {
-        console.error("Failed to load footer service advisories:", err);
-      }
-    );
-
-    return () => unsub();
-  }, []);
-
-  useEffect(() => {
-    const unsub = onSnapshot(
-      collection(db, "equipmentInspections"),
-      (snap) => {
-        setEquipmentInspections(snap.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
-      },
-      (err) => {
-        console.error("Failed to load footer inspection advisories:", err);
-      }
-    );
-
-    return () => unsub();
-  }, []);
-
-  const openDefectCount = useMemo(
-    () =>
-      countOpenCheckDefects(vehicleChecks) +
-      countOpenIssueDefects(vehicleIssues) +
-      countOpenManualDefects(defectReports),
-    [defectReports, vehicleChecks, vehicleIssues]
-  );
-
-  const advisoryCount = useMemo(
-    () => countMonitorItems(serviceRecords) + countMonitorItems(equipmentInspections),
-    [equipmentInspections, serviceRecords]
-  );
-
-  const issueCount = openDefectCount + advisoryCount;
 
   // 🔧 Tabs dedicated to Service / Workshop area
   // URLs are /service/... (group (protected) is hidden from URL)

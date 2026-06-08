@@ -17,6 +17,12 @@ import { useTheme } from "../../providers/ThemeProvider";
 
 /* ─────────────────────────── Helpers ─────────────────────────── */
 const norm = (v) => String(v ?? "").trim().toLowerCase();
+const canonicalCode = (v) => {
+  const raw = String(v ?? "").trim();
+  if (!raw) return "";
+  const digits = raw.replace(/\D/g, "");
+  return digits ? digits.padStart(4, "0") : norm(raw);
+};
 
 function withAlpha(hex, alpha) {
   const safeAlpha = Math.max(0, Math.min(1, Number(alpha) || 0));
@@ -80,6 +86,41 @@ const fmt = (d) =>
         month: "short",
       });
 
+function firstValue(...values) {
+  return values.find((value) => value !== undefined && value !== null && String(value).trim() !== "");
+}
+
+function getHolidayStart(h) {
+  return toDate(
+    firstValue(
+      h?.startDate,
+      h?.dateFrom,
+      h?.fromDate,
+      h?.from,
+      h?.start,
+      h?.date,
+      h?.holidayStart,
+      h?.start_date
+    )
+  );
+}
+
+function getHolidayEnd(h) {
+  return (
+    toDate(
+      firstValue(
+        h?.endDate,
+        h?.dateTo,
+        h?.toDate,
+        h?.to,
+        h?.end,
+        h?.holidayEnd,
+        h?.end_date
+      )
+    ) || getHolidayStart(h)
+  );
+}
+
 /* Half-day detection & rendering */
 const normaliseAMPM = (v) => {
   const s = String(v || "").trim().toUpperCase();
@@ -118,8 +159,8 @@ function getHalfMeta(h) {
 
 // Compute business-day length with half-day adjustments (excludes weekends + bank holidays)
 function computeDays(h, isBankHolidayFn = null) {
-  const s = toDate(h.startDate);
-  const e = toDate(h.endDate) || s;
+  const s = getHolidayStart(h);
+  const e = getHolidayEnd(h) || s;
   if (!s || !e) return 0;
 
   const { startHalfFlag, endHalfFlag, startAMPM, endAMPM, legacySingleHalf } = getHalfMeta(h);
@@ -173,8 +214,8 @@ function renderDateWithHalf(d, which, h) {
 
   const { startHalfFlag, endHalfFlag, startAMPM, endAMPM, legacySingleHalf } = getHalfMeta(h);
 
-  const s = toDate(h.startDate);
-  const e = toDate(h.endDate) || s;
+  const s = getHolidayStart(h);
+  const e = getHolidayEnd(h) || s;
   const isSingle = s && e && s.toDateString() === e.toDateString();
 
   if (which === "start") {
@@ -193,7 +234,7 @@ function renderDateWithHalf(d, which, h) {
 function displayTypeAndColor(h) {
   let displayType = "Other";
   let typeColor = "#22d3ee";
-  const typeStr = (h.leaveType || h.paidStatus || "").toLowerCase();
+  const typeStr = (h.leaveType || h.paidStatus || h.type || h.holidayType || "").toLowerCase();
 
   if (h.isAccrued || typeStr.includes("accrued") || typeStr.includes("toil")) {
     displayType = "Accrued";
@@ -240,10 +281,131 @@ function getAllowanceForYear(emp, y) {
   return { allowance, carryOver };
 }
 
+function employeeMatchesHoliday(h, empRecord, sessionEmployee, user) {
+  const ids = [
+    empRecord?.id,
+    empRecord?.employeeId,
+    empRecord?.uid,
+    empRecord?.authUid,
+    sessionEmployee?.employeeId,
+    sessionEmployee?.id,
+    sessionEmployee?.uid,
+    user?.uid,
+  ]
+    .map(norm)
+    .filter(Boolean);
+
+  const holidayIds = [
+    h?.employeeId,
+    h?.employeeDocId,
+    h?.staffId,
+    h?.userId,
+    h?.uid,
+    h?.authUid,
+    h?.employeeUid,
+  ]
+    .map(norm)
+    .filter(Boolean);
+
+  if (holidayIds.some((id) => ids.includes(id))) return true;
+
+  const codes = [
+    empRecord?.userCode,
+    empRecord?.employeeCode,
+    empRecord?.code,
+    sessionEmployee?.userCode,
+    sessionEmployee?.employeeCode,
+    sessionEmployee?.code,
+  ]
+    .map(canonicalCode)
+    .filter(Boolean);
+
+  const holidayCodes = [
+    h?.employeeCode,
+    h?.userCode,
+    h?.code,
+    h?.staffCode,
+    h?.requestedByCode,
+    h?.createdByCode,
+    h?.driverCode,
+  ]
+    .map(canonicalCode)
+    .filter(Boolean);
+
+  if (holidayCodes.some((code) => codes.includes(code))) return true;
+
+  const names = [
+    empRecord?.name,
+    empRecord?.displayName,
+    sessionEmployee?.name,
+    sessionEmployee?.displayName,
+    sessionEmployee?.fullName,
+    user?.displayName,
+  ]
+    .map(norm)
+    .filter(Boolean);
+
+  const holidayNames = [
+    h?.employee,
+    h?.name,
+    h?.employeeName,
+    h?.displayName,
+    h?.staffName,
+    h?.requestedBy,
+    h?.requestedByName,
+    h?.createdByName,
+  ]
+    .map(norm)
+    .filter(Boolean);
+
+  if (holidayNames.some((name) => names.includes(name))) return true;
+
+  const emails = [empRecord?.email, sessionEmployee?.email, user?.email]
+    .map(norm)
+    .filter(Boolean);
+
+  const holidayEmails = [
+    h?.email,
+    h?.employeeEmail,
+    h?.userEmail,
+    h?.requestedByEmail,
+    h?.createdByEmail,
+  ]
+    .map(norm)
+    .filter(Boolean);
+
+  return holidayEmails.some((email) => emails.includes(email));
+}
+
+function isRequestedStatus(status) {
+  const st = norm(status);
+  return (
+    !st ||
+    st === "requested" ||
+    st === "request" ||
+    st === "pending" ||
+    st === "submitted" ||
+    st.includes("awaiting")
+  );
+}
+
+function isApprovedStatus(status) {
+  const st = norm(status);
+  return (
+    st === "approved" ||
+    st === "accept" ||
+    st === "accepted" ||
+    st === "confirmed" ||
+    st === "authorised" ||
+    st === "authorized" ||
+    st.startsWith("approved")
+  );
+}
+
 // holiday intersects year?
 function holidayTouchesYear(h, y) {
-  const s = toDate(h.startDate);
-  const e = toDate(h.endDate) || s;
+  const s = getHolidayStart(h);
+  const e = getHolidayEnd(h) || s;
   if (!s || !e) return false;
 
   const startOfYear = new Date(y, 0, 1);
@@ -335,8 +497,9 @@ export default function HolidayPage() {
       const email = (employee?.email || user?.email || "").trim().toLowerCase();
 
       if (employee?.userCode) {
+        const targetCode = canonicalCode(employee.userCode);
         empRecord =
-          employees.find((e) => e.userCode === employee.userCode) ||
+          employees.find((e) => canonicalCode(e.userCode) === targetCode) ||
           employees.find((e) => (e.email || "").trim().toLowerCase() === email);
       } else if (email) {
         empRecord = employees.find((e) => (e.email || "").trim().toLowerCase() === email);
@@ -353,8 +516,8 @@ export default function HolidayPage() {
       const holRef = collection(db, "holidays");
       unsubscribe = onSnapshot(holRef, (snapshot) => {
         const allHolidays = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
-        const myHolidays = allHolidays.filter(
-          (h) => h.employee === empRecord.name || h.employeeCode === empRecord.userCode
+        const myHolidays = allHolidays.filter((h) =>
+          employeeMatchesHoliday(h, empRecord, employee, user)
         );
         setHolidays(myHolidays);
       });
@@ -386,8 +549,7 @@ export default function HolidayPage() {
       accruedEarned = 0;
 
     holidaysForYear.forEach((h) => {
-      const status = norm(h.status);
-      if (status !== "approved") return;
+      if (!isApprovedStatus(h.status)) return;
 
       const days = computeDays(h, isBankHoliday);
       const { displayType } = displayTypeAndColor(h);
@@ -425,28 +587,27 @@ export default function HolidayPage() {
 
   // ✅ Make status filtering case-insensitive
   const requestedHolidays = holidaysForYear.filter((h) => {
-    const st = norm(h.status);
-    return !st || st === "requested";
+    return isRequestedStatus(h.status);
   });
 
-  const confirmedHolidays = holidaysForYear.filter((h) => norm(h.status) === "approved");
+  const confirmedHolidays = holidaysForYear.filter((h) => isApprovedStatus(h.status));
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
   const upcomingConfirmed = confirmedHolidays
     .filter((h) => {
-      const end = toDate(h.endDate) || toDate(h.startDate);
+      const end = getHolidayEnd(h) || getHolidayStart(h);
       return end && end >= today;
     })
-    .sort((a, b) => toDate(a.startDate) - toDate(b.startDate));
+    .sort((a, b) => getHolidayStart(a) - getHolidayStart(b));
 
   const pastConfirmed = confirmedHolidays
     .filter((h) => {
-      const end = toDate(h.endDate) || toDate(h.startDate);
+      const end = getHolidayEnd(h) || getHolidayStart(h);
       return end && end < today;
     })
-    .sort((a, b) => toDate(a.startDate) - toDate(b.startDate));
+    .sort((a, b) => getHolidayStart(a) - getHolidayStart(b));
 
   const pastPaidUsed = pastConfirmed.reduce((sum, h) => {
     const { displayType } = displayTypeAndColor(h);
@@ -573,10 +734,10 @@ export default function HolidayPage() {
                 ) : (
                   requestedHolidays
                     .slice()
-                    .sort((a, b) => toDate(a.startDate) - toDate(b.startDate))
+                    .sort((a, b) => getHolidayStart(a) - getHolidayStart(b))
                     .map((h) => {
-                      const s = toDate(h.startDate);
-                      const e = toDate(h.endDate) || s;
+                      const s = getHolidayStart(h);
+                      const e = getHolidayEnd(h) || s;
 
                       // ✅ weekdays-only + excludes bank holidays + supports half days
                       const days = computeDays(h, isBankHoliday);
@@ -634,8 +795,8 @@ export default function HolidayPage() {
                   (() => {
                     let projected = remainingAfterPast;
                     return upcomingConfirmed.map((h) => {
-                      const s = toDate(h.startDate);
-                      const e = toDate(h.endDate) || s;
+                      const s = getHolidayStart(h);
+                      const e = getHolidayEnd(h) || s;
                       const days = computeDays(h, isBankHoliday);
                       const { displayType, typeColor } = displayTypeAndColor(h);
                       const notesText = getNotes(h) || "-";
@@ -684,8 +845,8 @@ export default function HolidayPage() {
                   (() => {
                     let runningBalance = totalAllowance;
                     return pastConfirmed.map((h) => {
-                      const s = toDate(h.startDate);
-                      const e = toDate(h.endDate) || s;
+                      const s = getHolidayStart(h);
+                      const e = getHolidayEnd(h) || s;
                       const days = computeDays(h, isBankHoliday);
                       const { displayType, typeColor } = displayTypeAndColor(h);
                       const notesText = getNotes(h) || "-";

@@ -34,6 +34,7 @@ import {
   ActivityIndicator,
   Image,
   InteractionManager,
+  KeyboardAvoidingView,
   Modal,
   Platform,
   RefreshControl,
@@ -100,6 +101,8 @@ const ACTION_ROUTES = {
 };
 
 const HOME_LOGO = require("../../../assets/images/bickers-action-logo.png");
+let employeesCache = null;
+let employeesCacheCompanyId = null;
 
 function withAlpha(hex, alpha) {
   const safeAlpha = Math.max(0, Math.min(1, Number(alpha) || 0));
@@ -551,6 +554,7 @@ export default function HomeScreen() {
 
   const workspaceAccess = useMemo(() => resolveWorkspaceAccess(employee), [employee]);
   const canSwitchToService = workspaceAccess.user && workspaceAccess.service;
+  const companyId = employee?.companyId || "";
 
   const openServiceWorkspace = useCallback(() => {
     if (!canSwitchToService) return;
@@ -586,6 +590,7 @@ export default function HomeScreen() {
         "sessionIsService",
         "sessionUserAccess",
         "sessionServiceAccess",
+        "sessionCompanyId",
         "displayName",
         "employeeId",
         "employeeEmail",
@@ -605,8 +610,12 @@ export default function HomeScreen() {
   };
 
   const loadVehiclesMap = useCallback(async () => {
+    if (!companyId) return;
+
     try {
-      const snap = await getDocs(collection(db, "vehicles"));
+      const snap = await getDocs(
+        query(collection(db, "vehicles"), where("companyId", "==", companyId))
+      );
       const map = {};
 
       snap.docs.forEach((d) => {
@@ -627,7 +636,7 @@ export default function HomeScreen() {
     } catch (e) {
       console.warn("loadVehiclesMap error:", e);
     }
-  }, []);
+  }, [companyId]);
 
   useEffect(() => {
     const task = InteractionManager.runAfterInteractions(() => {
@@ -677,7 +686,7 @@ export default function HomeScreen() {
   );
 
   const loadPlanningData = useCallback(async () => {
-    if (!employee) return null;
+    if (!employee || !companyId) return null;
 
     const requestId = ++planningRequestIdRef.current;
 
@@ -687,26 +696,89 @@ export default function HomeScreen() {
           ? getDocs(
               query(
                 collection(db, "bookings"),
+                where("companyId", "==", companyId),
                 where("bookingDates", "array-contains-any", planningDates)
               )
             )
           : Promise.resolve({ docs: [] });
+      const holidayMap = new Map();
+      const holidayQueries = [];
+      const employeeCode = employee?.userCode ? String(employee.userCode) : "";
+      const employeeName = employee?.name || employee?.displayName || "";
+      if (employeeCode) {
+        holidayQueries.push(
+          query(
+            collection(db, "holidays"),
+            where("companyId", "==", companyId),
+            where("employeeCode", "==", employeeCode)
+          ),
+          query(
+            collection(db, "holidays"),
+            where("companyId", "==", companyId),
+            where("userCode", "==", employeeCode)
+          )
+        );
+      }
+      if (employeeName) {
+        holidayQueries.push(
+          query(
+            collection(db, "holidays"),
+            where("companyId", "==", companyId),
+            where("employee", "==", employeeName)
+          ),
+          query(
+            collection(db, "holidays"),
+            where("companyId", "==", companyId),
+            where("name", "==", employeeName)
+          )
+        );
+      }
 
-      const [jobsSnap, holSnap, empSnap] = await Promise.all([
+      const holidaysPromise = Promise.all(
+        holidayQueries.map((qRef) =>
+          getDocs(qRef).catch((e) => {
+            console.warn("loadPlanningData holidays query error:", e);
+            return null;
+          })
+        )
+      );
+      const employeesPromise =
+        employeesCache && employeesCacheCompanyId === companyId
+          ? Promise.resolve(employeesCache)
+          : getDocs(
+              query(collection(db, "employees"), where("companyId", "==", companyId))
+            )
+              .then((snap) => {
+                employeesCache = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+                employeesCacheCompanyId = companyId;
+                return employeesCache;
+              })
+              .catch((e) => {
+                console.warn("loadPlanningData employees error:", e);
+                return [];
+              });
+
+      const [jobsSnap, holidaySnaps, allEmployees] = await Promise.all([
         bookingsPromise,
-        getDocs(collection(db, "holidays")),
-        getDocs(collection(db, "employees")),
+        holidaysPromise,
+        employeesPromise,
       ]);
 
       if (requestId !== planningRequestIdRef.current) return null;
+
+      holidaySnaps.filter(Boolean).forEach((snap) => {
+        snap.docs.forEach((d) => {
+          holidayMap.set(d.id, { id: d.id, ...d.data() });
+        });
+      });
 
       const next = {
         jobs: jobsSnap.docs.map((docSnap) => ({
           id: docSnap.id,
           ...docSnap.data(),
         })),
-        holidaysRaw: holSnap.docs.map((d) => ({ id: d.id, ...d.data() })),
-        allEmployees: empSnap.docs.map((d) => ({ id: d.id, ...d.data() })),
+        holidaysRaw: Array.from(holidayMap.values()),
+        allEmployees,
       };
 
       planningDataRef.current = next;
@@ -717,7 +789,7 @@ export default function HomeScreen() {
       console.warn("loadPlanningData error:", e);
       return null;
     }
-  }, [employee, planningDates]);
+  }, [employee, companyId, planningDates]);
 
   useEffect(() => {
     if (!employee) return undefined;
@@ -900,16 +972,6 @@ export default function HomeScreen() {
     }
   };
 
-  const ensureCameraPerms = async () => {
-    if (Platform.OS === "web") return;
-
-    const { status } = await ImagePicker.requestCameraPermissionsAsync();
-
-    if (status !== "granted") {
-      throw new Error("Permission to use camera is required.");
-    }
-  };
-
   const ensureFileUri = async (uri) => {
     if (!uri) return null;
 
@@ -974,27 +1036,6 @@ export default function HomeScreen() {
       );
     } catch (e) {
       console.warn("pickPhotos error:", e);
-    }
-  };
-
-  const takePhoto = async () => {
-    try {
-      await ensureCameraPerms();
-
-      const res = await ImagePicker.launchCameraAsync({
-        mediaTypes: IMAGES_ONLY,
-        quality: 1,
-      });
-
-      if (res.canceled) return;
-
-      const asset = res.assets?.[0];
-
-      if (asset) {
-        setReccePhotos((prev) => [...prev, { uri: asset.uri }].slice(0, 8));
-      }
-    } catch (e) {
-      console.warn("takePhoto error:", e);
     }
   };
 
@@ -1708,7 +1749,6 @@ export default function HomeScreen() {
         setReccePhotos={setReccePhotos}
         savingRecce={savingRecce}
         onPickPhotos={pickPhotos}
-        onTakePhoto={takePhoto}
         onCancel={() => {
           setRecceOpen(false);
           setRecceJob(null);
@@ -1956,7 +1996,6 @@ const RecceModal = ({
   setReccePhotos,
   savingRecce,
   onPickPhotos,
-  onTakePhoto,
   onCancel,
   onSave,
 }) => (
@@ -1966,7 +2005,10 @@ const RecceModal = ({
     animationType="slide"
     onRequestClose={onCancel}
   >
-    <View style={styles.modalBackdrop}>
+    <KeyboardAvoidingView
+      style={styles.modalBackdrop}
+      behavior={Platform.OS === "ios" ? "padding" : undefined}
+    >
       <View
         style={[
           styles.recceModalContent,
@@ -1998,6 +2040,7 @@ const RecceModal = ({
           style={styles.recceScroll}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
+          contentContainerStyle={styles.recceScrollContent}
         >
           <Label colors={colors}>Recce Lead</Label>
           <Input
@@ -2110,22 +2153,6 @@ const RecceModal = ({
               </Text>
             </TouchableOpacity>
 
-            <TouchableOpacity
-              style={[
-                styles.photoButton,
-                {
-                  backgroundColor: colors.surfaceAlt,
-                  borderColor: colors.border,
-                },
-              ]}
-              onPress={onTakePhoto}
-              activeOpacity={0.9}
-            >
-              <Icon name="camera" size={15} color={colors.text} />
-              <Text style={[styles.photoButtonText, { color: colors.text }]}>
-                Camera
-              </Text>
-            </TouchableOpacity>
           </View>
 
           <View style={styles.photoGrid}>
@@ -2209,7 +2236,7 @@ const RecceModal = ({
           </TouchableOpacity>
         </View>
       </View>
-    </View>
+    </KeyboardAvoidingView>
   </Modal>
 );
 
@@ -2823,6 +2850,10 @@ const styles = StyleSheet.create({
 
   recceScroll: {
     maxHeight: 470,
+  },
+
+  recceScrollContent: {
+    paddingBottom: 24,
   },
 
   inputLabel: {

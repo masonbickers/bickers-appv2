@@ -1,7 +1,7 @@
 // app/(protected)/service/settings.js
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useRouter } from "expo-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Alert,
   ScrollView,
@@ -14,8 +14,16 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
-import { signOut } from "firebase/auth";
+import { sendPasswordResetEmail, signOut } from "firebase/auth";
 import { auth } from "../../../firebaseConfig";
+import {
+  cancelAllMaintenanceReminders,
+  DEFAULT_MAINTENANCE_REMINDER_TIME,
+  getMaintenanceReminderTime,
+  getMaintenanceRemindersEnabled,
+  setMaintenanceReminderTime,
+  setMaintenanceRemindersEnabled,
+} from "../../../lib/maintenanceReminders";
 
 import { useAuth } from "../../../providers/AuthProvider";
 import { useTheme } from "../../../providers/ThemeProvider";
@@ -34,19 +42,18 @@ const COLORS = {
   lightGray: "#3F3F46",
 };
 
-const showUnavailableSetting = () => {
-  Alert.alert(
-    "Coming soon",
-    "This settings page is planned for a future update."
-  );
-};
-
 export default function ServiceSettingsPage() {
   const router = useRouter();
   const { reloadSession } = useAuth();
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
+  const [maintenanceReminderEnabled, setMaintenanceReminderEnabled] = useState(false);
+  const [maintenanceReminderTime, setMaintenanceReminderTimeState] = useState(
+    DEFAULT_MAINTENANCE_REMINDER_TIME
+  );
+  const [maintenanceReminderSaving, setMaintenanceReminderSaving] = useState(false);
 
   const { theme, colors, setTheme } = useTheme();
+  const maintenanceReminderTimes = ["07:00", "09:00", "12:00", "17:00"];
 
   const settings = [
     {
@@ -60,7 +67,7 @@ export default function ServiceSettingsPage() {
         {
           label: "Change Password",
           icon: "lock",
-          onPress: showUnavailableSetting,
+          onPress: handleChangePassword,
         },
       ],
     },
@@ -73,9 +80,16 @@ export default function ServiceSettingsPage() {
           type: "toggle",
         },
         {
-          label: "MOT / Service Reminders",
+          label: "Maintenance Job Reminders",
           icon: "clock",
-          onPress: showUnavailableSetting,
+          type: "maintenance-reminder-toggle",
+          subLabel: "Day-before alerts for booked maintenance jobs",
+        },
+        {
+          label: "Reminder Time",
+          icon: "watch",
+          type: "maintenance-reminder-time",
+          subLabel: "When the day-before alert should arrive",
         },
       ],
     },
@@ -104,6 +118,95 @@ export default function ServiceSettingsPage() {
 
   const handleSetTheme = (mode) => {
     setTheme(mode); // "system" | "light" | "dark"
+  };
+
+  useEffect(() => {
+    let alive = true;
+    Promise.all([
+      getMaintenanceRemindersEnabled(),
+      getMaintenanceReminderTime(),
+    ])
+      .then(([enabled, reminderTime]) => {
+        if (alive) setMaintenanceReminderEnabled(enabled);
+        if (alive) setMaintenanceReminderTimeState(reminderTime);
+      })
+      .catch((e) => {
+        console.warn("[maintenance-reminders] failed to load setting:", e);
+      });
+
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const handleMaintenanceReminderToggle = async (next) => {
+    if (maintenanceReminderSaving) return;
+
+    try {
+      setMaintenanceReminderSaving(true);
+      setMaintenanceReminderEnabled(next);
+      await setMaintenanceRemindersEnabled(next);
+      if (!next) {
+        await cancelAllMaintenanceReminders();
+      }
+    } catch (e) {
+      setMaintenanceReminderEnabled(!next);
+      Alert.alert(
+        "Could not update reminders",
+        e?.message || "Please try again."
+      );
+    } finally {
+      setMaintenanceReminderSaving(false);
+    }
+  };
+
+  const handleMaintenanceReminderTimeChange = async (time) => {
+    if (maintenanceReminderSaving || time === maintenanceReminderTime) return;
+
+    const previous = maintenanceReminderTime;
+    try {
+      setMaintenanceReminderSaving(true);
+      setMaintenanceReminderTimeState(time);
+      await setMaintenanceReminderTime(time);
+    } catch (e) {
+      setMaintenanceReminderTimeState(previous);
+      Alert.alert(
+        "Could not update reminder time",
+        e?.message || "Please try again."
+      );
+    } finally {
+      setMaintenanceReminderSaving(false);
+    }
+  };
+
+  const handleChangePassword = () => {
+    const email = String(auth.currentUser?.email || "").trim().toLowerCase();
+    if (!email) {
+      Alert.alert("No email found", "Please log out and sign in again.");
+      return;
+    }
+
+    Alert.alert(
+      "Change password?",
+      `We will send a password reset link to ${email}.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Send email",
+          onPress: async () => {
+            try {
+              await sendPasswordResetEmail(auth, email);
+              Alert.alert(
+                "Email sent",
+                "Check your email and follow the link to choose a new password."
+              );
+            } catch (err) {
+              Alert.alert("Could not send email", err?.message || "Please try again.");
+            }
+          },
+        },
+      ]
+    );
   };
 
   // 🔐 LOGOUT – mirror HomeScreen behaviour so root layout sends you to (auth)/login
@@ -211,14 +314,26 @@ export default function ServiceSettingsPage() {
                     size={20}
                     color={colors.textMuted || COLORS.textMid}
                   />
-                  <Text
-                    style={[
-                      styles.itemText,
-                      { color: colors.text || COLORS.textHigh },
-                    ]}
-                  >
-                    {item.label}
-                  </Text>
+                  <View style={styles.itemTextWrap}>
+                    <Text
+                      style={[
+                        styles.itemText,
+                        { color: colors.text || COLORS.textHigh },
+                      ]}
+                    >
+                      {item.label}
+                    </Text>
+                    {!!item.subLabel && (
+                      <Text
+                        style={[
+                          styles.itemSubText,
+                          { color: colors.textMuted || COLORS.textLow },
+                        ]}
+                      >
+                        {item.subLabel}
+                      </Text>
+                    )}
+                  </View>
                 </View>
 
                 {item.type === "toggle" ? (
@@ -231,6 +346,55 @@ export default function ServiceSettingsPage() {
                     }}
                     thumbColor={notificationsEnabled ? "#fff" : "#888"}
                   />
+                ) : item.type === "maintenance-reminder-toggle" ? (
+                  <Switch
+                    value={maintenanceReminderEnabled}
+                    onValueChange={handleMaintenanceReminderToggle}
+                    disabled={maintenanceReminderSaving}
+                    trackColor={{
+                      false: "#444",
+                      true: colors.accent || COLORS.primaryAction,
+                    }}
+                    thumbColor={maintenanceReminderEnabled ? "#fff" : "#888"}
+                  />
+                ) : item.type === "maintenance-reminder-time" ? (
+                  <View style={styles.timeButtonsRow}>
+                    {maintenanceReminderTimes.map((time) => {
+                      const active = maintenanceReminderTime === time;
+                      return (
+                        <TouchableOpacity
+                          key={time}
+                          onPress={() => handleMaintenanceReminderTimeChange(time)}
+                          activeOpacity={0.85}
+                          disabled={maintenanceReminderSaving}
+                          style={[
+                            styles.timeButton,
+                            {
+                              borderColor: active
+                                ? colors.accent || COLORS.primaryAction
+                                : colors.border || COLORS.border,
+                              backgroundColor: active
+                                ? colors.accent || COLORS.primaryAction
+                                : colors.surface || COLORS.card,
+                            },
+                          ]}
+                        >
+                          <Text
+                            style={[
+                              styles.timeButtonText,
+                              {
+                                color: active
+                                  ? COLORS.textHigh
+                                  : colors.text || COLORS.textHigh,
+                              },
+                            ]}
+                          >
+                            {time}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
                 ) : item.type === "theme" ? (
                   <View className="themeButtonsRow" style={styles.themeButtonsRow}>
                     {["system", "light", "dark"].map((mode, i) => {
@@ -363,10 +527,39 @@ const styles = StyleSheet.create({
   itemLeft: {
     flexDirection: "row",
     alignItems: "center",
+    flex: 1,
+    paddingRight: 12,
+  },
+  itemTextWrap: {
+    flex: 1,
+    marginLeft: 10,
   },
   itemText: {
     fontSize: 16,
-    marginLeft: 10,
+  },
+  itemSubText: {
+    fontSize: 12,
+    lineHeight: 16,
+    marginTop: 3,
+  },
+  timeButtonsRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "flex-end",
+    gap: 6,
+    maxWidth: 180,
+  },
+  timeButton: {
+    minWidth: 54,
+    alignItems: "center",
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  timeButtonText: {
+    fontSize: 12,
+    fontWeight: "700",
   },
   themeButtonsRow: {
     flexDirection: "row",
