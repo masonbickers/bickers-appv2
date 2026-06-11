@@ -59,6 +59,34 @@ function firstISOFromBooking(booking) {
   return toISODate(s);
 }
 
+function bookingHasCurrentOrFutureDate(booking, now = new Date()) {
+  const today = new Date(now);
+  today.setHours(0, 0, 0, 0);
+
+  const raw = booking?.bookingDates;
+  if (Array.isArray(raw) && raw.length > 0) {
+    const dates = raw.map(toDateSafe).filter(Boolean);
+    if (dates.length > 0) {
+      return dates.some((date) => {
+        const d = new Date(date);
+        d.setHours(0, 0, 0, 0);
+        return d >= today;
+      });
+    }
+  }
+
+  const end =
+    toDateSafe(booking?.endDate) ||
+    toDateSafe(booking?.to) ||
+    toDateSafe(booking?.startDate) ||
+    toDateSafe(booking?.from) ||
+    toDateSafe(booking?.date);
+
+  if (!end) return true;
+  end.setHours(0, 0, 0, 0);
+  return end >= today;
+}
+
 function formatDateShort(d) {
   if (!d) return "";
   return d.toLocaleDateString("en-GB", {
@@ -226,6 +254,8 @@ export default function ProtectedLayout() {
 
   // ---------- Notification Helpers ----------
   const notifyBookingAssigned = useCallback((docId, booking) => {
+    if (!bookingHasCurrentOrFutureDate(booking)) return;
+
     const key = `${docId}:assigned`;
     if (assignmentDedupe.current.has(key)) return;
     assignmentDedupe.current.add(key);
@@ -256,6 +286,8 @@ export default function ProtectedLayout() {
   }, [formatJobDatesForNotif, formatVehiclesForNotif]);
 
   const notifyJobUpdated = useCallback((docId, booking) => {
+    if (!bookingHasCurrentOrFutureDate(booking)) return;
+
     const vehiclesText = formatVehiclesForNotif(booking);
     const datesText = formatJobDatesForNotif(booking);
 
@@ -348,6 +380,8 @@ export default function ProtectedLayout() {
   }, [loading, isAuthed, employee?.userCode, jobChanged, notifyBookingAssigned, notifyJobUpdated, projectJob]);
 
   function notifyJobDeleted(docId, booking) {
+    if (!bookingHasCurrentOrFutureDate(booking)) return;
+
     scheduleLocalNotification({
       title: "Job removed",
       body: booking.jobNumber

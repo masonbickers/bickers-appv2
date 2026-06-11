@@ -38,6 +38,34 @@ function fmtShortDate(value) {
   });
 }
 
+function bookingHasCurrentOrFutureDate(booking, now = new Date()) {
+  const today = new Date(now);
+  today.setHours(0, 0, 0, 0);
+
+  const raw = Array.isArray(booking?.bookingDates) ? booking.bookingDates : [];
+  if (raw.length > 0) {
+    const dates = raw.map(toJsDate).filter(Boolean);
+    if (dates.length > 0) {
+      return dates.some((date) => {
+        const d = new Date(date);
+        d.setHours(0, 0, 0, 0);
+        return d >= today;
+      });
+    }
+  }
+
+  const fallback =
+    toJsDate(booking?.endDate) ||
+    toJsDate(booking?.to) ||
+    toJsDate(booking?.startDate) ||
+    toJsDate(booking?.from) ||
+    toJsDate(booking?.date);
+
+  if (!fallback) return true;
+  fallback.setHours(0, 0, 0, 0);
+  return fallback >= today;
+}
+
 function safeStr(v) {
   return String(v ?? "").trim();
 }
@@ -208,6 +236,8 @@ export function useBookingAssignmentNotifications(employee) {
   }
 
   function notifyOnce(docId, me, b) {
+    if (!bookingHasCurrentOrFutureDate(b)) return;
+
     const key = `${docId}:${me}`;
     if (dedupe.current.has(key)) return;
     dedupe.current.add(key);
@@ -227,7 +257,11 @@ export function useBookingAssignmentNotifications(employee) {
     scheduleLocalNotification({
       title: "New job assigned",
       body: bodyParts.join(" • "),
-      data: { bookingId: docId },
+      data: {
+        bookingId: docId,
+        bookingDates: b?.bookingDates || null,
+        dateISO: firstDate || null,
+      },
       seconds: 1, // reliable trigger
     });
   }

@@ -22,7 +22,11 @@ import {
   setMaintenanceReminderTime,
   setMaintenanceRemindersEnabled,
 } from "../../lib/maintenanceReminders";
-import { NOTIFICATIONS_ENABLED } from "../../lib/notifications";
+import {
+  NOTIFICATIONS_ENABLED,
+  registerForPushNotificationsAsync,
+  scheduleLocalNotification,
+} from "../../lib/notifications";
 import { useTheme } from "../../providers/ThemeProvider";
 
 function withAlpha(hex, alpha) {
@@ -45,6 +49,7 @@ export default function SettingsPage() {
     DEFAULT_MAINTENANCE_REMINDER_TIME
   );
   const [maintenanceReminderSaving, setMaintenanceReminderSaving] = useState(false);
+  const [testNotificationSaving, setTestNotificationSaving] = useState(false);
   const { theme, colors, setTheme } = useTheme();
   const maintenanceReminderTimes = ["07:00", "09:00", "12:00", "17:00"];
 
@@ -88,6 +93,12 @@ export default function SettingsPage() {
           icon: "watch",
           type: "maintenance-reminder-time",
           subLabel: "When maintenance job alerts should arrive",
+        },
+        {
+          label: "Test Notification",
+          icon: "send",
+          type: "test-notification",
+          subLabel: "Sends a test alert after 10 seconds",
         },
         {
           label: "Appearance",
@@ -182,6 +193,41 @@ export default function SettingsPage() {
       );
     } finally {
       setMaintenanceReminderSaving(false);
+    }
+  };
+
+  const handleTestNotification = async () => {
+    if (testNotificationSaving) return;
+
+    try {
+      setTestNotificationSaving(true);
+      await registerForPushNotificationsAsync();
+      const id = await scheduleLocalNotification({
+        title: "Bickers test notification",
+        body: "Notifications are working.",
+        seconds: 10,
+        data: {
+          type: "test-notification",
+        },
+        writeToInbox: false,
+      });
+
+      if (!id) {
+        Alert.alert(
+          "Notification not scheduled",
+          "Check notification permissions for this app in iOS Settings."
+        );
+        return;
+      }
+
+      Alert.alert("Test scheduled", "A test notification will arrive in 10 seconds.");
+    } catch (e) {
+      Alert.alert(
+        "Could not send test",
+        e?.message || "Please check notification permissions and try again."
+      );
+    } finally {
+      setTestNotificationSaving(false);
     }
   };
 
@@ -399,6 +445,35 @@ export default function SettingsPage() {
                       );
                     })}
                   </View>
+                ) : item.type === "test-notification" ? (
+                  <TouchableOpacity
+                    onPress={handleTestNotification}
+                    accessibilityRole="button"
+                    activeOpacity={0.85}
+                    disabled={testNotificationSaving || !NOTIFICATIONS_ENABLED}
+                    style={[
+                      styles.testButton,
+                      {
+                        borderColor: colors.accent,
+                        backgroundColor: testNotificationSaving
+                          ? withAlpha(colors.textMuted, 0.12)
+                          : withAlpha(colors.accent, 0.14),
+                      },
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.testButtonText,
+                        {
+                          color: testNotificationSaving
+                            ? colors.textMuted
+                            : colors.accent,
+                        },
+                      ]}
+                    >
+                      {testNotificationSaving ? "Sending" : "Send"}
+                    </Text>
+                  </TouchableOpacity>
                 ) : (
                   <TouchableOpacity
                     onPress={item.onPress}
@@ -613,5 +688,18 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     textTransform: "capitalize",
     letterSpacing: 0.1,
+  },
+  testButton: {
+    minWidth: 64,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 7,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  testButtonText: {
+    fontSize: 12,
+    fontWeight: "900",
   },
 });

@@ -303,15 +303,24 @@ export default function LoginPage() {
       return;
     }
 
+    const cleanPhone = normalizePhone(phoneNumber);
+    await updateEmployeeAuthLink(firebaseUser, pendingEmployee, cleanPhone);
+    await bootstrapUserAccess(firebaseUser, pendingEmployee, cleanPhone);
+
     await completeLogin(pendingSessionData, {
       ...pendingEmployee,
       uid: firebaseUser.uid,
       authUid: firebaseUser.uid,
+      phone: cleanPhone,
+      phoneNumber: cleanPhone,
+      phoneVerified: true,
       auth: {
         ...(pendingEmployee.auth || {}),
         uid: firebaseUser.uid,
         email: firebaseUser.email || pendingSessionData.email,
         passwordEnabled: true,
+        phoneNumber: cleanPhone,
+        phoneVerified: true,
       },
     });
   };
