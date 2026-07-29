@@ -13,7 +13,15 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
-import { useCachedServiceCollection } from "../../../lib/serviceCache";
+import {
+  getVehicleName,
+  getVehicleNextMot,
+  getVehicleNextService,
+  getVehicleRegistration,
+  isVehicleMotApplicable,
+  isVehicleServiceApplicable,
+} from "../../../lib/fleetSchema";
+import { useServiceCollection } from "../../../hooks/useServiceData";
 import { useTheme } from "../../../providers/ThemeProvider";
 
 /* ---------- CONSTANTS & HELPERS ---------- */
@@ -88,7 +96,7 @@ export default function ServiceScreen() {
   const router = useRouter();
   const { colors } = useTheme();
 
-  const { rows: vehicles, loading } = useCachedServiceCollection("vehicles", {
+  const { rows: vehicles, loading } = useServiceCollection("vehicles", {
     label: "vehicles",
     orderByField: "name",
   });
@@ -96,16 +104,12 @@ export default function ServiceScreen() {
 
   const processed = useMemo(() => {
     return vehicles.map((v) => {
-      const motStatus = classifyStatus(
-        v.nextMOT ||
-          v.nextMot ||
-          v.nextMotDate ||
-          v.motDueDate ||
-          v.motExpiryDate
-      );
-      const serviceStatus = classifyStatus(
-        v.nextService || v.nextServiceDate || v.serviceDueDate || v.nextSvc
-      );
+      const motStatus = isVehicleMotApplicable(v)
+        ? classifyStatus(getVehicleNextMot(v))
+        : { label: "N/A", code: "not-applicable" };
+      const serviceStatus = isVehicleServiceApplicable(v)
+        ? classifyStatus(getVehicleNextService(v))
+        : { label: "N/A", code: "not-applicable" };
       const defects = Array.isArray(v.defects) ? v.defects : [];
       const hasDefects = defects.length > 0;
 
@@ -219,6 +223,7 @@ export default function ServiceScreen() {
               styles.infoCard,
               {
                 backgroundColor: colors.surfaceAlt || COLORS.card,
+                borderColor: colors.border || COLORS.border,
                 borderLeftColor: colors.accent || COLORS.primaryAction,
               },
             ]}
@@ -356,8 +361,8 @@ export default function ServiceScreen() {
             </View>
           ) : (
             filtered.map((v) => {
-              const name = v.name || v.vehicleName || "Unnamed vehicle";
-              const reg = v.reg || v.registration || "";
+              const name = getVehicleName(v) || "Unnamed vehicle";
+              const reg = getVehicleRegistration(v);
               const { motStatus, serviceStatus, hasDefects, defects, worstCode } =
                 v;
 
@@ -536,6 +541,7 @@ const styles = StyleSheet.create({
     padding: 12,
     borderRadius: 10,
     marginBottom: 12,
+    borderWidth: 1,
     borderLeftWidth: 4,
     borderLeftColor: COLORS.primaryAction,
   },

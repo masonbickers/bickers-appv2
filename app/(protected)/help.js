@@ -419,8 +419,10 @@ const styles = StyleSheet.create({
   avatarText: { fontWeight: "800" },
   title: { fontSize: 20, fontWeight: "bold" },
   metaText: { fontSize: 12, marginBottom: 10 },
-  quickRow: { flexDirection: "row", gap: 8, marginBottom: 12 },
+  quickRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 12 },
   quickBtn: {
+    flexGrow: 1,
+    minWidth: 0,
     flexDirection: "row",
     alignItems: "center",
     gap: 8,

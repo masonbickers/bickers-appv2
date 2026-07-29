@@ -8,7 +8,6 @@ import {
   collection,
   doc,
   getDoc,
-  getDocs,
   serverTimestamp,
   setDoc,
   updateDoc,
@@ -32,7 +31,17 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
 import { db, storage } from "../../../../firebaseConfig";
-import { getServiceCollectionRows } from "../../../../lib/serviceCache";
+import {
+  buildVehicleIdentityMirrorUpdate,
+  buildVehicleOdometerMirrorUpdate,
+  buildVehicleServiceDateMirrorUpdate,
+  getVehicleLastService,
+  getVehicleManufacturer,
+  getVehicleMileage,
+  getVehicleName,
+  getVehicleRegistration,
+} from "../../../../lib/fleetSchema";
+import { useServiceCacheActions, useServiceCollectionReader } from "../../../../hooks/useServiceData";
 import { runOrQueueFirestoreMutations } from "../../../../lib/sync/firestoreQueue";
 import { useTheme } from "../../../../providers/ThemeProvider";
 
@@ -94,6 +103,7 @@ const CHECK_ENGINE_FLUIDS = [
   "Brake fluid level & condition checked",
   "Fuel filter checked / replaced (if applicable)",
   "Cabin / pollen filter checked / replaced",
+  "Auxiliary belt & pulleys checked",
   "Power steering / PAS fluid checked (if fitted)",
   "Washer fluid topped up",
 ];
@@ -484,12 +494,6 @@ async function uploadCheckPhotoMap(checkPhotosMap, basePath) {
   return uploadedMap;
 }
 
-function addPresent(target, key, value) {
-  if (value !== undefined && value !== null && value !== "") {
-    target[key] = value;
-  }
-}
-
 function parseServiceFormNumber(value) {
   const parsed = Number(String(value || "").replace(/\D/g, ""));
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
@@ -500,13 +504,12 @@ function formatServiceFormNumber(value) {
   return parsed ? String(parsed).padStart(3, "0") : "";
 }
 
-async function getNextServiceFormNumberValue(currentRecordId = null) {
-  const snap = await getDocs(collection(db, "serviceRecords"));
+async function getNextServiceFormNumberValue(readServiceCollection, currentRecordId = null) {
+  const rows = await readServiceCollection("serviceRecords", { force: true });
   let max = 0;
 
-  snap.docs.forEach((entry) => {
-    if (currentRecordId && entry.id === String(currentRecordId)) return;
-    const data = entry.data() || {};
+  rows.forEach((data) => {
+    if (currentRecordId && data.id === String(currentRecordId)) return;
     const parsed =
       parseServiceFormNumber(data.serviceFormNumberValue) ||
       parseServiceFormNumber(data.serviceFormNumber);
@@ -529,6 +532,8 @@ export default function ServiceFormScreen() {
   const allowLeaveRef = useRef(false);
 
   const { colors } = useTheme();
+  const readServiceCollection = useServiceCollectionReader();
+  const { upsertServiceRow, patchServiceRow } = useServiceCacheActions();
 
   const [vehicles, setVehicles] = useState([]);
   const [loadingVehicles, setLoadingVehicles] = useState(true);
@@ -589,7 +594,7 @@ export default function ServiceFormScreen() {
   useEffect(() => {
     const loadVehicles = async () => {
       try {
-        const list = await getServiceCollectionRows("vehicles", {
+        const list = await readServiceCollection("vehicles", {
           orderByField: "name",
         });
         setVehicles(list);
@@ -601,15 +606,15 @@ export default function ServiceFormScreen() {
       }
     };
     loadVehicles();
-  }, []);
+  }, [readServiceCollection]);
 
   const filteredVehicles = useMemo(() => {
     if (!vehicleSearch.trim()) return vehicles;
     const q = vehicleSearch.toLowerCase();
     return vehicles.filter((v) => {
-      const name = (v.name || v.vehicleName || "").toLowerCase();
-      const reg = (v.registration || v.reg || "").toLowerCase();
-      const manufacturer = (v.manufacturer || "").toLowerCase();
+      const name = String(getVehicleName(v)).toLowerCase();
+      const reg = String(getVehicleRegistration(v)).toLowerCase();
+      const manufacturer = String(getVehicleManufacturer(v)).toLowerCase();
       const model = (v.model || "").toLowerCase();
       return (
         name.includes(q) ||
@@ -887,10 +892,8 @@ export default function ServiceFormScreen() {
       if (!formId) return;
 
       try {
-        const vehicleName =
-          selectedVehicle?.name || selectedVehicle?.vehicleName || "";
-        const registration =
-          selectedVehicle?.registration || selectedVehicle?.reg || "";
+        const vehicleName = getVehicleName(selectedVehicle) || "";
+        const registration = getVehicleRegistration(selectedVehicle) || "";
 
         const hasCheckPhotos = Object.values(checkPhotos).some(
           (arr) => Array.isArray(arr) && arr.length > 0
@@ -1302,9 +1305,9 @@ export default function ServiceFormScreen() {
       const nextServiceDate = nextServiceComputed || null;
       const serviceDateTime = `${serviceDate} ${serviceTime}`;
       const recordVehicleName =
-        v?.name || v?.vehicleName || editingRecord?.vehicleName || "";
+        getVehicleName(v) || editingRecord?.vehicleName || "";
       const recordRegistration =
-        v?.registration || v?.reg || editingRecord?.registration || "";
+        getVehicleRegistration(v) || editingRecord?.registration || "";
 
       const serviceRecordRef = isEditingRecord
         ? doc(db, "serviceRecords", String(editRecordId))
@@ -1315,7 +1318,10 @@ export default function ServiceFormScreen() {
         parseServiceFormNumber(editingRecord?.serviceFormNumber);
       const serviceFormNumberValue =
         existingServiceFormNumberValue ||
-        (await getNextServiceFormNumberValue(isEditingRecord ? editRecordId : null));
+        (await getNextServiceFormNumberValue(
+          readServiceCollection,
+          isEditingRecord ? editRecordId : null
+        ));
       const serviceFormNumber = formatServiceFormNumber(serviceFormNumberValue);
 
       const photoURLs = await uploadPhotoList(
@@ -1395,7 +1401,7 @@ export default function ServiceFormScreen() {
         vehicleId: selectedVehicleId,
         vehicleName: recordVehicleName,
         registration: recordRegistration,
-        manufacturer: v?.manufacturer || editingRecord?.manufacturer || "",
+        manufacturer: getVehicleManufacturer(v) || editingRecord?.manufacturer || "",
         model: v?.model || editingRecord?.model || "",
         serviceFormNumber,
         serviceFormNumberValue,
@@ -1445,8 +1451,19 @@ export default function ServiceFormScreen() {
       const historyNotes = [workSummary.trim(), extraNotes.trim()]
         .filter(Boolean)
         .join(" ");
+      const canonicalName = recordVehicleName;
+      const canonicalReg = recordRegistration;
       const updatePayload = {
-        lastService: serviceDate,
+        ...buildVehicleIdentityMirrorUpdate({
+          ...v,
+          name: canonicalName,
+          registration: canonicalReg,
+          manufacturer: getVehicleManufacturer(v) || "",
+        }),
+        ...buildVehicleServiceDateMirrorUpdate({
+          lastService: serviceDate,
+          nextService: nextServiceDate,
+        }),
       };
       if (!isEditingRecord) {
         updatePayload.serviceHistory = arrayUnion(
@@ -1463,20 +1480,8 @@ export default function ServiceFormScreen() {
       if (embeddedOpenDefects.length > 0) {
         updatePayload.defects = arrayUnion(...embeddedOpenDefects);
       }
-      const canonicalName = recordVehicleName;
-      const canonicalReg = recordRegistration;
-      addPresent(updatePayload, "name", canonicalName);
-      addPresent(updatePayload, "vehicleName", canonicalName);
-      addPresent(updatePayload, "registration", canonicalReg);
-      addPresent(updatePayload, "reg", canonicalReg);
-      addPresent(updatePayload, "manufacturer", v?.manufacturer || "");
-      addPresent(updatePayload, "model", v?.model || "");
-      addPresent(updatePayload, "category", v?.category || "");
-      if (nextServiceDate) {
-        updatePayload.nextService = nextServiceDate;
-      }
       if (odoNumber && !Number.isNaN(odoNumber)) {
-        updatePayload.mileage = odoNumber;
+        Object.assign(updatePayload, buildVehicleOdometerMirrorUpdate(odoNumber));
       }
 
       firestoreMutations.push({
@@ -1491,6 +1496,10 @@ export default function ServiceFormScreen() {
       });
 
       const { queued } = await runOrQueueFirestoreMutations(firestoreMutations);
+      await Promise.all([
+        upsertServiceRow("serviceRecords", { ...record, id: serviceRecordRef.id }),
+        patchServiceRow("vehicles", selectedVehicleId, updatePayload),
+      ]);
 
       // 🔥 clear just this draft now it’s finished
       try {
@@ -1599,37 +1608,6 @@ export default function ServiceFormScreen() {
           </View>
         )}
 
-        {/* CONTEXT CARD */}
-        <View
-          style={[
-            styles.infoCard,
-            {
-              backgroundColor: colors.surfaceAlt || COLORS.card,
-              borderLeftColor: COLORS.primaryAction,
-              borderColor: colors.border || COLORS.border,
-            },
-          ]}
-        >
-          <Text
-            style={[
-              styles.infoTitle,
-              { color: colors.text || COLORS.textHigh },
-            ]}
-          >
-            Full service checklist
-          </Text>
-          <Text
-            style={[
-              styles.infoSubtitle,
-              { color: colors.textMuted || COLORS.textMid },
-            ]}
-          >
-            Mark every item green, amber, red or N/A. Amber and red checks
-            require notes. Date/time taken automatically; next service set 12
-            months ahead.
-          </Text>
-        </View>
-
         {/* VEHICLE SECTION */}
         <View style={styles.sectionHeaderRow}>
           <Text
@@ -1663,15 +1641,7 @@ export default function ServiceFormScreen() {
           ) : null}
         </View>
 
-        <View
-          style={[
-            styles.card,
-            {
-              backgroundColor: colors.surfaceAlt || COLORS.card,
-              borderColor: colors.border || COLORS.border,
-            },
-          ]}
-        >
+        <View style={styles.flatSectionContent}>
           {vehicleCollapsed && selectedVehicle ? (
             <>
               <Text
@@ -1690,9 +1660,7 @@ export default function ServiceFormScreen() {
                       { color: colors.text || COLORS.textHigh },
                     ]}
                   >
-                    {selectedVehicle.name ||
-                      selectedVehicle.vehicleName ||
-                      "Unnamed vehicle"}
+                    {getVehicleName(selectedVehicle) || "Unnamed vehicle"}
                   </Text>
                   <Text
                     style={[
@@ -1700,7 +1668,7 @@ export default function ServiceFormScreen() {
                       { color: colors.textMuted || COLORS.textMid },
                     ]}
                   >
-                    {selectedVehicle.registration || selectedVehicle.reg || "—"}
+                    {getVehicleRegistration(selectedVehicle) || "—"}
                   </Text>
                 </View>
               </View>
@@ -1712,8 +1680,8 @@ export default function ServiceFormScreen() {
                   ]}
                 >
                   Current mileage:{" "}
-                  {typeof selectedVehicle.mileage === "number"
-                    ? `${selectedVehicle.mileage.toLocaleString("en-GB")} mi`
+                  {typeof getVehicleMileage(selectedVehicle) === "number"
+                    ? `${getVehicleMileage(selectedVehicle).toLocaleString("en-GB")} mi`
                     : "—"}
                 </Text>
                 <Text
@@ -1722,7 +1690,7 @@ export default function ServiceFormScreen() {
                     { color: colors.textMuted || COLORS.textMid },
                   ]}
                 >
-                  Last service: {formatDateForDisplay(selectedVehicle.lastService) || "—"}
+                  Last service: {formatDateForDisplay(getVehicleLastService(selectedVehicle)) || "—"}
                 </Text>
               </View>
             </>
@@ -1736,17 +1704,25 @@ export default function ServiceFormScreen() {
               >
                 Search vehicle
               </Text>
-              <View style={styles.searchBox}>
+              <View
+                style={[
+                  styles.searchBox,
+                  {
+                    backgroundColor: colors.inputBackground || "#FFFFFF",
+                    borderColor: colors.inputBorder || colors.border || COLORS.border,
+                  },
+                ]}
+              >
                 <Icon
                   name="search"
                   size={18}
-                  color={COLORS.textMid}
+                  color={colors.textMuted || COLORS.textMid}
                   style={{ marginRight: 6 }}
                 />
                 <TextInput
-                  style={styles.searchInput}
+                  style={[styles.searchInput, { color: colors.text || COLORS.textHigh }]}
                   placeholder="Name, reg, manufacturer or model…"
-                  placeholderTextColor={COLORS.textLow}
+                  placeholderTextColor={colors.textMuted || COLORS.textLow}
                   value={vehicleSearch}
                   onChangeText={setVehicleSearch}
                 />
@@ -1768,8 +1744,9 @@ export default function ServiceFormScreen() {
                   nestedScrollEnabled
                 >
                   {filteredVehicles.map((v) => {
-                    const name = v.name || v.vehicleName || "Unnamed vehicle";
-                    const reg = v.registration || v.reg || "";
+                    const name = getVehicleName(v) || "Unnamed vehicle";
+                    const reg = getVehicleRegistration(v);
+                    const manufacturer = getVehicleManufacturer(v);
                     const isActive = v.id === selectedVehicleId;
 
                     return (
@@ -1802,9 +1779,9 @@ export default function ServiceFormScreen() {
                             ]}
                           >
                             {reg}
-                            {v.manufacturer || v.model
-                              ? ` · ${v.manufacturer || ""}${
-                                  v.manufacturer && v.model ? " " : ""
+                            {manufacturer || v.model
+                              ? ` · ${manufacturer || ""}${
+                                  manufacturer && v.model ? " " : ""
                                 }${v.model || ""}`
                               : ""}
                           </Text>
@@ -1837,15 +1814,7 @@ export default function ServiceFormScreen() {
           </Text>
         </View>
 
-        <View
-          style={[
-            styles.card,
-            {
-              backgroundColor: colors.surfaceAlt || COLORS.card,
-              borderColor: colors.border || COLORS.border,
-            },
-          ]}
-        >
+        <View style={styles.flatSectionContent}>
           <View style={styles.fieldGroup}>
             <Text
               style={[
@@ -1855,8 +1824,18 @@ export default function ServiceFormScreen() {
             >
               Service date (auto)
             </Text>
-            <View style={styles.readonlyField}>
-              <Text style={styles.readonlyText}>{serviceDate}</Text>
+            <View
+              style={[
+                styles.readonlyField,
+                {
+                  backgroundColor: colors.inputBackground || "#FFFFFF",
+                  borderColor: colors.inputBorder || colors.border || COLORS.border,
+                },
+              ]}
+            >
+              <Text style={[styles.readonlyText, { color: colors.text || COLORS.textHigh }]}>
+                {serviceDate}
+              </Text>
             </View>
           </View>
 
@@ -1869,8 +1848,18 @@ export default function ServiceFormScreen() {
             >
               Service time (auto)
             </Text>
-            <View style={styles.readonlyField}>
-              <Text style={styles.readonlyText}>{serviceTime}</Text>
+            <View
+              style={[
+                styles.readonlyField,
+                {
+                  backgroundColor: colors.inputBackground || "#FFFFFF",
+                  borderColor: colors.inputBorder || colors.border || COLORS.border,
+                },
+              ]}
+            >
+              <Text style={[styles.readonlyText, { color: colors.text || COLORS.textHigh }]}>
+                {serviceTime}
+              </Text>
             </View>
           </View>
 
@@ -1892,19 +1881,35 @@ export default function ServiceFormScreen() {
               Service type
             </Text>
             <TouchableOpacity
-              style={styles.dropdownHeader}
+              style={[
+                styles.dropdownHeader,
+                {
+                  backgroundColor: colors.inputBackground || "#FFFFFF",
+                  borderColor: colors.inputBorder || colors.border || COLORS.border,
+                },
+              ]}
               onPress={() => setServiceTypeOpen((prev) => !prev)}
               activeOpacity={0.8}
             >
-              <Text style={styles.dropdownText}>{serviceType}</Text>
+              <Text style={[styles.dropdownText, { color: colors.text || COLORS.textHigh }]}>
+                {serviceType}
+              </Text>
               <Icon
                 name={serviceTypeOpen ? "chevron-up" : "chevron-down"}
                 size={18}
-                color={COLORS.textMid}
+                color={colors.textMuted || COLORS.textMid}
               />
             </TouchableOpacity>
             {serviceTypeOpen && (
-              <View style={styles.dropdownList}>
+              <View
+                style={[
+                  styles.dropdownList,
+                  {
+                    backgroundColor: colors.inputBackground || "#FFFFFF",
+                    borderColor: colors.border || COLORS.border,
+                  },
+                ]}
+              >
                 {SERVICE_TYPE_OPTIONS.map((opt) => (
                   <TouchableOpacity
                     key={opt}
@@ -1921,6 +1926,7 @@ export default function ServiceFormScreen() {
                     <Text
                       style={[
                         styles.dropdownItemText,
+                        { color: colors.text || COLORS.textHigh },
                         opt === serviceType && {
                           color: COLORS.primaryAction,
                           fontWeight: "700",
@@ -1944,8 +1950,16 @@ export default function ServiceFormScreen() {
             >
               Next service due (auto)
             </Text>
-            <View style={styles.readonlyField}>
-              <Text style={styles.readonlyText}>
+            <View
+              style={[
+                styles.readonlyField,
+                {
+                  backgroundColor: colors.inputBackground || "#FFFFFF",
+                  borderColor: colors.inputBorder || colors.border || COLORS.border,
+                },
+              ]}
+            >
+              <Text style={[styles.readonlyText, { color: colors.text || COLORS.textHigh }]}>
                 {nextServiceComputed ||
                   "Calculated from service date (+12 months)"}
               </Text>
@@ -2090,7 +2104,7 @@ export default function ServiceFormScreen() {
             onChangeText={setSignedBy}
           />
           <View style={{ marginTop: 6 }}>
-            <Text style={styles.signatureInfo}>
+            <Text style={[styles.signatureInfo, { color: colors.textMuted || COLORS.textMid }]}>
               By entering your name you confirm the checks above have been
               carried out to the best of your ability.
             </Text>
@@ -2290,8 +2304,8 @@ function FormField({
         style={[
           styles.input,
           {
-            backgroundColor: colors.inputBackground || COLORS.inputBg,
-            borderColor: colors.inputBorder || COLORS.lightGray,
+            backgroundColor: colors.inputBackground || "#FFFFFF",
+            borderColor: colors.inputBorder || colors.border || COLORS.border,
             color: colors.text || COLORS.textHigh,
           },
           multiline && styles.inputMultiline,
@@ -2880,26 +2894,7 @@ const styles = StyleSheet.create({
   scrollContent: {
     padding: 16,
     paddingTop: 8,
-  },
-  infoCard: {
-    backgroundColor: COLORS.card,
-    borderRadius: 10,
-    padding: 14,
-    marginBottom: 12,
-    borderLeftWidth: 4,
-    borderLeftColor: COLORS.primaryAction,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-  },
-  infoTitle: {
-    fontSize: 17,
-    fontWeight: "700",
-    color: COLORS.textHigh,
-    marginBottom: 4,
-  },
-  infoSubtitle: {
-    fontSize: 14,
-    color: COLORS.textMid,
+    paddingBottom: 110,
   },
   sectionHeaderRow: {
     marginTop: 4,
@@ -2925,6 +2920,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.border,
   },
+  flatSectionContent: {
+    marginBottom: 10,
+  },
   fieldGroup: {
     marginBottom: 12,
   },
@@ -2935,10 +2933,10 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   input: {
-    backgroundColor: COLORS.inputBg,
+    backgroundColor: "#FFFFFF",
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: COLORS.lightGray,
+    borderColor: COLORS.border,
     color: COLORS.textHigh,
     paddingHorizontal: 10,
     paddingVertical: 10,
@@ -2951,10 +2949,10 @@ const styles = StyleSheet.create({
   searchBox: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: COLORS.inputBg,
+    backgroundColor: "#FFFFFF",
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: COLORS.lightGray,
+    borderColor: COLORS.border,
     paddingHorizontal: 10,
     paddingVertical: 8,
   },
@@ -3004,16 +3002,16 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   readonlyField: {
-    backgroundColor: COLORS.inputBg,
+    backgroundColor: "#FFFFFF",
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: COLORS.lightGray,
+    borderColor: COLORS.border,
     paddingHorizontal: 10,
     paddingVertical: 8,
   },
   readonlyText: {
     fontSize: 14,
-    color: COLORS.textMid,
+    color: COLORS.textHigh,
   },
   vehicleFootprint: {
     flexDirection: "row",
@@ -3299,10 +3297,10 @@ const styles = StyleSheet.create({
   },
   checkNoteInput: {
     marginTop: 4,
-    backgroundColor: COLORS.inputBg,
+    backgroundColor: "#FFFFFF",
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: COLORS.lightGray,
+    borderColor: COLORS.border,
     paddingHorizontal: 8,
     paddingVertical: 8,
     fontSize: 14,
@@ -3316,10 +3314,10 @@ const styles = StyleSheet.create({
   dropdownHeader: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: COLORS.inputBg,
+    backgroundColor: "#FFFFFF",
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: COLORS.lightGray,
+    borderColor: COLORS.border,
     paddingHorizontal: 10,
     paddingVertical: 10,
     justifyContent: "space-between",
@@ -3334,8 +3332,8 @@ const styles = StyleSheet.create({
     marginTop: 6,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: COLORS.lightGray,
-    backgroundColor: COLORS.inputBg,
+    borderColor: COLORS.border,
+    backgroundColor: "#FFFFFF",
     overflow: "hidden",
   },
   dropdownItem: {
@@ -3360,9 +3358,9 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: COLORS.lightGray,
+    borderColor: COLORS.border,
     paddingVertical: 10,
-    backgroundColor: COLORS.inputBg,
+    backgroundColor: "#FFFFFF",
   },
   photoAddText: {
     color: COLORS.textHigh,

@@ -2,6 +2,7 @@ import { useRouter } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   ScrollView,
   StyleSheet,
   Text,
@@ -10,10 +11,17 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
+import { doc, serverTimestamp, updateDoc } from "firebase/firestore";
 
 import PageHeaderCard from "../../../components/PageHeaderCard";
+import { db } from "../../../firebaseConfig";
 import { designTokens as t } from "../../../lib/design/tokens";
-import { useCachedServiceCollection } from "../../../lib/serviceCache";
+import {
+  isOpenAdvisoryItem,
+  resolveMonitorReportItem,
+} from "../../../lib/serviceAdvisories";
+import { useServiceCacheActions, useServiceCollection } from "../../../hooks/useServiceData";
+import { runOrQueueFirestoreMutations } from "../../../lib/sync/firestoreQueue";
 import { useTheme } from "../../../providers/ThemeProvider";
 
 const COLORS = {
@@ -42,6 +50,10 @@ function isApprovedDefect(review) {
 function isOpenMaintenance(status) {
   const value = normaliseKey(status);
   return value !== "resolved" && value !== "complete" && value !== "completed";
+}
+
+function buildDefectRouteId(source, docId, itemIndex = "") {
+  return encodeURIComponent([source, docId, itemIndex].join("|"));
 }
 
 function pad(n) {
@@ -93,16 +105,21 @@ function getEquipmentText(record) {
 function buildOpenDefects({ vehicleChecks, vehicleIssues, defectReports }) {
   const checkDefects = vehicleChecks.flatMap((check) => {
     const items = Array.isArray(check.items) ? check.items : [];
-    return items
-      .filter((item) => isApprovedDefect(item?.review) && isOpenMaintenance(item?.maintenance?.status))
-      .map((item, index) => ({
-        id: `check-${check.id}-${item?.id || index}`,
-        title: item?.label || item?.title || item?.name || "Vehicle check defect",
-        details: item?.notes || item?.review?.notes || item?.maintenance?.notes || "Approved check defect.",
-        asset: getVehicleText(check) || "Vehicle check",
-        date: getRecordDate(check),
-        route: null,
-      }));
+    return items.flatMap((item, index) =>
+      isApprovedDefect(item?.review) &&
+      isOpenMaintenance(item?.maintenance?.status)
+        ? [
+            {
+              id: `check-${check.id}-${item?.id || index}`,
+              title: item?.label || item?.title || item?.name || "Vehicle check defect",
+              details: item?.notes || item?.review?.notes || item?.maintenance?.notes || "Approved check defect.",
+              asset: getVehicleText(check) || "Vehicle check",
+              date: getRecordDate(check),
+              route: `/service/defects/${buildDefectRouteId("vehicleChecks", check.id, index)}`,
+            },
+          ]
+        : []
+    );
   });
 
   const issueDefects = vehicleIssues
@@ -113,7 +130,7 @@ function buildOpenDefects({ vehicleChecks, vehicleIssues, defectReports }) {
       details: issue?.description || issue?.notes || issue?.review?.notes || "Approved vehicle issue.",
       asset: getVehicleText(issue) || "Vehicle issue",
       date: getRecordDate(issue),
-      route: null,
+      route: `/service/defects/${buildDefectRouteId("vehicleIssues", issue.id)}`,
     }));
 
   const reportDefects = defectReports
@@ -124,7 +141,9 @@ function buildOpenDefects({ vehicleChecks, vehicleIssues, defectReports }) {
       details: report?.description || report?.notes || "Open defect report.",
       asset: getEquipmentText(report) || getVehicleText(report) || "Defect report",
       date: getRecordDate(report),
-      route: report.id ? `/service/defects/${report.id}` : "/service/defects",
+      route: report.id
+        ? `/service/defects/${buildDefectRouteId("defectReports", report.id)}`
+        : "/service/defects",
     }));
 
   return [...checkDefects, ...issueDefects, ...reportDefects].sort(
@@ -135,26 +154,46 @@ function buildOpenDefects({ vehicleChecks, vehicleIssues, defectReports }) {
 function buildAdvisories({ serviceRecords, equipmentInspections }) {
   const services = serviceRecords.flatMap((record) => {
     const report = Array.isArray(record?.monitorReport) ? record.monitorReport : [];
-    return report.map((item, index) => ({
-      id: `service-advisory-${record.id}-${item?.key || index}`,
-      title: item?.title || "Service advisory",
-      details: item?.details || item?.note || "Amber service item recorded.",
-      asset: getVehicleText(record) || "Unknown vehicle",
-      date: getRecordDate(record),
-      route: record.id ? `/service/service-record/${record.id}` : null,
-    }));
+    return report.flatMap((item, index) =>
+      isOpenAdvisoryItem(item)
+        ? [
+            {
+              id: `service-advisory-${record.id}-${item?.key || index}`,
+              title: item?.title || "Service advisory",
+              details: item?.details || item?.note || "Amber service item recorded.",
+              asset: getVehicleText(record) || "Unknown vehicle",
+              date: getRecordDate(record),
+              route: record.id ? `/service/service-record/${record.id}` : null,
+              sourceCollection: "serviceRecords",
+              sourceId: record.id,
+              itemKey: item?.key || "",
+              itemIndex: index,
+            },
+          ]
+        : []
+    );
   });
 
   const inspections = equipmentInspections.flatMap((record) => {
     const report = Array.isArray(record?.monitorReport) ? record.monitorReport : [];
-    return report.map((item, index) => ({
-      id: `inspection-advisory-${record.id}-${item?.key || index}`,
-      title: item?.title || "Equipment advisory",
-      details: item?.details || item?.note || "Amber inspection item recorded.",
-      asset: getEquipmentText(record) || "Unknown equipment",
-      date: getRecordDate(record),
-      route: record.id ? `/service/inspections/inspection-form/${record.id}` : null,
-    }));
+    return report.flatMap((item, index) =>
+      isOpenAdvisoryItem(item)
+        ? [
+            {
+              id: `inspection-advisory-${record.id}-${item?.key || index}`,
+              title: item?.title || "Equipment advisory",
+              details: item?.details || item?.note || "Amber inspection item recorded.",
+              asset: getEquipmentText(record) || "Unknown equipment",
+              date: getRecordDate(record),
+              route: record.id ? `/service/inspections/inspection-form/${record.id}` : null,
+              sourceCollection: "equipmentInspections",
+              sourceId: record.id,
+              itemKey: item?.key || "",
+              itemIndex: index,
+            },
+          ]
+        : []
+    );
   });
 
   return [...services, ...inspections].sort(
@@ -163,14 +202,17 @@ function buildAdvisories({ serviceRecords, equipmentInspections }) {
 }
 
 function useCollectionRows(collectionName, label) {
-  const { rows } = useCachedServiceCollection(collectionName, { label });
+  const { rows } = useServiceCollection(collectionName);
   return rows;
 }
 
 export default function ServiceIssuesScreen() {
   const router = useRouter();
-  const { colors } = useTheme();
+  const { colors, colorScheme } = useTheme();
+  const { patchServiceRow } = useServiceCacheActions();
   const [loading, setLoading] = useState(true);
+  const [resolvingId, setResolvingId] = useState(null);
+  const [locallyResolvedIds, setLocallyResolvedIds] = useState(new Set());
 
   const vehicleChecks = useCollectionRows("vehicleChecks", "vehicle check issues");
   const vehicleIssues = useCollectionRows("vehicleIssues", "vehicle issues");
@@ -192,21 +234,109 @@ export default function ServiceIssuesScreen() {
     () => buildAdvisories({ serviceRecords, equipmentInspections }),
     [equipmentInspections, serviceRecords]
   );
+  const visibleAdvisories = useMemo(
+    () => advisories.filter((item) => !locallyResolvedIds.has(item.id)),
+    [advisories, locallyResolvedIds]
+  );
+
+  const markAdvisoryFixed = async (item) => {
+    if (!item?.sourceCollection || !item?.sourceId) return;
+
+    setResolvingId(item.id);
+    try {
+      const sourceRows =
+        item.sourceCollection === "serviceRecords"
+          ? serviceRecords
+          : equipmentInspections;
+      const sourceRecord = sourceRows.find(
+        (record) => String(record.id) === String(item.sourceId)
+      );
+      const { nextItems, changed } = resolveMonitorReportItem(
+        sourceRecord?.monitorReport,
+        {
+          itemKey: item.itemKey,
+          itemIndex: item.itemIndex,
+          nowISO: new Date().toISOString(),
+        }
+      );
+
+      if (!changed) {
+        Alert.alert("Not found", "This advisory could not be found on the source record.");
+        return;
+      }
+
+      const updateData = {
+        monitorReport: nextItems,
+        updatedAt: serverTimestamp(),
+      };
+      const { queued } = await runOrQueueFirestoreMutations([
+        {
+          run: () =>
+            updateDoc(doc(db, item.sourceCollection, String(item.sourceId)), updateData),
+          mutation: {
+            operation: "update",
+            docPath: `${item.sourceCollection}/${item.sourceId}`,
+            data: updateData,
+            entityType:
+              item.sourceCollection === "serviceRecords"
+                ? "serviceRecord"
+                : "equipmentInspection",
+            entityId: String(item.sourceId),
+          },
+        },
+      ]);
+      await patchServiceRow(item.sourceCollection, item.sourceId, updateData);
+
+      setLocallyResolvedIds((prev) => {
+        const next = new Set(prev);
+        next.add(item.id);
+        return next;
+      });
+
+      Alert.alert(
+        queued ? "Saved offline" : "Marked fixed",
+        queued
+          ? "This advisory will be closed when the app syncs."
+          : "This advisory has been removed from the open advisory list."
+      );
+    } catch (err) {
+      console.error("Failed to mark advisory fixed:", err);
+      Alert.alert("Error", "Could not mark this advisory fixed.");
+    } finally {
+      setResolvingId(null);
+    }
+  };
+
+  const confirmMarkAdvisoryFixed = (item) => {
+    Alert.alert(
+      "Mark advisory fixed?",
+      "This will close the amber monitor item and remove it from open advisory counts.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Mark fixed",
+          onPress: () => markAdvisoryFixed(item),
+        },
+      ]
+    );
+  };
 
   return (
     <SafeAreaView
       edges={["left", "right"]}
-      style={[styles.container, { backgroundColor: colors.background || COLORS.background }]}
+      style={[
+        styles.container,
+        {
+          backgroundColor:
+            colorScheme === "light" ? "#FFFFFF" : colors.background || COLORS.background,
+        },
+      ]}
     >
       <PageHeaderCard
         eyebrow="Workshop"
         title="Issues"
         subtitle="Open defects and amber advisories needing workshop attention."
         style={styles.headerCard}
-        contentStyle={styles.headerContent}
-        eyebrowStyle={styles.headerEyebrow}
-        titleStyle={styles.headerTitle}
-        subtitleStyle={styles.headerSubtitle}
       />
 
       {loading ? (
@@ -220,7 +350,7 @@ export default function ServiceIssuesScreen() {
         <ScrollView contentContainerStyle={styles.scrollContent}>
           <View style={styles.summaryRow}>
             <SummaryCard label="Open defects" value={defects.length} tone="red" colors={colors} />
-            <SummaryCard label="Advisories" value={advisories.length} tone="amber" colors={colors} />
+            <SummaryCard label="Advisories" value={visibleAdvisories.length} tone="amber" colors={colors} />
           </View>
 
           <IssueSection
@@ -240,13 +370,15 @@ export default function ServiceIssuesScreen() {
             title="Advisories"
             subtitle="Amber items to monitor before they become defects."
             emptyText="No amber advisories."
-            items={advisories}
+            items={visibleAdvisories}
             icon="eye"
             tone="amber"
             colors={colors}
             onOpen={(route) => {
               if (route) router.push(route);
             }}
+            onResolve={confirmMarkAdvisoryFixed}
+            resolvingId={resolvingId}
           />
 
           <View style={{ height: 40 }} />
@@ -276,8 +408,20 @@ function SummaryCard({ label, value, tone, colors }) {
   );
 }
 
-function IssueSection({ title, subtitle, emptyText, items, icon, tone, colors, onOpen }) {
+function IssueSection({
+  title,
+  subtitle,
+  emptyText,
+  items,
+  icon,
+  tone,
+  colors,
+  onOpen,
+  onResolve,
+  resolvingId,
+}) {
   const badgeColor = tone === "red" ? COLORS.primaryAction : COLORS.amber;
+  const canResolve = typeof onResolve === "function";
   return (
     <View style={styles.sectionBlock}>
       <View style={styles.sectionHeaderRow}>
@@ -309,8 +453,19 @@ function IssueSection({ title, subtitle, emptyText, items, icon, tone, colors, o
           </Text>
         </View>
       ) : (
-        items.map((item) => (
-          <TouchableOpacity
+        items.map((item) => {
+          const CardShell = item.route && !canResolve ? TouchableOpacity : View;
+          const cardProps =
+            item.route && !canResolve
+              ? {
+                  activeOpacity: 0.85,
+                  onPress: () => onOpen(item.route),
+                }
+              : {};
+          const isResolving = resolvingId === item.id;
+
+          return (
+          <CardShell
             key={item.id}
             style={[
               styles.issueCard,
@@ -319,8 +474,7 @@ function IssueSection({ title, subtitle, emptyText, items, icon, tone, colors, o
                 borderColor: colors.border || COLORS.border,
               },
             ]}
-            activeOpacity={item.route ? 0.85 : 1}
-            onPress={() => onOpen(item.route)}
+            {...cardProps}
           >
             <View style={[styles.iconWrap, { backgroundColor: badgeColor }]}>
               <Icon name={icon} size={17} color="#FFFFFF" />
@@ -340,9 +494,48 @@ function IssueSection({ title, subtitle, emptyText, items, icon, tone, colors, o
               <Text style={[styles.detailText, { color: colors.textMuted || COLORS.textMid }]}>
                 {item.details}
               </Text>
+              {canResolve && (
+                <View style={styles.actionRow}>
+                  {!!item.route && (
+                    <TouchableOpacity
+                      style={[
+                        styles.actionButton,
+                        { borderColor: colors.border || COLORS.border },
+                      ]}
+                      activeOpacity={0.85}
+                      onPress={() => onOpen(item.route)}
+                    >
+                      <Icon
+                        name="file-text"
+                        size={13}
+                        color={colors.text || COLORS.textHigh}
+                      />
+                      <Text style={[styles.actionText, { color: colors.text || COLORS.textHigh }]}>
+                        Open record
+                      </Text>
+                    </TouchableOpacity>
+                  )}
+                  <TouchableOpacity
+                    style={[
+                      styles.actionButton,
+                      styles.resolveButton,
+                      { borderColor: colors.success || "#157347" },
+                    ]}
+                    activeOpacity={0.85}
+                    disabled={isResolving}
+                    onPress={() => onResolve(item)}
+                  >
+                    <Icon name="check-circle" size={13} color={colors.success || "#157347"} />
+                    <Text style={[styles.actionText, { color: colors.success || "#157347" }]}>
+                      {isResolving ? "Saving..." : "Mark fixed"}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              )}
             </View>
-          </TouchableOpacity>
-        ))
+          </CardShell>
+        );
+        })
       )}
     </View>
   );
@@ -392,11 +585,13 @@ const styles = StyleSheet.create({
   },
   summaryRow: {
     flexDirection: "row",
+    flexWrap: "wrap",
     gap: 10,
     marginBottom: 14,
   },
   summaryCard: {
     flex: 1,
+    minWidth: 130,
     borderRadius: 10,
     borderWidth: 1,
     padding: 14,
@@ -419,7 +614,7 @@ const styles = StyleSheet.create({
   },
   sectionTitle: {
     fontSize: 17,
-    fontWeight: "900",
+    fontWeight: "800",
   },
   sectionSubtitle: {
     marginTop: 2,
@@ -441,7 +636,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     borderRadius: 10,
     borderWidth: 1,
-    padding: 12,
+    padding: 14,
     marginBottom: 9,
   },
   iconWrap: {
@@ -473,5 +668,27 @@ const styles = StyleSheet.create({
     marginTop: 5,
     fontSize: 13,
     lineHeight: 18,
+  },
+  actionRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 10,
+  },
+  actionButton: {
+    minHeight: 32,
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+  },
+  resolveButton: {
+    backgroundColor: "rgba(21,115,71,0.08)",
+  },
+  actionText: {
+    fontSize: 12,
+    fontWeight: "800",
   },
 });

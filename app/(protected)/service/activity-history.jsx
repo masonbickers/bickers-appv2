@@ -12,7 +12,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
-import { useCachedServiceCollection } from "../../../lib/serviceCache";
+import { useServiceCollection } from "../../../hooks/useServiceData";
 import { useTheme } from "../../../providers/ThemeProvider";
 
 const COLORS = {
@@ -23,6 +23,15 @@ const COLORS = {
   textMid: "#E0E0E0",
   textLow: "#888888",
   primaryAction: "#ED1C25",
+};
+
+const ACTIVITY_ICON_COLORS = {
+  services: "#2563EB",
+  repairs: "#D97706",
+  defects: COLORS.primaryAction,
+  inspections: "#64748B",
+  mot: "#2563EB",
+  prep: "#64748B",
 };
 
 function toDateMaybe(value) {
@@ -87,9 +96,18 @@ function getEquipmentText(item) {
     .join(" · ");
 }
 
+function buildResolvedDefectRouteId(source, docId, itemIndex = "") {
+  return encodeURIComponent([source, docId, itemIndex].join("|"));
+}
+
+function getActivityIconColor(typeKey) {
+  return ACTIVITY_ICON_COLORS[typeKey] || COLORS.primaryAction;
+}
+
 function buildActivityItems({
   serviceRecords,
   defectReports,
+  vehicles,
   vehiclePrepRecords,
   motPreChecks,
   equipmentInspections,
@@ -118,12 +136,41 @@ function buildActivityItems({
     icon: report.status === "resolved" ? "check-circle" : "alert-triangle",
     typeKey: "defects",
     title: report.status === "resolved" ? "Defect resolved" : "Defect reported",
-    subtitle: report.description || report.category || report.notes || "Defect report logged",
+    subtitle:
+      report.status === "resolved" && report.completionNote
+        ? report.completionNote
+        : report.description || report.category || report.notes || "Defect report logged",
     vehicle: getVehicleText(report),
     technician: report.reportedBy || report.reporterName || report.driverName || "",
     date: getActivityDate(report),
-    route: "/service/defects",
+    route:
+      report.status === "resolved"
+        ? `/service/resolved-defects/${buildResolvedDefectRouteId("defectReports", report.id)}`
+        : `/service/defects/${buildResolvedDefectRouteId("defectReports", report.id)}`,
   }));
+
+  const completedVehicleDefects = vehicles.flatMap((vehicle) => {
+    const defectHistory = Array.isArray(vehicle?.defectHistory)
+      ? vehicle.defectHistory
+      : [];
+
+    return defectHistory
+      .filter((item) => item?.source !== "defectReports")
+      .map((item, index) => ({
+        id: `vehicle-defect-${vehicle.id || "vehicle"}-${item?.sourceDocId || index}-${item?.itemIndex ?? "item"}`,
+        icon: "check-circle",
+        typeKey: "defects",
+        title: "Defect resolved",
+        subtitle: item?.completionNote || item?.description || item?.title || item?.sourceLabel || "Defect resolved",
+        vehicle: getVehicleText({
+          vehicleName: vehicle?.name || vehicle?.vehicleName || item?.vehicleName,
+          registration: vehicle?.registration || vehicle?.reg || item?.registration,
+        }),
+        technician: item?.completedBy || item?.resolvedBy || item?.reporter || "",
+        date: item?.completedAt || item?.resolvedAt || item?.recordedAt,
+        route: `/service/resolved-defects/${buildResolvedDefectRouteId("vehicles", vehicle.id, index)}`,
+      }));
+  });
 
   const prep = vehiclePrepRecords.map((record) => ({
     id: `prep-${record.id}`,
@@ -165,13 +212,13 @@ function buildActivityItems({
     route: record.id ? `/service/inspections/inspection-form/${record.id}` : null,
   }));
 
-  return [...services, ...defects, ...prep, ...mot, ...inspections]
+  return [...services, ...defects, ...completedVehicleDefects, ...prep, ...mot, ...inspections]
     .map((item) => ({ ...item, dateObj: toDateMaybe(item.date) }))
     .sort((a, b) => (b.dateObj?.getTime() || 0) - (a.dateObj?.getTime() || 0));
 }
 
 function useCollectionRows(collectionName, onErrorLabel) {
-  const { rows } = useCachedServiceCollection(collectionName, {
+  const { rows } = useServiceCollection(collectionName, {
     label: onErrorLabel,
   });
   return rows;
@@ -179,7 +226,7 @@ function useCollectionRows(collectionName, onErrorLabel) {
 
 export default function ActivityHistoryScreen() {
   const router = useRouter();
-  const { colors } = useTheme();
+  const { colors, colorScheme } = useTheme();
   const [loading, setLoading] = useState(true);
   const [searchText, setSearchText] = useState("");
   const [typeFilter, setTypeFilter] = useState("all");
@@ -187,6 +234,7 @@ export default function ActivityHistoryScreen() {
 
   const serviceRecords = useCollectionRows("serviceRecords", "service activity");
   const defectReports = useCollectionRows("defectReports", "defect activity");
+  const vehicles = useCollectionRows("vehicles", "vehicle defect history");
   const vehiclePrepRecords = useCollectionRows("vehiclePrepRecords", "vehicle prep activity");
   const motPreChecks = useCollectionRows("motPreChecks", "MOT pre-check activity");
   const equipmentInspections = useCollectionRows("equipmentInspections", "equipment inspection activity");
@@ -201,11 +249,12 @@ export default function ActivityHistoryScreen() {
       buildActivityItems({
         serviceRecords,
         defectReports,
+        vehicles,
         vehiclePrepRecords,
         motPreChecks,
         equipmentInspections,
       }),
-    [defectReports, equipmentInspections, motPreChecks, serviceRecords, vehiclePrepRecords]
+    [defectReports, equipmentInspections, motPreChecks, serviceRecords, vehiclePrepRecords, vehicles]
   );
 
   const summary = useMemo(() => {
@@ -257,7 +306,10 @@ export default function ActivityHistoryScreen() {
       edges={["left", "right"]}
       style={[
         styles.container,
-        { backgroundColor: colors.background || COLORS.background },
+        {
+          backgroundColor:
+            colorScheme === "light" ? "#FFFFFF" : colors.background || COLORS.background,
+        },
       ]}
     >
       <View
@@ -283,7 +335,7 @@ export default function ActivityHistoryScreen() {
               { color: colors.textMuted || COLORS.textMid },
             ]}
           >
-            Recent completed services, repairs, defects, inspections and workshop updates.
+            Recent services, repairs, defects and inspections.
           </Text>
         </View>
       </View>
@@ -306,15 +358,9 @@ export default function ActivityHistoryScreen() {
       ) : (
         <ScrollView contentContainerStyle={styles.scrollContent}>
           <View
-            style={[
-              styles.summaryCard,
-              {
-                backgroundColor: colors.surfaceAlt || COLORS.card,
-                borderColor: colors.border || COLORS.border,
-              },
-            ]}
+            style={styles.summaryCard}
           >
-            <SummaryItem label="Recent updates" value={summary.total} colors={colors} />
+            <SummaryItem label="Total" value={summary.total} colors={colors} />
             <SummaryItem label="Services" value={summary.services} colors={colors} />
             <SummaryItem label="Repairs" value={summary.repairs} colors={colors} />
             <SummaryItem label="Defects" value={summary.defects} colors={colors} />
@@ -322,13 +368,7 @@ export default function ActivityHistoryScreen() {
           </View>
 
           <View
-            style={[
-              styles.filterCard,
-              {
-                backgroundColor: colors.surfaceAlt || COLORS.card,
-                borderColor: colors.border || COLORS.border,
-              },
-            ]}
+            style={styles.filterCard}
           >
             <View
               style={[
@@ -365,7 +405,7 @@ export default function ActivityHistoryScreen() {
                 ["services", "Services"],
                 ["repairs", "Repairs"],
                 ["defects", "Defects"],
-                ["inspections", "Inspections"],
+                ["inspections", "Insp."],
                 ["mot", "MOT"],
                 ["prep", "Prep"],
               ]}
@@ -430,7 +470,12 @@ export default function ActivityHistoryScreen() {
                   if (item.route) router.push(item.route);
                 }}
               >
-                <View style={styles.iconWrap}>
+                <View
+                  style={[
+                    styles.iconWrap,
+                    { backgroundColor: getActivityIconColor(item.typeKey) },
+                  ]}
+                >
                   <Icon name={item.icon} size={18} color={COLORS.textHigh} />
                 </View>
                 <View style={{ flex: 1 }}>
@@ -468,9 +513,18 @@ export default function ActivityHistoryScreen() {
                         styles.activitySubtitle,
                         { color: colors.textMuted || COLORS.textMid },
                       ]}
+                      numberOfLines={2}
                     >
                       {item.subtitle}
                     </Text>
+                  )}
+                  {!!item.route && (
+                    <Icon
+                      name="chevron-right"
+                      size={16}
+                      color={colors.textMuted || COLORS.textLow}
+                      style={styles.cardChevron}
+                    />
                   )}
                 </View>
               </TouchableOpacity>
@@ -498,10 +552,19 @@ function SummaryItem({ label, value, colors }) {
 function FilterRow({ label, value, options, onChange, colors }) {
   return (
     <View style={styles.filterBlock}>
-      <Text style={[styles.filterLabel, { color: colors.textMuted || COLORS.textMid }]}>
+      <Text
+        style={[
+          styles.filterLabel,
+          { color: colors.textMuted || COLORS.textMid },
+        ]}
+      >
         {label}
       </Text>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.filterChipsContent}
+      >
         {options.map(([optionValue, optionLabel]) => {
           const active = value === optionValue;
           return (
@@ -583,58 +646,60 @@ const styles = StyleSheet.create({
   },
   summaryCard: {
     flexDirection: "row",
-    borderWidth: 1,
-    borderRadius: 10,
-    padding: 14,
-    marginBottom: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    marginBottom: 10,
   },
   summaryItem: {
     flex: 1,
     paddingRight: 8,
   },
   summaryValue: {
-    fontSize: 20,
+    fontSize: 17,
     fontWeight: "800",
   },
   summaryLabel: {
-    marginTop: 2,
-    fontSize: 11,
+    fontSize: 10,
   },
   filterCard: {
-    borderWidth: 1,
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 14,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    marginBottom: 12,
   },
   searchBox: {
-    minHeight: 44,
+    minHeight: 38,
     flexDirection: "row",
     alignItems: "center",
     borderWidth: 1,
     borderRadius: 8,
     paddingHorizontal: 10,
-    marginBottom: 10,
+    marginBottom: 7,
   },
   searchInput: {
     flex: 1,
-    minHeight: 42,
-    fontSize: 14,
+    minHeight: 36,
+    fontSize: 13,
   },
   filterBlock: {
-    marginTop: 8,
+    marginTop: 5,
+    flexDirection: "row",
+    alignItems: "center",
   },
   filterLabel: {
-    marginBottom: 6,
-    fontSize: 11,
+    width: 42,
+    fontSize: 10,
     fontWeight: "800",
     textTransform: "uppercase",
   },
   filterChip: {
     borderWidth: 1,
     borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    marginRight: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    marginRight: 7,
+  },
+  filterChipsContent: {
+    paddingRight: 18,
   },
   filterChipText: {
     fontSize: 12,
@@ -642,6 +707,7 @@ const styles = StyleSheet.create({
   },
   activityCard: {
     flexDirection: "row",
+    position: "relative",
     borderWidth: 1,
     borderRadius: 10,
     padding: 12,
@@ -679,6 +745,12 @@ const styles = StyleSheet.create({
     marginTop: 6,
     fontSize: 13,
     lineHeight: 18,
+    paddingRight: 12,
+  },
+  cardChevron: {
+    position: "absolute",
+    right: 0,
+    bottom: 0,
   },
   emptyState: {
     alignItems: "center",

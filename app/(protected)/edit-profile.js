@@ -20,6 +20,7 @@ import Icon from "react-native-vector-icons/Feather";
 
 import { auth, db, storage } from "../../firebaseConfig";
 import { useAuth } from "../../providers/AuthProvider";
+import { useDataCache } from "../../providers/DataCacheProvider";
 import { useTheme } from "../../providers/ThemeProvider";
 
 function withAlpha(hex, alpha) {
@@ -40,6 +41,7 @@ function withAlpha(hex, alpha) {
 export default function ProfilePage() {
   const router = useRouter();
   const { user, employee, loading: authLoading, reloadSession } = useAuth();
+  const { invalidate } = useDataCache();
   const { colors } = useTheme();
 
   const [name, setName] = useState("");
@@ -116,6 +118,10 @@ export default function ProfilePage() {
       await updateDoc(docRef, {
         phone: phone.trim() || "",
       });
+      await Promise.all([
+        invalidate("collection:employees"),
+        invalidate("me-dashboard:"),
+      ]);
 
       Alert.alert("Saved", "Your profile has been updated.");
     } catch (err) {
@@ -176,6 +182,10 @@ export default function ProfilePage() {
 
       const docRef = doc(db, "employees", employeeDocId);
       await updateDoc(docRef, { avatarUrl: url });
+      await Promise.all([
+        invalidate("collection:employees"),
+        invalidate("me-dashboard:"),
+      ]);
 
       setAvatarUrl(url);
 

@@ -1,9 +1,7 @@
 // app/screens/job-day.js
-import { useFocusEffect, useRouter } from "expo-router";
-import { collection, getDocs, query, where } from "firebase/firestore";
+import { useRouter } from "expo-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  ActivityIndicator,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -15,7 +13,16 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
 import PageHeaderCard from "../../components/PageHeaderCard";
-import { db } from "../../firebaseConfig";
+import { AsyncContentState, EmptyState, LoadingState } from "../../components/AsyncState";
+import { AppButton, IconButton } from "../../components/ui/AppPrimitives";
+import {
+  useBookings,
+  useCompanyCollection,
+  useHolidays,
+  useVehicles,
+} from "../../hooks/useOperationalData";
+import { useResponsiveLayout } from "../../hooks/useResponsiveLayout";
+import { isCrewedBooking } from "../../lib/bookingVisibility";
 import { designTokens as t } from "../../lib/design/tokens";
 import { useAuth } from "../../providers/AuthProvider";
 import { useTheme } from "../../providers/ThemeProvider";
@@ -519,7 +526,15 @@ const JobCard = ({ job, dateISO, router, colors, vehiclesData }) => {
   const showActions = requiresVehicleCheck || recce;
 
   const handleActionPress = (pathname) => {
-    router.push({ pathname, params: { jobId: job.id, dateISO } });
+    router.push({
+      pathname,
+      params: {
+        jobId: job.id,
+        dateISO,
+        jobNumber: job.jobNumber || "N/A",
+        locationName: job.location || "",
+      },
+    });
   };
 
   return (
@@ -625,40 +640,24 @@ const JobCard = ({ job, dateISO, router, colors, vehiclesData }) => {
       {showActions && (
         <View style={styles.actionsRow}>
           {requiresVehicleCheck && (
-            <TouchableOpacity
-              style={[
-                styles.actionBtn,
-                vehicleChecked
-                  ? {
-                      backgroundColor: colors.success,
-                      borderWidth: 1,
-                      borderColor: colors.success,
-                    }
-                  : { backgroundColor: colors.accent },
-              ]}
-              activeOpacity={0.85}
+            <AppButton
+              label={vehicleChecked ? "Vehicle Check Complete" : "Vehicle Check"}
+              icon={vehicleChecked ? "check-circle" : "truck"}
+              variant={vehicleChecked ? "secondary" : "primary"}
               onPress={() => handleActionPress("/vehicle-check")}
-            >
-              <Icon
-                name={vehicleChecked ? "check-circle" : "truck"}
-                size={16}
-                color={colors.surface}
-              />
-              <Text style={[styles.actionText, { color: colors.surface }]}>
-                {vehicleChecked ? "Vehicle Check Complete" : "Vehicle Check"}
-              </Text>
-            </TouchableOpacity>
+              accessibilityHint="Opens the vehicle check for this job"
+              style={styles.actionBtn}
+            />
           )}
 
           {recce && (
-            <TouchableOpacity
-              style={[styles.actionBtn, { backgroundColor: RECCE_BG }]}
-              activeOpacity={0.85}
-              onPress={() => handleActionPress("/recce")}
-            >
-              <Icon name="map-pin" size={16} color={colors.surface} />
-              <Text style={[styles.actionText, { color: colors.surface }]}>Recce Form</Text>
-            </TouchableOpacity>
+            <AppButton
+              label="Recce Form"
+              icon="map-pin"
+              onPress={() => handleActionPress("/recce-form")}
+              accessibilityHint="Opens the recce form for this job"
+              style={[styles.actionBtn, { backgroundColor: RECCE_BG, borderColor: RECCE_BG }]}
+            />
           )}
         </View>
       )}
@@ -693,7 +692,14 @@ function VehiclePrepRow({ item, colors, prepDone }) {
   };
 
   return (
-    <TouchableOpacity style={styles.prepRow} activeOpacity={0.9} onPress={onPress}>
+    <TouchableOpacity
+      style={styles.prepRow}
+      activeOpacity={0.9}
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={`Prepare ${item.vehicleName}${item.registration ? ` ${item.registration}` : ""}`}
+      accessibilityHint={`Vehicle goes out ${dateText}`}
+    >
       <View style={{ flex: 1 }}>
         <Text style={[styles.prepVehicleMain, { color: colors.text }]}>
           {item.vehicleName}
@@ -735,6 +741,12 @@ export default function JobDayScreen() {
   const router = useRouter();
   const { employee, isAuthed, loading } = useAuth();
   const { colors } = useTheme();
+  const responsive = useResponsiveLayout();
+  const bookingsResource = useBookings();
+  const holidaysResource = useHolidays();
+  const vehiclesResource = useVehicles();
+  const vehicleChecksResource = useCompanyCollection("vehicleChecks");
+  const prepChecksResource = useCompanyCollection("vehiclePrepChecks");
 
   const [selectedDate, setSelectedDate] = useState(() => new Date());
   const [jobs, setJobs] = useState([]);
@@ -773,37 +785,24 @@ export default function JobDayScreen() {
     return bankHolidayMap?.[dateISO] || null;
   }, [bankHolidayMap, dateISO]);
 
-  const loadAllEmployees = useCallback(async () => {
-    const empSnap = await getDocs(collection(db, "employees"));
-    return empSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
-  }, []);
+  const loadAllEmployees = useCallback(
+    () => bookingsResource.employees,
+    [bookingsResource.employees]
+  );
 
   // Load vehicle check status for a list of job IDs (once per job)
-  const loadVehicleChecksForJobs = useCallback(async (jobIds) => {
+  const loadVehicleChecksForJobs = useCallback((jobIds) => {
     const map = {};
     if (!jobIds || jobIds.length === 0) return map;
-
-    const chunks = [];
-    for (let i = 0; i < jobIds.length; i += 10) {
-      chunks.push(jobIds.slice(i, i + 10));
-    }
-
-    for (const ids of chunks) {
-      const vcSnap = await getDocs(
-        query(collection(db, "vehicleChecks"), where("bookingId", "in", ids))
-      );
-
-      vcSnap.docs.forEach((docSnap) => {
-        const data = docSnap.data() || {};
-        const bid = data.bookingId || data.jobId;
-        if (bid) map[bid] = true;
-      });
-    }
-
+    const ids = new Set(jobIds);
+    vehicleChecksResource.data.forEach((check) => {
+      const bookingId = check.bookingId || check.jobId;
+      if (bookingId && ids.has(bookingId)) map[bookingId] = true;
+    });
     return map;
-  }, []);
+  }, [vehicleChecksResource.data]);
 
-  const loadJobs = useCallback(async () => {
+  const loadJobs = useCallback(() => {
     if (loading || !isAuthed) return;
 
     const meCode = canonicalEmployeeCode(employee?.userCode);
@@ -815,25 +814,15 @@ export default function JobDayScreen() {
     }
     if (!dateISO) return;
 
-    setBusy(true);
     try {
-      const [allEmployees, jobsSnap, holSnap] = await Promise.all([
-        loadAllEmployees(),
-        getDocs(
-          query(
-            collection(db, "bookings"),
-            where("bookingDates", "array-contains", dateISO)
-          )
-        ),
-        getDocs(collection(db, "holidays")),
-      ]);
-
-      const bookings = jobsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
-      const holidays = holSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      const allEmployees = loadAllEmployees();
+      const bookings = bookingsResource.data;
+      const holidays = holidaysResource.data;
 
       const todaysJobs = [];
 
       for (const job of bookings) {
+        if (!isCrewedBooking(job)) continue;
         const dates = Array.isArray(job.bookingDates) ? job.bookingDates : [];
         if (!dates.length) continue;
 
@@ -856,7 +845,7 @@ export default function JobDayScreen() {
 
       // vehicle check map
       const jobIds = todaysJobs.map((j) => j.id);
-      const vehicleChecksMap = await loadVehicleChecksForJobs(jobIds);
+      const vehicleChecksMap = loadVehicleChecksForJobs(jobIds);
 
       const jobsWithCheckFlag = todaysJobs.map((job) => ({
         ...job,
@@ -877,11 +866,11 @@ export default function JobDayScreen() {
       console.error("Error loading jobs:", err);
       setJobs([]);
       setHolidayInfo({ onHoliday: false, payType: "paid" });
-    } finally {
-      setBusy(false);
     }
   }, [
+    bookingsResource.data,
     employee,
+    holidaysResource.data,
     isAuthed,
     loading,
     dateISO,
@@ -895,59 +884,32 @@ export default function JobDayScreen() {
 
   // 🔄 Load bookings + vehicles for Vehicle prep (next 3 days)
   useEffect(() => {
-    const fetchData = async () => {
-      try {
-        setPrepLoading(true);
-        const [bookingsSnap, vehiclesSnap] = await Promise.all([
-          getDocs(collection(db, "bookings")),
-          getDocs(collection(db, "vehicles")),
-        ]);
-        const bookingsData = bookingsSnap.docs.map((d) => ({
-          id: d.id,
-          ...d.data(),
-        }));
-        const vehiclesData = vehiclesSnap.docs.map((d) => ({
-          id: d.id,
-          ...d.data(),
-        }));
-        setBookings(bookingsData);
-        setVehiclesData(vehiclesData);
-      } catch (err) {
-        console.error("Failed to load data for vehicle prep:", err);
-        setBookings([]);
-        setVehiclesData([]);
-      } finally {
-        setPrepLoading(false);
-      }
-    };
-
-    fetchData();
-  }, []);
+    setBookings(bookingsResource.data.filter(isCrewedBooking));
+    setVehiclesData(vehiclesResource.data);
+    setPrepLoading(
+      bookingsResource.isInitialLoading || vehiclesResource.isInitialLoading
+    );
+  }, [
+    bookingsResource.data,
+    bookingsResource.isInitialLoading,
+    vehiclesResource.data,
+    vehiclesResource.isInitialLoading,
+  ]);
 
   // 🔄 Load prep completion status (runs on focus)
-  const refreshPrepChecks = useCallback(async () => {
-    try {
-      const snap = await getDocs(collection(db, "vehiclePrepChecks"));
-      const map = {};
-      snap.docs.forEach((docSnap) => {
-        const data = docSnap.data() || {};
-        if (data.date && data.vehicleId && data.completed) {
-          const key = `${data.date}__${data.vehicleId}`;
-          map[key] = true;
-        }
-      });
-      setPrepChecksMap(map);
-    } catch (err) {
-      console.error("Failed to load vehicle prep checks:", err);
-      setPrepChecksMap({});
-    }
-  }, []);
+  const refreshPrepChecks = useCallback(() => {
+    const map = {};
+    prepChecksResource.data.forEach((check) => {
+      if (check.date && check.vehicleId && check.completed) {
+        map[`${check.date}__${check.vehicleId}`] = true;
+      }
+    });
+    setPrepChecksMap(map);
+  }, [prepChecksResource.data]);
 
-  useFocusEffect(
-    useCallback(() => {
-      refreshPrepChecks();
-    }, [refreshPrepChecks])
-  );
+  useEffect(() => {
+    refreshPrepChecks();
+  }, [refreshPrepChecks]);
 
   const prepItems = useMemo(() => {
     if (!bookings.length) return [];
@@ -1040,10 +1002,26 @@ export default function JobDayScreen() {
     });
   };
 
-  const onRefresh = useCallback(() => {
-    loadJobs();
-    refreshPrepChecks();
-  }, [loadJobs, refreshPrepChecks]);
+  const onRefresh = useCallback(async () => {
+    setBusy(true);
+    try {
+      await Promise.all([
+        bookingsResource.refresh(),
+        holidaysResource.refresh(),
+        vehiclesResource.refresh(),
+        vehicleChecksResource.refresh(),
+        prepChecksResource.refresh(),
+      ]);
+    } finally {
+      setBusy(false);
+    }
+  }, [
+    bookingsResource,
+    holidaysResource,
+    prepChecksResource,
+    vehicleChecksResource,
+    vehiclesResource,
+  ]);
 
   if (loading || !isAuthed) return null;
 
@@ -1074,7 +1052,10 @@ export default function JobDayScreen() {
       : colors.textMuted;
 
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>
+    <SafeAreaView
+      edges={["top", "left", "right"]}
+      style={[styles.safeArea, { backgroundColor: colors.background }]}
+    >
       <PageHeaderCard
         eyebrow="Operations"
         title="Job Day"
@@ -1143,51 +1124,52 @@ export default function JobDayScreen() {
         </View>
 
         <View style={styles.dayNavRow}>
-            <TouchableOpacity
+            <IconButton
+              icon="chevron-left"
+              label="Previous day"
               onPress={goPrevDay}
               disabled={busy}
-              style={[
-                styles.dayNavButton,
-                { backgroundColor: colors.surfaceAlt, borderColor: colors.border },
-              ]}
-            >
-              <Icon name="chevron-left" size={18} color={busy ? colors.textMuted : colors.text} />
-            </TouchableOpacity>
+              style={styles.dayNavButton}
+            />
             <Text style={[styles.dayTitle, { color: colors.text }]}>
               {selectedDate.toLocaleDateString("en-GB", DAY_FORMAT_SHORT)}
             </Text>
-            <TouchableOpacity
+            <IconButton
+              icon="chevron-right"
+              label="Next day"
               onPress={goNextDay}
               disabled={busy}
-              style={[
-                styles.dayNavButton,
-                { backgroundColor: colors.surfaceAlt, borderColor: colors.border },
-              ]}
-            >
-              <Icon
-                name="chevron-right"
-                size={18}
-                color={busy ? colors.textMuted : colors.text}
-              />
-            </TouchableOpacity>
+              style={styles.dayNavButton}
+            />
         </View>
       </PageHeaderCard>
 
       {/* Body */}
       <ScrollView
-        contentContainerStyle={styles.scrollViewContent}
+        contentContainerStyle={[
+          styles.scrollViewContent,
+          { width: "100%", maxWidth: responsive.maxContentWidth, alignSelf: "center" },
+        ]}
         refreshControl={
           <RefreshControl refreshing={busy} onRefresh={onRefresh} tintColor={colors.text} />
         }
       >
-        {busy && jobs.length === 0 ? (
-          <View style={styles.loadingWrap}>
-            <ActivityIndicator size="large" color={colors.accent} />
-            <Text style={[styles.loadingText, { color: colors.textMuted }]}>
-              Updating your day…
-            </Text>
-          </View>
-        ) : jobs.length > 0 ? (
+        <AsyncContentState
+          resources={[
+            bookingsResource,
+            holidaysResource,
+            vehiclesResource,
+            vehicleChecksResource,
+            prepChecksResource,
+          ]}
+          hasContent={
+            bookingsResource.data.length > 0 ||
+            holidaysResource.data.length > 0
+          }
+          onRetry={onRefresh}
+          loadingLabel="Loading your jobs…"
+        >
+        {jobs.length > 0 ? (
           jobs.map((job) => (
             <JobCard
               key={job.id}
@@ -1199,71 +1181,39 @@ export default function JobDayScreen() {
             />
           ))
         ) : holidayInfo.onHoliday ? (
-          <View
-            style={[
-              styles.emptyCard,
-              { backgroundColor: colors.surface, borderColor: colors.border },
-            ]}
-          >
-            <View style={[styles.bigIconWrap, { backgroundColor: "#102917" }]}>
-              <Icon name="umbrella" size={26} color={colors.success} />
-            </View>
-            <Text style={[styles.emptyTitle, { color: colors.text }]}>
-              {isUnpaidHoliday ? "Unpaid Holiday" : "Holiday"}
-            </Text>
-            <Text style={[styles.emptySubtitle, { color: colors.textMuted }]}>
-              {isUnpaidHoliday
+          <EmptyState
+            icon="umbrella"
+            title={isUnpaidHoliday ? "Unpaid Holiday" : "Holiday"}
+            message={
+              isUnpaidHoliday
                 ? "You’re on approved unpaid leave for this date."
-                : "You’re on approved leave for this date."}
-            </Text>
-          </View>
+                : "You’re on approved leave for this date."
+            }
+            style={{ backgroundColor: colors.surface }}
+          />
         ) : bankHolidayTitle ? (
-          <View
-            style={[
-              styles.emptyCard,
-              { backgroundColor: colors.surface, borderColor: colors.border },
-            ]}
-          >
-            <View style={[styles.bigIconWrap, { backgroundColor: "#221032" }]}>
-              <Icon name="flag" size={26} color="#a855f7" />
-            </View>
-            <Text style={[styles.emptyTitle, { color: colors.text }]}>Bank Holiday</Text>
-            <Text style={[styles.emptySubtitle, { color: colors.textMuted }]}>
-              {bankHolidayTitle}
-            </Text>
-          </View>
+          <EmptyState
+            icon="flag"
+            title="Bank Holiday"
+            message={bankHolidayTitle}
+            style={{ backgroundColor: colors.surface }}
+          />
         ) : weekend ? (
-          <View
-            style={[
-              styles.emptyCard,
-              { backgroundColor: colors.surface, borderColor: colors.border },
-            ]}
-          >
-            <View style={[styles.bigIconWrap, { backgroundColor: colors.surfaceAlt }]}>
-              <Icon name="sun" size={26} color={colors.textMuted} />
-            </View>
-            <Text style={[styles.emptyTitle, { color: colors.text }]}>Weekend</Text>
-            <Text style={[styles.emptySubtitle, { color: colors.textMuted }]}>
-              No bookings assigned. Enjoy the day.
-            </Text>
-          </View>
+          <EmptyState
+            icon="sun"
+            title="Weekend"
+            message="No bookings assigned. Enjoy the day."
+            style={{ backgroundColor: colors.surface }}
+          />
         ) : (
           <>
             {/* Yard status card */}
-            <View
-              style={[
-                styles.emptyCard,
-                { backgroundColor: colors.surface, borderColor: colors.border },
-              ]}
-            >
-              <View style={[styles.bigIconWrap, { backgroundColor: colors.surfaceAlt }]}>
-                <Icon name="home" size={26} color={colors.textMuted} />
-              </View>
-              <Text style={[styles.emptyTitle, { color: colors.text }]}>Yard Based</Text>
-              <Text style={[styles.emptySubtitle, { color: colors.textMuted }]}>
-                You’re not scheduled on a job for this day.
-              </Text>
-            </View>
+            <EmptyState
+              icon="home"
+              title="Yard Based"
+              message="You’re not scheduled on a job for this day."
+              style={{ backgroundColor: colors.surface }}
+            />
 
             {/* 🚚 Vehicle prep – next 3 days (only when Yard) */}
             <View style={styles.prepSectionHeaderRow}>
@@ -1282,19 +1232,14 @@ export default function JobDayScreen() {
               ]}
             >
               {prepLoading ? (
-                <View style={styles.serviceLoadingRow}>
-                  <ActivityIndicator size="small" color={colors.accent} />
-                  <Text style={[styles.serviceLoadingText, { color: colors.textMuted }]}>
-                    Pulling vehicles for the next 3 days…
-                  </Text>
-                </View>
+                <LoadingState label="Loading vehicles for the next 3 days…" compact />
               ) : prepByDate.length === 0 ? (
-                <View style={styles.emptyServiceState}>
-                  <Icon name="truck" size={18} color={colors.textMuted} />
-                  <Text style={[styles.emptyServiceText, { color: colors.textMuted }]}>
-                    No confirmed vehicles going out in the next 3 days.
-                  </Text>
-                </View>
+                <EmptyState
+                  icon="truck"
+                  title="No vehicle preparation required"
+                  message="No confirmed vehicles are going out in the next 3 days."
+                  compact
+                />
               ) : (
                 prepByDate.map((group) => {
                   const label = new Date(group.date).toLocaleDateString("en-GB", {
@@ -1324,6 +1269,7 @@ export default function JobDayScreen() {
             </View>
           </>
         )}
+        </AsyncContentState>
 
         <View style={{ height: 40 }} />
       </ScrollView>

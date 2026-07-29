@@ -1,12 +1,11 @@
 // app/(protected)/screens/schedule.js
 import { useLocalSearchParams } from "expo-router";
-import { collection, getDocs } from "firebase/firestore";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
-  TouchableOpacity,
   View,
 } from "react-native";
 import { Calendar } from "react-native-calendars";
@@ -14,7 +13,11 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
 import PageHeaderCard from "../../../components/PageHeaderCard";
-import { db } from "../../../firebaseConfig";
+import { AsyncContentState, EmptyState } from "../../../components/AsyncState";
+import { AppButton } from "../../../components/ui/AppPrimitives";
+import { useBookings, useHolidays, useVehicles } from "../../../hooks/useOperationalData";
+import { useResponsiveLayout } from "../../../hooks/useResponsiveLayout";
+import { isCrewedBooking } from "../../../lib/bookingVisibility";
 import { designTokens as t } from "../../../lib/design/tokens";
 import { useAuth } from "../../../providers/AuthProvider";
 import { useTheme } from "../../../providers/ThemeProvider";
@@ -281,6 +284,10 @@ export default function SchedulePage() {
   const params = useLocalSearchParams();
   const { employee, isAuthed, loading } = useAuth();
   const { colors } = useTheme();
+  const responsive = useResponsiveLayout();
+  const bookingsResource = useBookings();
+  const holidaysResource = useHolidays();
+  const vehiclesResource = useVehicles();
 
   const [markedDates, setMarkedDates] = useState({});
   const [selectedDay, setSelectedDay] = useState(null);
@@ -322,7 +329,7 @@ export default function SchedulePage() {
   /* -------------------------------------------------------------------------- */
 
   useEffect(() => {
-    const loadData = async () => {
+    const loadData = () => {
       if (loading || !isAuthed) {
         setMarkedDates({});
         setSelectedDay(null);
@@ -340,17 +347,10 @@ export default function SchedulePage() {
         return;
       }
 
-      const [jobsSnap, holSnap, empSnap, vehSnap] = await Promise.all([
-        getDocs(collection(db, "bookings")),
-        getDocs(collection(db, "holidays")),
-        getDocs(collection(db, "employees")),
-        getDocs(collection(db, "vehicles")),
-      ]);
-
-      const jobs = jobsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
-      const holidays = holSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
-      const allEmployees = empSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
-      const allVehicles = vehSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      const jobs = bookingsResource.data;
+      const holidays = holidaysResource.data;
+      const allEmployees = bookingsResource.employees;
+      const allVehicles = vehiclesResource.data;
 
       const vehicleById = buildVehicleLookup(allVehicles);
 
@@ -360,6 +360,7 @@ export default function SchedulePage() {
 
       /* --------------------------------- JOBS --------------------------------- */
       for (const job of jobs) {
+        if (!isCrewedBooking(job)) continue;
         const dates = Array.isArray(job.bookingDates) ? job.bookingDates : [];
         if (!dates.length) continue;
 
@@ -504,7 +505,18 @@ export default function SchedulePage() {
     };
 
     loadData();
-  }, [employee?.userCode, employee?.name, employee?.displayName, isAuthed, loading, bankHolidayMap]);
+  }, [
+    bankHolidayMap,
+    bookingsResource.data,
+    bookingsResource.employees,
+    employee?.displayName,
+    employee?.name,
+    employee?.userCode,
+    holidaysResource.data,
+    isAuthed,
+    loading,
+    vehiclesResource.data,
+  ]);
 
   const handleDayPress = (day) => {
     setSelectedDay(day.dateString);
@@ -547,14 +559,44 @@ export default function SchedulePage() {
     };
   }, [markedDates, selectedDay]);
 
+  const refreshBookings = bookingsResource.refresh;
+  const refreshHolidays = holidaysResource.refresh;
+  const refreshVehicles = vehiclesResource.refresh;
+
+  const onRefresh = useCallback(async () => {
+    await Promise.all([
+      refreshBookings(),
+      refreshHolidays(),
+      refreshVehicles(),
+    ]);
+  }, [refreshBookings, refreshHolidays, refreshVehicles]);
+
   if (loading || !isAuthed) return null;
 
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>
+    <SafeAreaView
+      edges={["top", "left", "right"]}
+      style={[styles.safeArea, { backgroundColor: colors.background }]}
+    >
       <View style={[styles.container, { backgroundColor: colors.background }]}>
         <ScrollView
-          contentContainerStyle={styles.scrollContainer}
+          contentContainerStyle={[
+            styles.scrollContainer,
+            { width: "100%", maxWidth: responsive.maxContentWidth, alignSelf: "center" },
+          ]}
           keyboardShouldPersistTaps="handled"
+          refreshControl={
+            <RefreshControl
+              refreshing={
+                bookingsResource.isRefreshing ||
+                holidaysResource.isRefreshing ||
+                vehiclesResource.isRefreshing
+              }
+              onRefresh={onRefresh}
+              tintColor={colors.accent}
+              colors={[colors.accent]}
+            />
+          }
         >
           <PageHeaderCard
             eyebrow="Operations"
@@ -598,27 +640,19 @@ export default function SchedulePage() {
 
           {/* QUICK ACTIONS */}
           <View style={styles.quickRow}>
-            <TouchableOpacity
-              style={[
-                styles.quickBtn,
-                { backgroundColor: colors.accent, borderColor: colors.accent },
-              ]}
+            <AppButton
+              label="Jump to Today"
+              icon="crosshair"
               onPress={jumpToToday}
-            >
-              <Icon name="crosshair" size={14} color="#fff" />
-              <Text style={[styles.quickText, { color: "#fff" }]}>Jump to Today</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[
-                styles.quickBtn,
-                { backgroundColor: colors.surfaceAlt, borderColor: colors.border },
-              ]}
+              style={styles.quickBtn}
+            />
+            <AppButton
+              label="Clear"
+              icon="x-circle"
+              variant="secondary"
               onPress={clearSelected}
-            >
-              <Icon name="x-circle" size={14} color={colors.textMuted} />
-              <Text style={[styles.quickText, { color: colors.text }]}>Clear</Text>
-            </TouchableOpacity>
+              style={styles.quickBtn}
+            />
           </View>
 
           {/* CALENDAR */}
@@ -667,7 +701,17 @@ export default function SchedulePage() {
           </View>
 
           {/* DETAILS */}
-          {renderDetails(selectedDay, dayInfo, colors)}
+          <AsyncContentState
+            resources={[bookingsResource, holidaysResource, vehiclesResource]}
+            hasContent={
+              bookingsResource.data.length > 0 ||
+              holidaysResource.data.length > 0
+            }
+            onRetry={onRefresh}
+            loadingLabel="Loading schedule…"
+          >
+            {renderDetails(selectedDay, dayInfo, colors)}
+          </AsyncContentState>
 
           {/* LEGEND */}
           <View style={styles.legendRow}>
@@ -698,17 +742,12 @@ export default function SchedulePage() {
 function renderDetails(selectedDay, dayInfo, colors) {
   if (!selectedDay || !dayInfo) {
     return (
-      <View
-        style={[
-          styles.infoCard,
-          { backgroundColor: colors.surfaceAlt, borderColor: colors.border },
-        ]}
-      >
-        <Text style={[styles.infoTitle, { color: colors.text }]}>Pick a date</Text>
-        <Text style={[styles.infoSubtitle, { color: colors.textMuted }]}>
-          Tap any date in the calendar to view jobs or holiday info.
-        </Text>
-      </View>
+      <EmptyState
+        icon="calendar"
+        title="Pick a date"
+        message="Tap any date in the calendar to view jobs or holiday info."
+        compact
+      />
     );
   }
 
@@ -828,17 +867,12 @@ function renderDetails(selectedDay, dayInfo, colors) {
   /* ------------------------------ BANK HOLIDAY ------------------------------ */
   if (bankHolidays?.[selectedDay]) {
     return (
-      <View
-        style={[
-          styles.infoCard,
-          { backgroundColor: colors.surfaceAlt, borderColor: colors.border },
-        ]}
-      >
-        <Text style={[styles.infoTitle, { color: colors.text }]}>Bank Holiday</Text>
-        <Text style={[styles.infoSubtitle, { color: colors.textMuted }]}>
-          {bankHolidays[selectedDay]}
-        </Text>
-      </View>
+      <EmptyState
+        icon="flag"
+        title="Bank Holiday"
+        message={bankHolidays[selectedDay]}
+        compact
+      />
     );
   }
 
@@ -847,19 +881,14 @@ function renderDetails(selectedDay, dayInfo, colors) {
   if (hol) {
     const isUnpaid = hol.payType === "unpaid";
     return (
-      <View
-        style={[
-          styles.infoCard,
-          { backgroundColor: colors.surfaceAlt, borderColor: colors.border },
-        ]}
-      >
-        <Text style={[styles.infoTitle, { color: colors.text }]}>
-          {isUnpaid ? "Unpaid Holiday" : "Holiday"}
-        </Text>
-        <Text style={[styles.infoSubtitle, { color: colors.textMuted }]}>
-          {isUnpaid ? "This day is recorded as unpaid leave." : "Enjoy your time off."}
-        </Text>
-      </View>
+      <EmptyState
+        icon="umbrella"
+        title={isUnpaid ? "Unpaid Holiday" : "Holiday"}
+        message={
+          isUnpaid ? "This day is recorded as unpaid leave." : "Enjoy your time off."
+        }
+        compact
+      />
     );
   }
 
@@ -867,33 +896,23 @@ function renderDetails(selectedDay, dayInfo, colors) {
   const dow = new Date(selectedDay).getDay();
   if (dow === 0 || dow === 6) {
     return (
-      <View
-        style={[
-          styles.infoCard,
-          { backgroundColor: colors.surfaceAlt, borderColor: colors.border },
-        ]}
-      >
-        <Text style={[styles.infoTitle, { color: colors.text }]}>Weekend</Text>
-        <Text style={[styles.infoSubtitle, { color: colors.textMuted }]}>
-          You are not booked today.
-        </Text>
-      </View>
+      <EmptyState
+        icon="sun"
+        title="Weekend"
+        message="You are not booked today."
+        compact
+      />
     );
   }
 
   /* --------------------------- DEFAULT (YARD) --------------------------- */
   return (
-    <View
-      style={[
-        styles.infoCard,
-        { backgroundColor: colors.surfaceAlt, borderColor: colors.border },
-      ]}
-    >
-      <Text style={[styles.infoTitle, { color: colors.text }]}>Yard Based</Text>
-      <Text style={[styles.infoSubtitle, { color: colors.textMuted }]}>
-        No offsite bookings today.
-      </Text>
-    </View>
+    <EmptyState
+      icon="home"
+      title="Yard Based"
+      message="No offsite bookings today."
+      compact
+    />
   );
 }
 
@@ -983,6 +1002,8 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   quickBtn: {
+    flexGrow: 1,
+    minWidth: 0,
     minHeight: t.controls.buttonHeight,
     paddingVertical: 8,
     paddingHorizontal: 14,
@@ -991,7 +1012,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 7,
   },
-  quickText: { fontWeight: "800", fontSize: 12, letterSpacing: 0.2 },
+  quickText: { fontWeight: "800", fontSize: 12, letterSpacing: 0.2, flexShrink: 1 },
 
   card: { borderRadius: 16, overflow: "hidden" },
 

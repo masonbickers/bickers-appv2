@@ -18,6 +18,7 @@ import { db } from "../../firebaseConfig";
 import { designTokens as t } from "../../lib/design/tokens";
 import { runOrQueueFirestoreMutation } from "../../lib/sync/firestoreQueue";
 import { useAuth } from "../../providers/AuthProvider";
+import { useDataCache } from "../../providers/DataCacheProvider";
 import { useTheme } from "../../providers/ThemeProvider";
 
 function withAlpha(hex, alpha) {
@@ -33,6 +34,7 @@ function withAlpha(hex, alpha) {
 export default function HolidayRequestPage() {
   const router = useRouter();
   const { employee, user, isAuthed, loading } = useAuth();
+  const { invalidate } = useDataCache();
   const { colors } = useTheme();
 
   const [startDate, setStartDate] = useState(null); // "YYYY-MM-DD"
@@ -659,6 +661,10 @@ export default function HolidayRequestPage() {
           meta: { employeeCode: employee?.userCode || null },
         },
       });
+      await Promise.all([
+        invalidate("collection:holidays"),
+        invalidate("me-dashboard:"),
+      ]);
 
       if (queued) {
         alert("📥 Holiday request queued offline. It will sync automatically.");

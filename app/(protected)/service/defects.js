@@ -13,7 +13,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
 import { designTokens as t } from "../../../lib/design/tokens";
-import { useCachedServiceCollection } from "../../../lib/serviceCache";
+import { useServiceCollection } from "../../../hooks/useServiceData";
 import { useTheme } from "../../../providers/ThemeProvider";
 
 const COLORS = {
@@ -71,6 +71,11 @@ function getVehicleLabel(record) {
     record?.reg ||
     "Unknown vehicle"
   );
+}
+
+function cleanRegistration(value) {
+  const text = String(value || "").trim();
+  return text && text.toLowerCase() !== "n/a" ? text : "";
 }
 
 function findVehicleForDefect(defect, vehicles) {
@@ -188,20 +193,26 @@ function buildManualDefectReports(reports) {
 export default function DefectsScreen() {
   const router = useRouter();
   const { colors } = useTheme();
+  const textColor = colors.text || COLORS.textHigh;
+  const mutedColor = colors.textMuted || COLORS.textMid;
+  const cardBg = colors.surfaceAlt || COLORS.card;
+  const borderColor = colors.border || COLORS.border;
+  const dangerColor = colors.danger || COLORS.primaryAction;
+  const warningColor = colors.warning || "#FFCC00";
 
-  const { rows: vehicles, loading: vehiclesLoading } = useCachedServiceCollection("vehicles", {
+  const { rows: vehicles, loading: vehiclesLoading } = useServiceCollection("vehicles", {
     label: "vehicles for defects",
     orderByField: "name",
   });
-  const { rows: vehicleChecks, loading: checksLoading } = useCachedServiceCollection(
+  const { rows: vehicleChecks, loading: checksLoading } = useServiceCollection(
     "vehicleChecks",
     { label: "approved vehicle checks" }
   );
-  const { rows: vehicleIssues, loading: issuesLoading } = useCachedServiceCollection(
+  const { rows: vehicleIssues, loading: issuesLoading } = useServiceCollection(
     "vehicleIssues",
     { label: "approved vehicle issues" }
   );
-  const { rows: defectReports, loading: reportsLoading } = useCachedServiceCollection(
+  const { rows: defectReports, loading: reportsLoading } = useServiceCollection(
     "defectReports",
     { label: "manual defect reports" }
   );
@@ -225,10 +236,12 @@ export default function DefectsScreen() {
         defect.vehicleName ||
         "Unknown vehicle";
       const registration =
-        matchedVehicle?.registration ||
-        matchedVehicle?.reg ||
-        defect.registration ||
-        "";
+        cleanRegistration(
+          matchedVehicle?.registration ||
+            matchedVehicle?.reg ||
+            defect.registration ||
+            ""
+        );
       const groupKey =
         matchedVehicle?.id ||
         defect.vehicleId ||
@@ -357,47 +370,22 @@ export default function DefectsScreen() {
       ) : (
         <ScrollView contentContainerStyle={styles.scrollContent}>
           {/* SUMMARY CARD */}
-          <View
-            style={[
-              styles.infoCard,
-              { backgroundColor: colors.surfaceAlt || COLORS.card },
-            ]}
-          >
-            <Text
-              style={[
-                styles.infoTitle,
-                { color: colors.text || COLORS.textHigh },
-              ]}
-            >
-              Reported defects
-            </Text>
-            <Text
-              style={[
-                styles.infoSubtitle,
-                { color: colors.textMuted || COLORS.textMid },
-              ]}
-            >
-              Use this view to decide what needs workshop time now, and what can
-              be planned later.
-            </Text>
-
-            <View style={styles.summaryRow}>
-              <View style={styles.summaryPill}>
-                <View
-                  style={[styles.summaryDot, { backgroundColor: "#ED1C25" }]}
-                />
-                <Text style={styles.summaryText}>
-                  {totalImmediate} immediate
-                </Text>
-              </View>
-              <View style={styles.summaryPill}>
-                <View
-                  style={[styles.summaryDot, { backgroundColor: "#FFCC00" }]}
-                />
-                <Text style={styles.summaryText}>
-                  {totalGeneral} general
-                </Text>
-              </View>
+          <View style={styles.summaryRow}>
+            <View style={styles.summaryPill}>
+              <View
+                style={[styles.summaryDot, { backgroundColor: "#ED1C25" }]}
+              />
+              <Text style={styles.summaryText}>
+                {totalImmediate} immediate
+              </Text>
+            </View>
+            <View style={styles.summaryPill}>
+              <View
+                style={[styles.summaryDot, { backgroundColor: "#FFCC00" }]}
+              />
+              <Text style={styles.summaryText}>
+                {totalGeneral} general
+              </Text>
             </View>
           </View>
 
@@ -405,17 +393,17 @@ export default function DefectsScreen() {
           {immediateVehicles.length > 0 && (
             <>
               <View style={styles.sectionHeaderRow}>
-                <Text style={styles.sectionTitle}>
+                <Text style={[styles.sectionTitle, { color: textColor }]}>
                   Immediate maintenance
                 </Text>
-                <Text style={styles.sectionHint}>
+                <Text style={[styles.sectionHint, { color: mutedColor }]}>
                   Safety-critical / do not delay.
                 </Text>
               </View>
 
               {immediateVehicles.map((v) => {
                 const name = v.name || v.vehicleName || "Unnamed vehicle";
-                const reg = v.reg || v.registration || "";
+                const reg = cleanRegistration(v.reg || v.registration);
                 const immediate = v.immediateDefects;
                 const general = v.generalDefects;
 
@@ -425,25 +413,25 @@ export default function DefectsScreen() {
                     style={[
                       styles.card,
                       {
-                        borderColor: "rgba(255,59,48,0.7)",
-                        backgroundColor: colors.surfaceAlt || COLORS.card,
+                        borderColor,
+                        backgroundColor: cardBg,
                       },
                     ]}
                   >
                     <View style={styles.cardHeader}>
                       <View style={{ flex: 1 }}>
-                        <Text style={styles.cardTitle}>{name}</Text>
+                        <Text style={[styles.cardTitle, { color: textColor }]}>{name}</Text>
                         {!!reg && (
-                          <Text style={styles.cardReg}>{reg}</Text>
+                          <Text style={[styles.cardReg, { color: mutedColor }]}>{reg}</Text>
                         )}
-                        <Text style={styles.countImmediate}>
+                        <Text style={[styles.countImmediate, { color: dangerColor }]}>
                           {immediate.length} immediate issue
                           {immediate.length > 1 ? "s" : ""} ·{" "}
                           {v.totalDefects} total
                         </Text>
                       </View>
-                      <View style={styles.badgeImmediate}>
-                        <Text style={styles.badgeText}>Immediate</Text>
+                      <View style={[styles.badgeImmediate, { borderColor: dangerColor }]}>
+                        <Text style={[styles.badgeText, { color: dangerColor }]}>Immediate</Text>
                       </View>
                     </View>
 
@@ -457,18 +445,18 @@ export default function DefectsScreen() {
                         <Icon
                           name="alert-triangle"
                           size={14}
-                          color={COLORS.recceAction}
+                          color={dangerColor}
                           style={{ marginRight: 6 }}
                         />
-                        <Text style={styles.defectText}>{defect.text}</Text>
-                        <Icon name="chevron-right" size={14} color={COLORS.textMid} />
+                        <Text style={[styles.defectText, { color: textColor }]}>{defect.text}</Text>
+                        <Icon name="chevron-right" size={14} color={mutedColor} />
                       </TouchableOpacity>
                     ))}
 
                     {general.length > 0 && (
                       <View style={{ marginTop: 6 }}>
-                        <Text style={styles.subSectionLabel}>
-                          Other issues
+                        <Text style={[styles.subSectionLabel, { color: mutedColor }]}>
+                          Related general issue{general.length > 1 ? "s" : ""}
                         </Text>
                         {general.slice(0, 2).map((defect) => (
                           <TouchableOpacity
@@ -480,15 +468,15 @@ export default function DefectsScreen() {
                             <Icon
                               name="minus-circle"
                               size={13}
-                              color="#FFCC00"
+                              color={warningColor}
                               style={{ marginRight: 6 }}
                             />
-                            <Text style={styles.defectText}>{defect.text}</Text>
-                            <Icon name="chevron-right" size={14} color={COLORS.textMid} />
+                            <Text style={[styles.defectText, { color: textColor }]}>{defect.text}</Text>
+                            <Icon name="chevron-right" size={14} color={mutedColor} />
                           </TouchableOpacity>
                         ))}
                         {general.length > 2 && (
-                          <Text style={styles.moreText}>
+                          <Text style={[styles.moreText, { color: mutedColor }]}>
                             + {general.length - 2} more…
                           </Text>
                         )}
@@ -496,7 +484,7 @@ export default function DefectsScreen() {
                     )}
 
                     {immediate.length > 3 && general.length === 0 && (
-                      <Text style={styles.moreText}>
+                      <Text style={[styles.moreText, { color: mutedColor }]}>
                         + {immediate.length - 3} more…
                       </Text>
                     )}
@@ -510,17 +498,17 @@ export default function DefectsScreen() {
           {generalVehicles.length > 0 && (
             <>
               <View style={styles.sectionHeaderRow}>
-                <Text style={styles.sectionTitle}>
+                <Text style={[styles.sectionTitle, { color: textColor }]}>
                   General defects & follow-up
                 </Text>
-                <Text style={styles.sectionHint}>
+                <Text style={[styles.sectionHint, { color: mutedColor }]}>
                   Plan into future workshop slots.
                 </Text>
               </View>
 
               {generalVehicles.map((v) => {
                 const name = v.name || v.vehicleName || "Unnamed vehicle";
-                const reg = v.reg || v.registration || "";
+                const reg = cleanRegistration(v.reg || v.registration);
                 const general = v.generalDefects;
 
                 return (
@@ -529,24 +517,24 @@ export default function DefectsScreen() {
                     style={[
                       styles.card,
                       {
-                        borderColor: COLORS.border,
-                        backgroundColor: colors.surfaceAlt || COLORS.card,
+                        borderColor,
+                        backgroundColor: cardBg,
                       },
                     ]}
                   >
                     <View style={styles.cardHeader}>
                       <View style={{ flex: 1 }}>
-                        <Text style={styles.cardTitle}>{name}</Text>
+                        <Text style={[styles.cardTitle, { color: textColor }]}>{name}</Text>
                         {!!reg && (
-                          <Text style={styles.cardReg}>{reg}</Text>
+                          <Text style={[styles.cardReg, { color: mutedColor }]}>{reg}</Text>
                         )}
-                        <Text style={styles.countGeneral}>
+                        <Text style={[styles.countGeneral, { color: mutedColor }]}>
                           {general.length} general issue
                           {general.length > 1 ? "s" : ""} open
                         </Text>
                       </View>
-                      <View style={styles.badgeGeneral}>
-                        <Text style={styles.badgeText}>General</Text>
+                      <View style={[styles.badgeGeneral, { borderColor: warningColor }]}>
+                        <Text style={[styles.badgeText, { color: warningColor }]}>General</Text>
                       </View>
                     </View>
 
@@ -560,16 +548,16 @@ export default function DefectsScreen() {
                         <Icon
                           name="minus-circle"
                           size={14}
-                          color="#FFCC00"
+                          color={warningColor}
                           style={{ marginRight: 6 }}
                         />
-                        <Text style={styles.defectText}>{defect.text}</Text>
-                        <Icon name="chevron-right" size={14} color={COLORS.textMid} />
+                        <Text style={[styles.defectText, { color: textColor }]}>{defect.text}</Text>
+                        <Icon name="chevron-right" size={14} color={mutedColor} />
                       </TouchableOpacity>
                     ))}
 
                     {general.length > 3 && (
-                      <Text style={styles.moreText}>
+                      <Text style={[styles.moreText, { color: mutedColor }]}>
                         + {general.length - 3} more…
                       </Text>
                     )}
@@ -613,28 +601,13 @@ const styles = StyleSheet.create({
 
   loadingContainer: { flex: 1, justifyContent: "center", alignItems: "center" },
 
-  scrollContent: { padding: t.spacing.md, paddingTop: 4 },
+  scrollContent: { padding: t.spacing.md, paddingTop: 4, paddingBottom: 110 },
 
   /* SUMMARY CARD */
-  infoCard: {
-    backgroundColor: COLORS.card,
-    borderRadius: t.radius.sm,
-    padding: t.controls.cardPadding,
-    marginBottom: t.spacing.sm,
-  },
-  infoTitle: {
-    fontSize: 16,
-    fontWeight: "700",
-    marginBottom: 4,
-    color: COLORS.textHigh,
-  },
-  infoSubtitle: {
-    fontSize: 13,
-    color: COLORS.textMid,
-  },
   summaryRow: {
     flexDirection: "row",
-    marginTop: 10,
+    flexWrap: "wrap",
+    marginBottom: 12,
   },
   summaryPill: {
     flexDirection: "row",
@@ -644,7 +617,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 999,
-    backgroundColor: "#181818",
+    backgroundColor: COLORS.card,
   },
   summaryDot: {
     width: 8,
@@ -716,7 +689,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 999,
-    backgroundColor: "rgba(255,59,48,0.15)",
+    backgroundColor: "transparent",
     borderWidth: 1,
     borderColor: "#ED1C25",
     marginRight: 8,
@@ -738,8 +711,8 @@ const styles = StyleSheet.create({
 
   defectRow: {
     flexDirection: "row",
-    alignItems: "center",
-    marginTop: 4,
+    alignItems: "flex-start",
+    marginTop: 7,
   },
   defectText: {
     fontSize: 13,

@@ -1,14 +1,14 @@
 // components/app/service-footer.jsx
 import { usePathname, useRouter } from "expo-router";
-import { useEffect, useState } from "react";
-import { InteractionManager, Platform, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { useMemo } from "react";
+import { Platform, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import Ionicons from "react-native-vector-icons/Ionicons";
 
-import {
-  readServiceCollectionCache,
-  subscribeServiceCollectionCache,
-} from "../../lib/serviceCache";
+import { useServiceCollection } from "../../hooks/useServiceData";
+import { countOpenMonitorItems } from "../../lib/serviceAdvisories";
 import { useTheme } from "../../providers/ThemeProvider";
+
+const FOOTER_BAR_HEIGHT = 64;
 
 function normaliseKey(value) {
   return String(value || "")
@@ -54,81 +54,24 @@ function countOpenManualDefects(reports) {
   return reports.filter((report) => isOpenMaintenance(report?.status)).length;
 }
 
-function countMonitorItems(records) {
-  return records.reduce((sum, record) => {
-    const items = Array.isArray(record?.monitorReport) ? record.monitorReport : [];
-    return sum + items.length;
-  }, 0);
-}
-
 export default function ServiceFooter() {
   const router = useRouter();
   const pathname = usePathname();
   const { colors } = useTheme();
-  const [issueCount, setIssueCount] = useState(0);
-
-  useEffect(() => {
-    let alive = true;
-    let unsubscribers = [];
-
-    const applyCounts = (data) => {
-      const nextIssueCount =
-        countOpenCheckDefects(data.vehicleChecks || []) +
-        countOpenIssueDefects(data.vehicleIssues || []) +
-        countOpenManualDefects(data.defectReports || []) +
-        countMonitorItems(data.serviceRecords || []) +
-        countMonitorItems(data.equipmentInspections || []);
-
-      setIssueCount(nextIssueCount);
-    };
-
-    const task = InteractionManager.runAfterInteractions(async () => {
-      try {
-        const collectionNames = [
-          "vehicleChecks",
-          "vehicleIssues",
-          "defectReports",
-          "serviceRecords",
-          "equipmentInspections",
-        ];
-        const cachedEntries = await Promise.all(
-          collectionNames.map(async (name) => [
-            name,
-            (await readServiceCollectionCache(name)).rows,
-          ])
-        );
-
-        if (!alive) return;
-
-        const current = Object.fromEntries(cachedEntries);
-        applyCounts(current);
-
-        unsubscribers = collectionNames.map((collectionName) =>
-          subscribeServiceCollectionCache({
-            collectionName,
-            label: `footer ${collectionName}`,
-            onRows: (rows) => {
-              current[collectionName] = rows;
-              applyCounts(current);
-            },
-            onError: (err) => {
-              console.error(`Failed to load footer ${collectionName}:`, err);
-            },
-          })
-        );
-      } catch (err) {
-        console.error("Failed to load service footer issue counts:", err);
-      }
-    });
-
-    return () => {
-      alive = false;
-      task.cancel?.();
-      unsubscribers.forEach((unsub) => {
-        if (typeof unsub === "function") unsub();
-      });
-    };
-  }, []);
+  const vehicleChecks = useServiceCollection("vehicleChecks").data;
+  const vehicleIssues = useServiceCollection("vehicleIssues").data;
+  const defectReports = useServiceCollection("defectReports").data;
+  const serviceRecords = useServiceCollection("serviceRecords").data;
+  const equipmentInspections = useServiceCollection("equipmentInspections").data;
+  const issueCount = useMemo(
+    () =>
+      countOpenCheckDefects(vehicleChecks) +
+      countOpenIssueDefects(vehicleIssues) +
+      countOpenManualDefects(defectReports) +
+      countOpenMonitorItems(serviceRecords) +
+      countOpenMonitorItems(equipmentInspections),
+    [defectReports, equipmentInspections, serviceRecords, vehicleChecks, vehicleIssues]
+  );
 
   // 🔧 Tabs dedicated to Service / Workshop area
   // URLs are /service/... (group (protected) is hidden from URL)
@@ -234,12 +177,13 @@ export default function ServiceFooter() {
 const styles = StyleSheet.create({
   container: { paddingTop: 0 },
   footer: {
+    height: FOOTER_BAR_HEIGHT,
     flexDirection: "row",
     alignItems: "center",
     borderTopWidth: StyleSheet.hairlineWidth,
     marginHorizontal: 0,
     borderRadius: 0,
-    paddingVertical: 7,
+    paddingVertical: 0,
     paddingHorizontal: 4,
     ...Platform.select({
       ios: {

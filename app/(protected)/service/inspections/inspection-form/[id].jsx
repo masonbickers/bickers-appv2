@@ -29,7 +29,15 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
 import { db, storage } from "../../../../../firebaseConfig";
-import { getServiceCollectionRows } from "../../../../../lib/serviceCache";
+import {
+  buildEquipmentCoreUpdate,
+  getEquipmentCategory,
+  getEquipmentLastInspection,
+  getEquipmentName,
+  getEquipmentNextInspection,
+  getEquipmentStatus,
+} from "../../../../../lib/fleetSchema";
+import { useServiceCacheActions, useServiceCollectionReader } from "../../../../../hooks/useServiceData";
 import { runOrQueueFirestoreMutations } from "../../../../../lib/sync/firestoreQueue";
 import { useTheme } from "../../../../../providers/ThemeProvider";
 
@@ -162,7 +170,7 @@ function normaliseKey(value) {
 function buildEquipmentOptions(records) {
   return records
     .map((record) => {
-      const name = String(record?.name || record?.label || "").trim();
+      const name = String(getEquipmentName(record)).trim();
       const serial = String(record?.serialNumber || "").trim();
       const asset = String(record?.asset || "").trim();
       if (!name) return null;
@@ -174,13 +182,13 @@ function buildEquipmentOptions(records) {
         equipmentId: serial || asset,
         serialNumber: serial,
         asset,
-        type: record?.category || "",
-        category: record?.category || "",
-        status: record?.status || "",
+        type: getEquipmentCategory(record) || "",
+        category: getEquipmentCategory(record) || "",
+        status: getEquipmentStatus(record) || "",
         location: record?.location || "",
-        lastInspection: record?.lastInspection || "",
+        lastInspection: getEquipmentLastInspection(record) || "",
         inspectionFrequency: record?.inspectionFrequency || "",
-        nextInspection: record?.nextInspection || "",
+        nextInspection: getEquipmentNextInspection(record) || "",
         notes: record?.notes || "",
       };
     })
@@ -211,35 +219,6 @@ function buildInspectionReportItems({ checkRatings = {}, checkNotes = {}, target
         ? `${label}: ${checkNotes[label]}`
         : `${label} was marked ${targetStatus} on the equipment inspection.`,
     }));
-}
-
-function buildEquipmentInspectionHistoryItem({
-  inspectionRecordId,
-  inspectionDate,
-  inspectionDateISO,
-  inspectionTime,
-  overallResult,
-  signedBy,
-  defectCount,
-  monitorCount,
-  findings,
-  recommendations,
-}) {
-  return {
-    type: "Equipment inspection",
-    inspectionRecordId,
-    completedDate: inspectionDateISO || inspectionDate || "",
-    inspectionDate: inspectionDate || "",
-    inspectionTime: inspectionTime || "",
-    overallResult: overallResult || "",
-    signedBy: signedBy || "",
-    defectCount,
-    monitorCount,
-    summary:
-      findings ||
-      recommendations ||
-      `${overallResult === "fail" ? "Failed" : "Passed"} equipment inspection`,
-  };
 }
 
 function isDownloadUrl(uri) {
@@ -299,6 +278,8 @@ export default function InspectionFormScreen() {
   const router = useRouter();
   const navigation = useNavigation();
   const { colors } = useTheme();
+  const readServiceCollection = useServiceCollectionReader();
+  const { upsertServiceRow, patchServiceRow } = useServiceCacheActions();
 
   const formId = Array.isArray(id) ? id[0] : id;
   const preselectEquipmentDocId = Array.isArray(params.equipmentDocId)
@@ -330,7 +311,6 @@ export default function InspectionFormScreen() {
   const [equipmentSearch, setEquipmentSearch] = useState("");
   const [selectedEquipmentKey, setSelectedEquipmentKey] = useState(null);
   const [equipmentCollapsed, setEquipmentCollapsed] = useState(false);
-  const [originalEquipmentDocId, setOriginalEquipmentDocId] = useState("");
 
   /* ---- inspection meta ---- */
   const [inspectionDate, setInspectionDate] = useState(now.date);
@@ -409,7 +389,7 @@ export default function InspectionFormScreen() {
     const loadEquipmentOptions = async () => {
       try {
         setLoadingEquipment(true);
-        const rows = await getServiceCollectionRows("equipment");
+        const rows = await readServiceCollection("equipment");
         setEquipmentOptions(
           buildEquipmentOptions(rows)
         );
@@ -421,7 +401,7 @@ export default function InspectionFormScreen() {
     };
 
     loadEquipmentOptions();
-  }, []);
+  }, [readServiceCollection]);
 
   useEffect(() => {
     if (!isNew || !preselectEquipmentDocId || equipmentOptions.length === 0) return;
@@ -466,7 +446,6 @@ export default function InspectionFormScreen() {
         setInspectionFrequency(d.inspectionFrequency || "");
         setNextInspection(d.nextInspection || "");
         setSelectedEquipmentKey(d.equipmentDocId || null);
-        setOriginalEquipmentDocId(d.equipmentDocId || "");
         setEquipmentCollapsed(!!(d.equipmentName || d.equipmentId));
         setLocation(d.location || "");
         setHoursOrOdo(d.hoursOrOdo || "");
@@ -667,16 +646,18 @@ export default function InspectionFormScreen() {
         const newEquipmentRef = doc(collection(db, "equipment"));
         targetEquipmentDocId = newEquipmentRef.id;
         await setDoc(newEquipmentRef, {
-          name: equipmentName.trim(),
-          category: equipmentType.trim(),
-          status: equipmentStatus.trim() || "Available",
-          serialNumber: serialNumber.trim(),
-          asset: asset.trim(),
-          location: location.trim(),
-          lastInspection: inspectionDateISO || "",
-          inspectionFrequency: inspectionFrequency.trim(),
-          nextInspection: nextInspection.trim(),
-          notes: extraNotes.trim(),
+          ...buildEquipmentCoreUpdate({
+            name: equipmentName.trim(),
+            category: equipmentType.trim(),
+            status: equipmentStatus.trim() || "Available",
+            serialNumber: serialNumber.trim(),
+            asset: asset.trim(),
+            location: location.trim(),
+            lastInspection: inspectionDateISO || "",
+            inspectionFrequency: inspectionFrequency.trim(),
+            nextInspection: nextInspection.trim(),
+            notes: extraNotes.trim(),
+          }),
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
@@ -737,66 +718,22 @@ export default function InspectionFormScreen() {
         },
       ];
 
-      const historyItem = buildEquipmentInspectionHistoryItem({
-        inspectionRecordId: docId,
-        inspectionDate,
-        inspectionDateISO,
-        inspectionTime,
-        overallResult,
-        signedBy: signedBy.trim(),
-        defectCount: defectReport.length,
-        monitorCount: monitorReport.length,
-        findings: findings.trim(),
-        recommendations: recommendations.trim(),
-      });
-
-      const equipmentRows = await getServiceCollectionRows("equipment").catch(() => []);
-      const findEquipment = (targetEquipmentDocId) =>
-        equipmentRows.find((item) => String(item.id) === String(targetEquipmentDocId));
-
-      const queueRemoveInspectionFromEquipment = (targetEquipmentDocId) => {
-        if (!targetEquipmentDocId) return;
-        const equipmentData = findEquipment(targetEquipmentDocId);
-        if (!equipmentData) return;
-        const currentHistory = Array.isArray(equipmentData.inspectionHistory)
-          ? equipmentData.inspectionHistory
-          : [];
-        const equipmentUpdate = {
-          inspectionHistory: currentHistory.filter(
-            (item) => item?.inspectionRecordId !== docId
-          ),
-          updatedAt: serverTimestamp(),
-        };
-        firestoreMutations.push({
-          run: () => updateDoc(doc(db, "equipment", targetEquipmentDocId), equipmentUpdate),
-          mutation: {
-            operation: "update",
-            docPath: `equipment/${targetEquipmentDocId}`,
-            data: equipmentUpdate,
-            entityType: "equipment",
-            entityId: targetEquipmentDocId,
-          },
-        });
-      };
-
       const queueSaveInspectionToEquipment = (targetEquipmentDocId) => {
         if (!targetEquipmentDocId) return;
-        const equipmentData = findEquipment(targetEquipmentDocId) || {};
-        const currentHistory = Array.isArray(equipmentData.inspectionHistory)
-          ? equipmentData.inspectionHistory
-          : [];
         const equipmentUpdate = {
-          inspectionHistory: [
-            historyItem,
-            ...currentHistory.filter((item) => item?.inspectionRecordId !== docId),
-          ],
+          ...buildEquipmentCoreUpdate({
+            name: equipmentName.trim(),
+            category: equipmentType.trim(),
+            status: equipmentStatus.trim(),
+            serialNumber: serialNumber.trim(),
+            asset: asset.trim(),
+            location: location.trim(),
+            lastInspection: inspectionDateISO || lastInspection.trim(),
+            inspectionFrequency: inspectionFrequency.trim(),
+            nextInspection: nextInspection.trim(),
+          }),
           updatedAt: serverTimestamp(),
         };
-        if (inspectionDateISO) equipmentUpdate.lastInspection = inspectionDateISO;
-        if (inspectionFrequency.trim()) {
-          equipmentUpdate.inspectionFrequency = inspectionFrequency.trim();
-        }
-        if (nextInspection.trim()) equipmentUpdate.nextInspection = nextInspection.trim();
         firestoreMutations.push({
           run: () => updateDoc(doc(db, "equipment", targetEquipmentDocId), equipmentUpdate),
           mutation: {
@@ -809,12 +746,17 @@ export default function InspectionFormScreen() {
         });
       };
 
-      if (originalEquipmentDocId && originalEquipmentDocId !== targetEquipmentDocId) {
-        queueRemoveInspectionFromEquipment(originalEquipmentDocId);
-      }
       queueSaveInspectionToEquipment(targetEquipmentDocId);
 
       const { queued } = await runOrQueueFirestoreMutations(firestoreMutations);
+      await upsertServiceRow("equipmentInspections", { ...payload, id: docId });
+      if (targetEquipmentDocId && firestoreMutations[1]?.mutation?.data) {
+        await patchServiceRow(
+          "equipment",
+          targetEquipmentDocId,
+          firestoreMutations[1].mutation.data
+        );
+      }
 
       allowLeaveRef.current = true;
       setDirty(false);
@@ -871,20 +813,6 @@ export default function InspectionFormScreen() {
           </View>
         )}
 
-        {/* CONTEXT CARD */}
-        <View style={[styles.infoCard, {
-          backgroundColor: colors.surfaceAlt || COLORS.card,
-          borderColor: colors.border || COLORS.border,
-        }]}>
-          <Text style={[styles.infoTitle, { color: colors.text || COLORS.textHigh }]}>
-            Equipment inspection checklist
-          </Text>
-          <Text style={[styles.infoSubtitle, { color: colors.textMuted || COLORS.textMid }]}>
-            Mark every item green, amber, red or N/A. Amber and red checks
-            require notes. Sign off at the bottom to complete.
-          </Text>
-        </View>
-
         {/* EQUIPMENT DETAILS */}
         <View style={styles.sectionHeaderRow}>
           <Text style={[styles.sectionTitle, { color: colors.text || COLORS.textHigh }]}>
@@ -929,11 +857,11 @@ export default function InspectionFormScreen() {
                 Search equipment
               </Text>
               <View style={styles.searchBox}>
-                <Icon name="search" size={16} color={COLORS.textLow} style={{ marginRight: 7 }} />
+                <Icon name="search" size={16} color={colors.textMuted || COLORS.textLow} style={{ marginRight: 7 }} />
                 <TextInput
                   style={[styles.searchInput, { color: colors.text || COLORS.textHigh }]}
                   placeholder="Name, serial, asset, category or location..."
-                  placeholderTextColor={COLORS.textLow}
+                  placeholderTextColor={colors.textMuted || COLORS.textLow}
                   value={equipmentSearch}
                   onChangeText={setEquipmentSearch}
                 />
@@ -1073,7 +1001,7 @@ export default function InspectionFormScreen() {
               Inspection date (auto)
             </Text>
             <View style={styles.readonlyField}>
-              <Text style={styles.readonlyText}>{inspectionDate}</Text>
+              <Text style={[styles.readonlyText, { color: colors.text || COLORS.textHigh }]}>{inspectionDate}</Text>
             </View>
           </View>
           <View style={styles.fieldGroup}>
@@ -1081,7 +1009,7 @@ export default function InspectionFormScreen() {
               Inspection time (auto)
             </Text>
             <View style={styles.readonlyField}>
-              <Text style={styles.readonlyText}>{inspectionTime}</Text>
+              <Text style={[styles.readonlyText, { color: colors.text || COLORS.textHigh }]}>{inspectionTime}</Text>
             </View>
           </View>
           <FormField
@@ -1322,8 +1250,8 @@ export default function InspectionFormScreen() {
         }]}>
           <View style={styles.photoButtonsRow}>
             <TouchableOpacity style={styles.photoButton} onPress={handleAddPhotoFromLibrary} activeOpacity={0.85}>
-              <Icon name="image" size={18} color={COLORS.textHigh} style={{ marginRight: 6 }} />
-              <Text style={styles.photoAddText}>Add from library</Text>
+              <Icon name="image" size={18} color={colors.text || COLORS.textHigh} style={{ marginRight: 6 }} />
+              <Text style={[styles.photoAddText, { color: colors.text || COLORS.textHigh }]}>Add from library</Text>
             </TouchableOpacity>
           </View>
           {photos.length > 0 && (
@@ -1363,7 +1291,7 @@ export default function InspectionFormScreen() {
           )}
         </TouchableOpacity>
 
-        <View style={{ height: 40 }} />
+        <View style={{ height: 20 }} />
       </ScrollView>
 
       {/* PER-CHECK PHOTO PICKER MODAL */}
@@ -1461,7 +1389,7 @@ function ChecklistRow({
   const isComplete = !!rating || na;
 
   return (
-    <View style={styles.checkRowWrapper}>
+    <View style={[styles.checkRowWrapper, { borderBottomColor: colors.border || COLORS.border }]}>
       <View style={styles.checkRowLeft}>
         <View style={styles.checkIconWrap}>
           {isComplete ? (
@@ -1490,14 +1418,14 @@ function ChecklistRow({
                 na && { opacity: 0.35 },
                 active
                   ? { backgroundColor: opt.color, borderColor: opt.color }
-                  : { borderColor: COLORS.lightGray },
+                  : { borderColor: colors.border || COLORS.border },
               ]}
               activeOpacity={0.75}
             >
               <Text style={[
                 styles.conditionText,
                 active && styles.conditionTextActive,
-                !active && { color: COLORS.textLow },
+                !active && { color: colors.textMuted || COLORS.textLow },
               ]}>
                 {opt.label}
               </Text>
@@ -1510,6 +1438,7 @@ function ChecklistRow({
           disabled={na}
           style={[
             styles.naPill,
+            { borderColor: colors.border || COLORS.border },
             na && styles.naPillActive,
           ]}
           activeOpacity={0.75}
@@ -1519,10 +1448,10 @@ function ChecklistRow({
 
         <TouchableOpacity
           onPress={onPressPhoto}
-          style={styles.photoIconButton}
+          style={[styles.photoIconButton, { borderColor: colors.border || COLORS.border }]}
           activeOpacity={0.75}
         >
-          <Icon name="image" size={16} color={COLORS.textMid} />
+          <Icon name="image" size={16} color={colors.textMuted || COLORS.textMid} />
           {photos.length > 0 && (
             <View style={styles.photoBadge}>
               <Text style={styles.photoBadgeText}>{photos.length}</Text>
@@ -1537,10 +1466,13 @@ function ChecklistRow({
           style={[
             styles.checkNoteInput,
             styles.checkNoteInputRequired,
-            { borderColor: CHECK_STATUS_OPTIONS.find((opt) => opt.value === rating)?.color },
+            {
+              color: colors.text || COLORS.textHigh,
+              borderColor: CHECK_STATUS_OPTIONS.find((opt) => opt.value === rating)?.color,
+            },
           ]}
           placeholder={`Note required for ${rating}`}
-          placeholderTextColor={COLORS.textLow}
+          placeholderTextColor={colors.textMuted || COLORS.textLow}
           value={note}
           onChangeText={onChangeNote}
           multiline
@@ -1617,10 +1549,14 @@ function FormField({ label, placeholder, value, onChangeText, multiline, colors 
         style={[
           styles.input,
           multiline && styles.inputMultiline,
-          { color: colors.text || COLORS.textHigh, backgroundColor: COLORS.inputBg },
+          {
+            color: colors.text || COLORS.textHigh,
+            backgroundColor: colors.inputBackground || "#FFFFFF",
+            borderColor: colors.inputBorder || colors.border || COLORS.border,
+          },
         ]}
         placeholder={placeholder}
-        placeholderTextColor={COLORS.textLow}
+        placeholderTextColor={colors.textMuted || COLORS.textLow}
         value={value}
         onChangeText={onChangeText}
         multiline={multiline}
@@ -1660,34 +1596,13 @@ const styles = StyleSheet.create({
     color: COLORS.textMid,
   },
 
-  scrollContent: { padding: 16, paddingTop: 8 },
+  scrollContent: { padding: 16, paddingTop: 8, paddingBottom: 110 },
   centerRow: {
     alignItems: "center",
     justifyContent: "center",
     paddingVertical: 10,
   },
   loadingText: { color: COLORS.textMid, marginLeft: 8, fontSize: 13 },
-
-  infoCard: {
-    backgroundColor: COLORS.card,
-    borderRadius: 10,
-    padding: 14,
-    marginBottom: 12,
-    borderLeftWidth: 4,
-    borderLeftColor: COLORS.primaryAction,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-  },
-  infoTitle: {
-    fontSize: 17,
-    fontWeight: "700",
-    color: COLORS.textHigh,
-    marginBottom: 4,
-  },
-  infoSubtitle: {
-    fontSize: 14,
-    color: COLORS.textMid,
-  },
 
   sectionHeaderRow: {
     marginTop: 4,
@@ -1719,10 +1634,10 @@ const styles = StyleSheet.create({
   fieldGroup:    { marginBottom: 12 },
   fieldLabel:    { fontSize: 13, fontWeight: "600", color: COLORS.textMid, marginBottom: 4 },
   input: {
-    backgroundColor: COLORS.inputBg,
+    backgroundColor: "#FFFFFF",
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: COLORS.lightGray,
+    borderColor: COLORS.border,
     color: COLORS.textHigh,
     paddingHorizontal: 10,
     paddingVertical: 10,
@@ -1733,14 +1648,14 @@ const styles = StyleSheet.create({
     textAlignVertical: "top",
   },
   readonlyField: {
-    backgroundColor: COLORS.inputBg,
+    backgroundColor: "#FFFFFF",
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: COLORS.lightGray,
+    borderColor: COLORS.border,
     paddingHorizontal: 10,
     paddingVertical: 8,
   },
-  readonlyText: { color: COLORS.textMid, fontSize: 14 },
+  readonlyText: { color: COLORS.textHigh, fontSize: 14 },
   selectedEquipmentRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -1762,10 +1677,10 @@ const styles = StyleSheet.create({
   searchBox: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: COLORS.inputBg,
+    backgroundColor: "#FFFFFF",
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: COLORS.lightGray,
+    borderColor: COLORS.border,
     paddingHorizontal: 10,
     paddingVertical: 8,
   },
@@ -1792,6 +1707,8 @@ const styles = StyleSheet.create({
   },
   equipmentOptionActive: {
     backgroundColor: "rgba(237,28,37,0.08)",
+    borderRadius: 8,
+    paddingHorizontal: 8,
   },
   equipmentOptionName: {
     fontSize: 14,
@@ -1865,7 +1782,7 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     borderRadius: 999,
     borderWidth: 2,
-    borderColor: COLORS.lightGray,
+    borderColor: COLORS.border,
   },
   naPillActive: {
     backgroundColor: "rgba(142,142,147,0.2)",
@@ -1885,7 +1802,7 @@ const styles = StyleSheet.create({
     height: 30,
     borderRadius: 15,
     borderWidth: 1.5,
-    borderColor: COLORS.lightGray,
+    borderColor: COLORS.border,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -1899,10 +1816,10 @@ const styles = StyleSheet.create({
   photoBadgeText: { color: "#fff", fontSize: 9, fontWeight: "800" },
   checkNoteInput: {
     marginTop: 4,
-    backgroundColor: COLORS.inputBg,
+    backgroundColor: "#FFFFFF",
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: COLORS.lightGray,
+    borderColor: COLORS.border,
     paddingHorizontal: 8,
     paddingVertical: 8,
     fontSize: 14,
@@ -1919,7 +1836,7 @@ const styles = StyleSheet.create({
     gap: 10,
     paddingVertical: 10,
     borderBottomWidth: 1,
-    borderBottomColor: "rgba(255,255,255,0.06)",
+    borderBottomColor: COLORS.border,
   },
   reportBadge: {
     width: 28,
@@ -1964,9 +1881,9 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: COLORS.lightGray,
+    borderColor: COLORS.border,
     paddingVertical: 10,
-    backgroundColor: COLORS.inputBg,
+    backgroundColor: "#FFFFFF",
   },
   photoAddText: { color: COLORS.textHigh, fontSize: 14, fontWeight: "600" },
   photoThumbWrapper: { marginRight: 10, position: "relative" },

@@ -26,6 +26,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
 import { db } from "../../../../firebaseConfig";
+import { isCrewedBooking } from "../../../../lib/bookingVisibility";
 import { useAuth } from "../../../../providers/AuthProvider";
 import { useTheme } from "../../../../providers/ThemeProvider";
 
@@ -138,6 +139,7 @@ export default function TimesheetQuery() {
 
         // 6) Match jobs
         allJobs.forEach((job) => {
+          if (!isCrewedBooking(job)) return;
           const bookingDates = Array.isArray(job.bookingDates)
             ? job.bookingDates
             : [];

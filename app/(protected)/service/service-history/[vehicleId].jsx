@@ -12,7 +12,12 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
-import { getServiceCollectionRows } from "../../../../lib/serviceCache";
+import {
+  getVehicleLastService,
+  getVehicleMileage,
+  getVehicleNextService,
+} from "../../../../lib/fleetSchema";
+import { useServiceCollectionReader } from "../../../../hooks/useServiceData";
 import { useTheme } from "../../../../providers/ThemeProvider";
 
 const COLORS = {
@@ -48,10 +53,28 @@ function formatDateShort(value) {
   });
 }
 
+function getServiceDateValue(item) {
+  return (
+    item?.completedDate ||
+    item?.date ||
+    item?.recordedAt ||
+    item?.serviceDateOnly ||
+    item?.serviceDate ||
+    item?.completedAt ||
+    item?.createdAt ||
+    null
+  );
+}
+
+function buildMetaLine(parts) {
+  return parts.filter(Boolean).join(" · ");
+}
+
 export default function ServiceHistoryListScreen() {
   const { vehicleId, name, registration } = useLocalSearchParams();
   const router = useRouter();
   const { colors } = useTheme();
+  const readServiceCollection = useServiceCollectionReader();
 
   const [loading, setLoading] = useState(true);
   const [vehicle, setVehicle] = useState(null);
@@ -64,8 +87,8 @@ export default function ServiceHistoryListScreen() {
       setLoading(true);
       try {
         const [vehicles, serviceRecords] = await Promise.all([
-          getServiceCollectionRows("vehicles", { orderByField: "name" }),
-          getServiceCollectionRows("serviceRecords"),
+          readServiceCollection("vehicles", { orderByField: "name" }),
+          readServiceCollection("serviceRecords"),
         ]);
         setVehicle(
           vehicles.find((item) => String(item.id) === String(vehicleId)) || null
@@ -84,21 +107,14 @@ export default function ServiceHistoryListScreen() {
     };
 
     load();
-  }, [vehicleId]);
+  }, [readServiceCollection, vehicleId]);
 
   const fromForms = useMemo(() => {
     if (!serviceForms || serviceForms.length === 0) return [];
 
     return serviceForms
       .map((f) => {
-        const date =
-          f.serviceDateOnly ||
-          f.completedDate ||
-          f.serviceDate ||
-          f.completedAt ||
-          f.createdAt ||
-          f.date ||
-          null;
+        const date = getServiceDateValue(f);
         const odo = f.odometer ?? f.mileage ?? null;
         const summary =
           f.workSummary || f.extraNotes || f.summary || f.notes || "";
@@ -134,7 +150,7 @@ export default function ServiceHistoryListScreen() {
         }
         return {
           id: item.id || item.serviceRecordId || `embedded-${idx}`,
-          date: item.completedDate || item.date || item.recordedAt || null,
+          date: getServiceDateValue(item),
           odometer: item.odometer ?? null,
           summary: item.notes || item.summary || "",
           type: item.type || "Service",
@@ -163,6 +179,9 @@ export default function ServiceHistoryListScreen() {
     typeof latestRecord?.odometer === "number"
       ? `${latestRecord.odometer.toLocaleString("en-GB")} mi`
       : latestRecord?.odometer || null;
+  const mileageValue = getVehicleMileage(vehicle);
+  const vehicleLastService = getVehicleLastService(vehicle);
+  const vehicleNextService = getVehicleNextService(vehicle);
 
   const handleOpenRecord = (id) => {
     router.push(`/service/service-record/${id}`);
@@ -279,7 +298,7 @@ export default function ServiceHistoryListScreen() {
                   </Text>
                 )}
               </View>
-              {typeof vehicle.mileage === "number" && (
+              {typeof mileageValue === "number" && (
                 <View style={styles.mileageChip}>
                   <Icon
                     name="activity"
@@ -288,7 +307,7 @@ export default function ServiceHistoryListScreen() {
                     style={{ marginRight: 4 }}
                   />
                   <Text style={styles.mileageChipText}>
-                    {vehicle.mileage.toLocaleString("en-GB")} mi
+                    {mileageValue.toLocaleString("en-GB")} mi
                   </Text>
                 </View>
               )}
@@ -296,10 +315,12 @@ export default function ServiceHistoryListScreen() {
 
             <View style={styles.vehicleMetaRow}>
               <View style={styles.metaItem}>
-                <Text style={styles.metaLabel}>Last service</Text>
-                <Text style={styles.metaValue}>
-                  {vehicle.lastService
-                    ? formatDateShort(vehicle.lastService)
+                <Text style={[styles.metaLabel, { color: colors.textMuted || COLORS.textLow }]}>
+                  Last service
+                </Text>
+                <Text style={[styles.metaValue, { color: colors.text || COLORS.textHigh }]}>
+                  {vehicleLastService
+                    ? formatDateShort(vehicleLastService)
                     : lastServiceDate || "—"}
                 </Text>
               </View>
@@ -310,10 +331,12 @@ export default function ServiceHistoryListScreen() {
                 ]}
               />
               <View style={styles.metaItem}>
-                <Text style={styles.metaLabel}>Next service</Text>
-                <Text style={styles.metaValue}>
-                  {vehicle.nextService
-                    ? formatDateShort(vehicle.nextService)
+                <Text style={[styles.metaLabel, { color: colors.textMuted || COLORS.textLow }]}>
+                  Next service
+                </Text>
+                <Text style={[styles.metaValue, { color: colors.text || COLORS.textHigh }]}>
+                  {vehicleNextService
+                    ? formatDateShort(vehicleNextService)
                     : "—"}
                 </Text>
               </View>
@@ -331,16 +354,28 @@ export default function ServiceHistoryListScreen() {
             ]}
           >
             <View style={styles.statsItem}>
-              <Text style={styles.statsLabel}>Total services</Text>
-              <Text style={styles.statsValue}>{totalServices || 0}</Text>
+              <Text style={[styles.statsLabel, { color: colors.textMuted || COLORS.textLow }]}>
+                Total services
+              </Text>
+              <Text style={[styles.statsValue, { color: colors.text || COLORS.textHigh }]}>
+                {totalServices || 0}
+              </Text>
             </View>
             <View style={styles.statsItem}>
-              <Text style={styles.statsLabel}>Last date</Text>
-              <Text style={styles.statsValue}>{lastServiceDate || "—"}</Text>
+              <Text style={[styles.statsLabel, { color: colors.textMuted || COLORS.textLow }]}>
+                Last date
+              </Text>
+              <Text style={[styles.statsValue, { color: colors.text || COLORS.textHigh }]}>
+                {lastServiceDate || "—"}
+              </Text>
             </View>
             <View style={styles.statsItem}>
-              <Text style={styles.statsLabel}>Last mileage</Text>
-              <Text style={styles.statsValue}>{lastServiceOdo || "—"}</Text>
+              <Text style={[styles.statsLabel, { color: colors.textMuted || COLORS.textLow }]}>
+                Last mileage
+              </Text>
+              <Text style={[styles.statsValue, { color: colors.text || COLORS.textHigh }]}>
+                {lastServiceOdo || "—"}
+              </Text>
             </View>
           </View>
 
@@ -360,23 +395,19 @@ export default function ServiceHistoryListScreen() {
               </Text>
             ) : (
               serviceHistory.map((item, index) => {
-                const dateLabel = item.date
-                  ? formatDateShort(item.date)
-                  : "No date";
+                const dateLabel = item.date ? formatDateShort(item.date) : "";
                 const odoLabel =
                   typeof item.odometer === "number"
                     ? `${item.odometer.toLocaleString("en-GB")} mi`
                     : item.odometer || null;
+                const metaLine = buildMetaLine([dateLabel, odoLabel]);
 
                 const isMostRecent = index === 0;
 
                 return (
                   <TouchableOpacity
                     key={item.id}
-                    style={[
-                      styles.row,
-                      isMostRecent && styles.rowMostRecent,
-                    ]}
+                    style={styles.row}
                     activeOpacity={0.85}
                     onPress={() => handleOpenRecord(item.id)}
                   >
@@ -403,25 +434,42 @@ export default function ServiceHistoryListScreen() {
                           )}
                         </View>
 
-                        <Text style={styles.rowMeta}>
-                          {dateLabel}
-                          {odoLabel ? ` · ${odoLabel}` : ""}
-                        </Text>
+                        {!!metaLine && (
+                          <Text
+                            style={[
+                              styles.rowMeta,
+                              { color: colors.textMuted || COLORS.textLow },
+                            ]}
+                          >
+                            {metaLine}
+                          </Text>
+                        )}
                       </View>
                       <Icon
                         name="chevron-right"
                         size={18}
-                        color={COLORS.textLow}
+                        color={colors.textMuted || COLORS.textLow}
                       />
                     </View>
 
                     {!!item.summary && (
-                      <Text style={styles.rowSummary} numberOfLines={2}>
+                      <Text
+                        style={[
+                          styles.rowSummary,
+                          { color: colors.textMuted || COLORS.textMid },
+                        ]}
+                        numberOfLines={2}
+                      >
                         {item.summary}
                       </Text>
                     )}
 
-                    <Text style={styles.tapHint}>
+                    <Text
+                      style={[
+                        styles.tapHint,
+                        { color: colors.textMuted || COLORS.textLow },
+                      ]}
+                    >
                       Tap to view full checklist
                     </Text>
                   </TouchableOpacity>
@@ -587,12 +635,6 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderBottomWidth: 1,
     borderBottomColor: "rgba(255,255,255,0.04)",
-  },
-  rowMostRecent: {
-    backgroundColor: COLORS.accentSoft,
-    borderRadius: 8,
-    marginHorizontal: -8,
-    paddingHorizontal: 8,
   },
   rowHeader: {
     flexDirection: "row",

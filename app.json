@@ -23,7 +23,7 @@
         "backgroundColor": "#ffffff"
       },
       "package": "com.bickers.bickersapp",
-      "versionCode": 1,
+      "versionCode": 2,
       "softwareKeyboardLayoutMode": "resize",
       "blockedPermissions": [
         "android.permission.CAMERA",
@@ -82,8 +82,15 @@
       "@react-native-community/datetimepicker",
       "expo-image",
       "@react-native-firebase/app",
-      "@react-native-firebase/auth",
-      "./plugins/withFirebaseModularHeaders"
+      "./plugins/withFirebaseModularHeaders",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "minSdkVersion": 24
+          }
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true
@@ -95,6 +102,8 @@
       "syncIntervalMs": 120000,
       "syncTimeoutMs": 10000,
       "syncApiBaseUrl": "",
+      "minSupportedAppVersion": "5.0.4",
+      "minAndroidSdk": 24,
       "eas": {
         "projectId": "10adb241-72a5-4439-aa1a-e889302c92b3"
       }

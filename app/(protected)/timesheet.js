@@ -1,7 +1,7 @@
 // app/(protected)/timesheet-overview.js
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useRouter } from "expo-router";
-import { collection, doc, getDoc, getDocs, limit, query, updateDoc, where } from "firebase/firestore";
+import { doc, updateDoc } from "firebase/firestore";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Alert,
@@ -17,7 +17,14 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
+import { AsyncContentState, EmptyState } from "../../components/AsyncState";
 import { db } from "../../firebaseConfig";
+import {
+  useEmployees,
+  useEmployeeTimesheets,
+  useTimesheetQueries,
+} from "../../hooks/useOperationalData";
+import { useResponsiveLayout } from "../../hooks/useResponsiveLayout";
 import { formatDateDDMMYYYY } from "../../lib/dateFormat";
 import { useAuth } from "../../providers/AuthProvider";
 import { useTheme } from "../../providers/ThemeProvider"; // 👈 theme
@@ -100,17 +107,43 @@ function withAlpha(hex, alpha) {
   return `rgba(${r},${g},${b},${safeAlpha})`;
 }
 
+function timesheetWeekKey(timesheet) {
+  return timesheet?.weekStart || timesheet?.weekISO || "";
+}
+
 export default function TimesheetOverview() {
   const router = useRouter();
   const { employee, isAuthed, loading, reloadSession } = useAuth();
   const { colors } = useTheme(); // 🎨
+  const responsive = useResponsiveLayout();
+  const employeesResource = useEmployees();
+  const timesheetsResource = useEmployeeTimesheets();
+  const queriesResource = useTimesheetQueries();
+  const timesheetRows = timesheetsResource.data;
+  const timesheetQueries = queriesResource.data;
+  const refreshTimesheets = timesheetsResource.refresh;
+  const refreshTimesheetQueries = queriesResource.refresh;
+  const employeeRows = employeesResource.data;
+  const refreshEmployees = employeesResource.refresh;
+  const upsertEmployee = employeesResource.upsertRow;
+  const timesheets = useMemo(
+    () => (isAuthed ? timesheetRows : []),
+    [isAuthed, timesheetRows]
+  );
+  const queryWeeksMap = useMemo(() => {
+    const weekMap = {};
+    timesheetQueries.forEach((queryRow) => {
+      const status = String(queryRow.status || "open").toLowerCase();
+      if (!queryRow.weekStart || status === "closed" || status === "resolved") return;
+      weekMap[queryRow.weekStart] = true;
+    });
+    return weekMap;
+  }, [timesheetQueries]);
+  const refreshing =
+    timesheetsResource.isRefreshing ||
+    queriesResource.isRefreshing ||
+    employeesResource.isRefreshing;
 
-  const [timesheets, setTimesheets] = useState([]);
-  const [busy, setBusy] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-
-  // weekStart (YYYY-MM-DD) -> true if there is an open manager query
-  const [queryWeeksMap, setQueryWeeksMap] = useState({});
   const [settingsDocId, setSettingsDocId] = useState("");
   const [autofillType, setAutofillType] = useState("yard");
   const [autofillStartTime, setAutofillStartTime] = useState(DEFAULT_YARD_START);
@@ -129,39 +162,22 @@ export default function TimesheetOverview() {
       setSettingsBusy(false);
       return;
     }
+    if (employeesResource.isInitialLoading && !employeeRows.length) {
+      setSettingsBusy(true);
+      return;
+    }
 
     try {
-      setSettingsBusy(true);
-      let profileId = String(employee?.employeeId || "").trim();
-      let profile = null;
-
-      if (profileId) {
-        const directRef = doc(db, "employees", profileId);
-        const directSnap = await getDoc(directRef);
-        if (directSnap.exists()) {
-          profile = directSnap.data();
-        } else {
-          profileId = "";
-        }
-      }
-
-      if (!profileId) {
-        const byCode = String(employee?.userCode || "").trim();
-        if (byCode) {
-          let snap = await getDocs(query(collection(db, "employees"), where("userCode", "==", byCode), limit(1)));
-          if (snap.empty) {
-            const asNumber = Number(byCode);
-            if (!Number.isNaN(asNumber)) {
-              snap = await getDocs(query(collection(db, "employees"), where("userCode", "==", asNumber), limit(1)));
-            }
-          }
-
-          if (!snap.empty) {
-            profileId = snap.docs[0].id;
-            profile = snap.docs[0].data();
-          }
-        }
-      }
+      setSettingsBusy(false);
+      const employeeId = String(employee?.employeeId || "").trim();
+      const employeeCode = String(employee?.userCode || "").trim();
+      const profile =
+        employeeRows.find((row) => String(row.id || "").trim() === employeeId) ||
+        employeeRows.find(
+          (row) => String(row.userCode || "").trim() === employeeCode
+        ) ||
+        null;
+      const profileId = String(profile?.id || employeeId || "").trim();
 
       const mode = normaliseAutofillType(
         profile?.timesheetDefaults?.defaultType ||
@@ -263,6 +279,8 @@ export default function TimesheetOverview() {
     employee?.workshopStartTime,
     employee?.yardEndTime,
     employee?.yardStartTime,
+    employeeRows,
+    employeesResource.isInitialLoading,
     isAuthed,
     loading,
   ]);
@@ -320,6 +338,25 @@ export default function TimesheetOverview() {
             };
 
       await updateDoc(doc(db, "employees", settingsDocId), payload);
+      const cachedProfile =
+        employeeRows.find((row) => String(row.id || "") === settingsDocId) || {};
+      const startKey = `${mode}Start`;
+      const endKey = `${mode}End`;
+      await upsertEmployee({
+        ...cachedProfile,
+        id: settingsDocId,
+        [`${mode}StartTime`]: start,
+        [`${mode}EndTime`]: end,
+        [startKey]: start,
+        [endKey]: end,
+        timesheetDefaultType: mode,
+        timesheetDefaults: {
+          ...(cachedProfile.timesheetDefaults || {}),
+          defaultType: mode,
+          [startKey]: start,
+          [endKey]: end,
+        },
+      });
 
       const sessionPairs = [
         ["timesheetDefaultType", mode],
@@ -347,70 +384,27 @@ export default function TimesheetOverview() {
     } finally {
       setSettingsSaving(false);
     }
-  }, [autofillEndTime, autofillStartTime, autofillType, reloadSession, settingsDocId]);
-
-  const loadTimesheets = useCallback(async () => {
-    const userCode = employee?.userCode || "";
-    if (loading) return;
-    if (!isAuthed || !userCode) {
-      setTimesheets([]);
-      setBusy(false);
-      setQueryWeeksMap({});
-      return;
-    }
-    try {
-      setBusy(true);
-
-      // 1) Load timesheets for this employee
-      const qTs = query(
-        collection(db, "timesheets"),
-        where("employeeCode", "==", userCode),
-        limit(60)
-      );
-      const snapTs = await getDocs(qTs);
-      const mySheets = snapTs.docs.map((d) => ({ id: d.id, ...d.data() }));
-      setTimesheets(mySheets);
-
-      // 2) Load manager queries for this employee to flag weeks
-      const qQueries = query(
-        collection(db, "timesheetQueries"),
-        where("employeeCode", "==", userCode),
-        limit(30)
-      );
-      const snapQueries = await getDocs(qQueries);
-
-      const weekMap = {};
-      snapQueries.docs.forEach((docu) => {
-        const data = docu.data();
-        const status = String(data.status || "open").toLowerCase();
-        const weekStart = data.weekStart;
-
-        // Only flag "open-ish" queries
-        if (!weekStart) return;
-        if (status === "closed" || status === "resolved") return;
-
-        weekMap[weekStart] = true;
-      });
-
-      setQueryWeeksMap(weekMap);
-    } finally {
-      setBusy(false);
-    }
-  }, [employee?.userCode, isAuthed, loading]);
-
-  useEffect(() => {
-    loadTimesheets();
-  }, [loadTimesheets]);
+  }, [
+    autofillEndTime,
+    autofillStartTime,
+    autofillType,
+    employeeRows,
+    reloadSession,
+    settingsDocId,
+    upsertEmployee,
+  ]);
 
   useEffect(() => {
     loadAutofillDefaults();
   }, [loadAutofillDefaults]);
 
   const onRefresh = useCallback(async () => {
-    setRefreshing(true);
-    await loadTimesheets();
-    setRefreshing(false);
-  }, [loadTimesheets]);
+    await Promise.all([
+      refreshTimesheets(),
+      refreshTimesheetQueries(),
+      refreshEmployees(),
+    ]);
+  }, [refreshEmployees, refreshTimesheetQueries, refreshTimesheets]);
 
   // Past 4 weeks (including current)
   const weekOptions = useMemo(() => {
@@ -429,7 +423,7 @@ export default function TimesheetOverview() {
     () =>
       timesheets
         .slice()
-        .sort((a, b) => new Date(b.weekStart) - new Date(a.weekStart)),
+        .sort((a, b) => new Date(timesheetWeekKey(b)) - new Date(timesheetWeekKey(a))),
     [timesheets]
   );
 
@@ -441,7 +435,7 @@ export default function TimesheetOverview() {
 
   const thisMonthStatuses = useMemo(() => {
     return weekOptions.map((w) => {
-      const existing = timesheets.find((t) => t.weekStart === w.key);
+      const existing = timesheets.find((t) => timesheetWeekKey(t) === w.key);
       if (!existing) return "none";
       if (isTimesheetApproved(existing)) return "approved";
       if (existing.submitted === true) return "submitted";
@@ -507,6 +501,9 @@ export default function TimesheetOverview() {
         status === "approved" && styles.approvedCard,
       ]}
       onPress={() => router.push(`/week/${weekKey}`)}
+      accessibilityRole="button"
+      accessibilityLabel={`${label}, ${status === "approved" ? "approved" : status === "submitted" ? "submitted" : "not filled"}${hasQuery ? ", manager query pending" : ""}`}
+      accessibilityHint="Opens this week’s timesheet"
     >
       <View style={{ flex: 1 }}>
         <Text style={[styles.weekLabel, { color: colors.text }]}>{label}</Text>
@@ -547,6 +544,8 @@ export default function TimesheetOverview() {
           <View style={styles.heroTopRow}>
             <TouchableOpacity
               onPress={() => router.back()}
+              accessibilityRole="button"
+              accessibilityLabel="Go back"
               activeOpacity={0.85}
               style={[
                 styles.backBtn,
@@ -628,6 +627,9 @@ export default function TimesheetOverview() {
             ]}
             onPress={() => setSettingsOpen(true)}
             disabled={settingsBusy}
+            accessibilityRole="button"
+            accessibilityLabel="Edit timesheet autofill settings"
+            accessibilityState={{ disabled: settingsBusy }}
           >
             <Icon name="edit-3" size={13} color={colors.text} />
             <Text style={[styles.defaultsEditText, { color: colors.text }]}>
@@ -657,6 +659,8 @@ export default function TimesheetOverview() {
         transparent
         animationType="fade"
         onRequestClose={() => setSettingsOpen(false)}
+        accessibilityViewIsModal
+        onAccessibilityEscape={() => setSettingsOpen(false)}
       >
         <View style={styles.modalOverlay}>
           <View
@@ -676,6 +680,9 @@ export default function TimesheetOverview() {
                 ]}
                 onPress={() => setSettingsOpen(false)}
                 disabled={settingsSaving}
+                accessibilityRole="button"
+                accessibilityLabel="Close autofill settings"
+                accessibilityState={{ disabled: settingsSaving }}
               >
                 <Icon name="x" size={14} color={colors.text} />
               </TouchableOpacity>
@@ -738,6 +745,9 @@ export default function TimesheetOverview() {
                       }
                     }}
                     disabled={settingsSaving}
+                    accessibilityRole="radio"
+                    accessibilityLabel={`${type === "office" ? "Office" : type === "workshop" ? "Workshop" : "Yard"} autofill type`}
+                    accessibilityState={{ checked: active, disabled: settingsSaving }}
                   >
                     <Text style={[styles.typeButtonText, { color: colors.text }]}>
                       {type === "office" ? "Office" : type === "workshop" ? "Workshop" : "Yard"}
@@ -773,6 +783,9 @@ export default function TimesheetOverview() {
                 ]}
                 onPress={() => setSettingsOpen(false)}
                 disabled={settingsSaving}
+                accessibilityRole="button"
+                accessibilityLabel="Cancel autofill changes"
+                accessibilityState={{ disabled: settingsSaving }}
               >
                 <Text style={[styles.modalButtonText, { color: colors.text }]}>
                   Cancel
@@ -792,6 +805,9 @@ export default function TimesheetOverview() {
                   if (ok) setSettingsOpen(false);
                 }}
                 disabled={settingsSaving}
+                accessibilityRole="button"
+                accessibilityLabel="Save autofill settings"
+                accessibilityState={{ disabled: settingsSaving, busy: settingsSaving }}
               >
                 <Text style={[styles.modalButtonText, { color: colors.text }]}>
                   {settingsSaving ? "Saving..." : "Save"}
@@ -803,7 +819,10 @@ export default function TimesheetOverview() {
       </Modal>
 
       <ScrollView
-        contentContainerStyle={styles.pageContent}
+        contentContainerStyle={[
+          styles.pageContent,
+          { width: "100%", maxWidth: responsive.maxContentWidth, alignSelf: "center" },
+        ]}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -813,6 +832,12 @@ export default function TimesheetOverview() {
         }
         showsVerticalScrollIndicator={false}
       >
+        <AsyncContentState
+          resources={[timesheetsResource, queriesResource, employeesResource]}
+          hasContent={timesheets.length > 0}
+          onRetry={onRefresh}
+          loadingLabel="Loading timesheets…"
+        >
         {/* Legend row */}
         <View style={styles.legendRow}>
           <LegendSwatch
@@ -857,15 +882,8 @@ export default function TimesheetOverview() {
             backgroundColor: colors.surface,
           }}
         >
-          {busy ? (
-            <View style={{ padding: 10 }}>
-              <ShimmerLine />
-              <ShimmerLine width="85%" />
-              <ShimmerLine width="70%" />
-            </View>
-          ) : (
-            weekOptions.map((w, idx) => {
-              const existing = timesheets.find((t) => t.weekStart === w.key);
+          {weekOptions.map((w, idx) => {
+              const existing = timesheets.find((t) => timesheetWeekKey(t) === w.key);
 
               let status = "none"; // default: no timesheet
               if (existing) {
@@ -896,8 +914,7 @@ export default function TimesheetOverview() {
                   {renderWeekCard(w.key, w.label, status, hasQuery)}
                 </View>
               );
-            })
-          )}
+            })}
         </View>
 
         {/* Past submissions list */}
@@ -915,6 +932,9 @@ export default function TimesheetOverview() {
                 borderColor: colors.border,
               },
             ]}
+            accessibilityRole="button"
+            accessibilityLabel="Refresh timesheets"
+            accessibilityState={{ busy: refreshing }}
           >
             <Icon name="refresh-ccw" size={14} color={colors.text} />
             <Text
@@ -928,29 +948,27 @@ export default function TimesheetOverview() {
           </TouchableOpacity>
         </View>
 
-        {busy ? (
-          <View style={{ paddingTop: 4 }}>
-            <ShimmerLine />
-            <ShimmerLine width="90%" />
-            <ShimmerLine width="80%" />
-          </View>
-        ) : submittedSheets.length === 0 ? (
-          <Text style={[styles.emptyText, { color: colors.textMuted }]}>
-            No timesheets submitted yet.
-          </Text>
+        {submittedSheets.length === 0 ? (
+          <EmptyState
+            icon="clock"
+            title="No submitted timesheets"
+            message="Submitted weeks will appear here."
+            compact
+          />
         ) : (
           <View style={styles.pastList}>
             {submittedSheets.map((item, idx) => {
               const approved = isTimesheetApproved(item);
               const status = approved ? "approved" : "submitted";
-              const hasQuery = !!queryWeeksMap[item.weekStart] && !approved;
+              const weekKey = timesheetWeekKey(item);
+              const hasQuery = !!queryWeeksMap[weekKey] && !approved;
               const isLast = idx === submittedSheets.length - 1;
 
               return (
                 <View key={item.id} style={!isLast ? { marginBottom: 8 } : null}>
                   {renderWeekCard(
-                    item.weekStart,
-                    formatWeekRange(new Date(item.weekStart)),
+                    weekKey,
+                    formatWeekRange(new Date(weekKey)),
                     status,
                     hasQuery
                   )}
@@ -959,6 +977,7 @@ export default function TimesheetOverview() {
             })}
           </View>
         )}
+        </AsyncContentState>
       </ScrollView>
     </SafeAreaView>
   );
@@ -985,6 +1004,10 @@ function TimePickerField({ label, value, onSelect, options, disabled }) {
         ]}
         onPress={() => setOpen(true)}
         disabled={disabled}
+        accessibilityRole="button"
+        accessibilityLabel={`${label} time, ${value || "not selected"}`}
+        accessibilityHint="Opens the time choices"
+        accessibilityState={{ disabled }}
       >
         <Text style={{ color: value ? colors.text : colors.textMuted }}>
           {value || "Select"}
@@ -997,6 +1020,8 @@ function TimePickerField({ label, value, onSelect, options, disabled }) {
         transparent
         animationType="fade"
         onRequestClose={() => setOpen(false)}
+        accessibilityViewIsModal
+        onAccessibilityEscape={() => setOpen(false)}
       >
         <View style={styles.pickerModalOverlay}>
           <View
@@ -1018,6 +1043,9 @@ function TimePickerField({ label, value, onSelect, options, disabled }) {
                     onSelect(item);
                     setOpen(false);
                   }}
+                  accessibilityRole="radio"
+                  accessibilityLabel={`${label} time ${item}`}
+                  accessibilityState={{ checked: item === value }}
                 >
                   <Text style={{ color: colors.text }}>{item}</Text>
                 </TouchableOpacity>
@@ -1031,6 +1059,8 @@ function TimePickerField({ label, value, onSelect, options, disabled }) {
                 { backgroundColor: colors.surfaceAlt },
               ]}
               onPress={() => setOpen(false)}
+              accessibilityRole="button"
+              accessibilityLabel={`Close ${label.toLowerCase()} time choices`}
             >
               <Text style={{ color: colors.text, fontWeight: "700" }}>
                 Close
@@ -1080,9 +1110,9 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   backBtn: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",

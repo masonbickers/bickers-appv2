@@ -966,6 +966,7 @@ const styles = StyleSheet.create({
   heroActionsRow: {
     marginTop: 10,
     flexDirection: "row",
+    flexWrap: "wrap",
     gap: 8,
     justifyContent: "center",
   },
@@ -1024,7 +1025,9 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     paddingVertical: 12,
     paddingHorizontal: 12,
+    flexGrow: 1,
     flexBasis: "48%",
+    minWidth: 140,
   },
   statLabel: { color: "#cfcfcf", fontSize: 12 },
   statValue: { fontSize: 18, fontWeight: "800", marginTop: 2 },

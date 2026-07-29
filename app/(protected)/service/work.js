@@ -38,6 +38,13 @@ const FEATURE_FLAGS = {
 const SERVICE_DRAFTS_KEY = "serviceFormDrafts_v1";
 const MINOR_SERVICE_DRAFTS_KEY = "minorServiceFormDrafts_v1";
 
+const FORM_ICON_COLORS = {
+  service: "#2563EB",
+  inspection: "#64748B",
+  defect: COLORS.primaryAction,
+  repair: "#D97706",
+};
+
 function getDraftTimestampFromId(id) {
   if (!id) return 0;
   const n = Number(String(id).split("-").pop());
@@ -60,8 +67,11 @@ function buildDraftList(raw, type, routePrefix, fallbackTitle) {
 
 export default function WorkScreen() {
   const router = useRouter();
-  const { colors } = useTheme();
+  const { colors, colorScheme } = useTheme();
   const [serviceDrafts, setServiceDrafts] = useState([]);
+  const [scrollAreaHeight, setScrollAreaHeight] = useState(0);
+  const [contentHeight, setContentHeight] = useState(0);
+  const scrollEnabled = contentHeight > scrollAreaHeight + 1;
 
   const go = (route) => {
     router.push(route);
@@ -137,7 +147,10 @@ export default function WorkScreen() {
       edges={["left", "right"]}
       style={[
         styles.container,
-        { backgroundColor: colors.background || COLORS.background },
+        {
+          backgroundColor:
+            colorScheme === "light" ? "#FFFFFF" : colors.background || COLORS.background,
+        },
       ]}
     >
       <PageHeaderCard
@@ -147,37 +160,19 @@ export default function WorkScreen() {
         style={styles.headerCard}
       />
 
-      <ScrollView contentContainerStyle={styles.scrollContent}>
-        {/* INTRO CARD */}
-        <View
-          style={[
-            styles.infoCard,
-            {
-              backgroundColor: colors.surfaceAlt || COLORS.card,
-              borderLeftColor: colors.primary || COLORS.primaryAction,
-              borderColor: colors.border || COLORS.border,
-            },
-          ]}
-        >
-          <Text
-            style={[
-              styles.infoTitle,
-              { color: colors.text || COLORS.textHigh },
-            ]}
-          >
-            Service & MOT workflow
-          </Text>
-          <Text
-            style={[
-              styles.infoSubtitle,
-              { color: colors.textMuted || COLORS.textMid },
-            ]}
-          >
-            Use these forms to log workshop jobs, complete MOT pre-checks and
-            record findings against each vehicle.
-          </Text>
-        </View>
-
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        scrollEnabled={scrollEnabled}
+        bounces={scrollEnabled}
+        alwaysBounceVertical={false}
+        showsVerticalScrollIndicator={scrollEnabled}
+        onLayout={(event) => {
+          setScrollAreaHeight(event.nativeEvent.layout.height);
+        }}
+        onContentSizeChange={(_, height) => {
+          setContentHeight(height);
+        }}
+      >
         {/* SECTION: SERVICE FORMS */}
         <View style={styles.sectionDivider}>
           <Text
@@ -192,7 +187,8 @@ export default function WorkScreen() {
 
         <FormCard
           icon="tool"
-          title="Service Job Form"
+          iconTone="service"
+          title="Full Service"
           subtitle="Full service checklist, parts, labour and workshop notes."
           onPress={handleNewServiceJobForm}
           colors={colors}
@@ -200,6 +196,7 @@ export default function WorkScreen() {
 
         <FormCard
           icon="refresh-ccw"
+          iconTone="service"
           title="Interim / Minor Service"
           subtitle="Oil, filters and basic safety checks for shorter intervals."
           onPress={handleNewMinorServiceForm}
@@ -241,6 +238,7 @@ export default function WorkScreen() {
 
         <FormCard
           icon="clipboard"
+          iconTone="inspection"
           title="Equipment Inspection"
           subtitle="Pre-use condition check for stunt equipment, rigs and vehicles."
           onPress={handleNewEquipmentInspection}
@@ -261,6 +259,7 @@ export default function WorkScreen() {
 
         <FormCard
           icon="clipboard"
+          iconTone="inspection"
           title="MOT Pre-Check"
           subtitle="Lights, tyres, brakes, washer, emissions prep and advisories."
           onPress={handleNewMotPrecheckForm}
@@ -270,6 +269,7 @@ export default function WorkScreen() {
         {FEATURE_FLAGS.motResultLog && (
           <FormCard
             icon="file-text"
+            iconTone="inspection"
             title="MOT Result / Advisory Log"
             subtitle="Record pass/fail, advisories and next actions."
             onPress={() => go("/service/mot-result")}
@@ -291,6 +291,7 @@ export default function WorkScreen() {
 
         <FormCard
           icon="alert-triangle"
+          iconTone="defect"
           title="Defect Report"
           subtitle="Driver or crew-reported issues that need investigation."
           onPress={() => go("/service/defect-form")}
@@ -299,6 +300,7 @@ export default function WorkScreen() {
 
         <FormCard
           icon="wrench"
+          iconTone="repair"
           title="General Repairs"
           subtitle="Record ad-hoc repairs, rectification work and parts used."
           onPress={() => go("/service/repair-form")}
@@ -322,6 +324,7 @@ export default function WorkScreen() {
             {FEATURE_FLAGS.tyreBrakeCheck && (
               <FormCard
                 icon="target"
+                iconTone="inspection"
                 title="Tyre & Brake Check"
                 subtitle="Depth, wear pattern, pressures, discs & pads condition."
                 onPress={() => go("/service/tyre-brake-check")}
@@ -332,6 +335,7 @@ export default function WorkScreen() {
             {FEATURE_FLAGS.dailyCheck && (
               <FormCard
                 icon="shield"
+                iconTone="inspection"
                 title="Pre-Shoot / Daily Check"
                 subtitle="Fluids, damage, load security and on-set readiness."
                 onPress={() => go("/service/daily-check")}
@@ -341,7 +345,6 @@ export default function WorkScreen() {
           </>
         )}
 
-        <View style={{ height: 40 }} />
       </ScrollView>
     </SafeAreaView>
   );
@@ -349,7 +352,9 @@ export default function WorkScreen() {
 
 /* ---------- SMALL CARD COMPONENT ---------- */
 
-function FormCard({ icon, title, subtitle, onPress, colors }) {
+function FormCard({ icon, iconTone = "service", title, subtitle, onPress, colors }) {
+  const iconColor = FORM_ICON_COLORS[iconTone] || "#64748B";
+
   return (
     <TouchableOpacity
       style={[
@@ -362,8 +367,7 @@ function FormCard({ icon, title, subtitle, onPress, colors }) {
       onPress={onPress}
       activeOpacity={0.85}
     >
-      <View style={cardStyles.iconWrap}>
-        {/* 🔒 Force icons to white so they’re always visible */}
+      <View style={[cardStyles.iconWrap, { backgroundColor: iconColor }]}>
         <Icon name={icon} size={18} color={COLORS.textHigh} />
       </View>
       <View style={{ flex: 1 }}>
@@ -448,7 +452,7 @@ const styles = StyleSheet.create({
   },
   headerCard: {
     marginHorizontal: t.spacing.md,
-    marginTop: t.spacing.xs,
+    marginTop: 0,
     marginBottom: 0,
   },
   header: {
@@ -473,24 +477,7 @@ const styles = StyleSheet.create({
   scrollContent: {
     padding: t.spacing.md,
     paddingTop: 0,
-  },
-  infoCard: {
-    backgroundColor: COLORS.card,
-    borderRadius: t.radius.sm,
-    padding: t.controls.cardPadding,
-    marginBottom: t.spacing.sm,
-    borderLeftWidth: 4,
-    borderLeftColor: COLORS.primaryAction,
-  },
-  infoTitle: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: COLORS.textHigh,
-    marginBottom: 4,
-  },
-  infoSubtitle: {
-    fontSize: 13,
-    color: COLORS.textMid,
+    paddingBottom: 24,
   },
   sectionDivider: {
     flexDirection: "row",
@@ -499,8 +486,8 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   sectionTitle: {
-    fontSize: 15,
-    fontWeight: "700",
+    fontSize: 17,
+    fontWeight: "800",
     color: COLORS.textHigh,
     paddingRight: 10,
   },
@@ -523,8 +510,9 @@ const cardStyles = StyleSheet.create({
     backgroundColor: COLORS.card,
     borderRadius: 10,
     minHeight: 72,
-    padding: t.controls.cardPadding,
+    padding: 14,
     marginBottom: 10,
+    borderWidth: 1,
   },
   iconWrap: {
     width: 32,
@@ -551,7 +539,7 @@ const cardStyles = StyleSheet.create({
     backgroundColor: COLORS.card,
     borderRadius: 10,
     minHeight: 64,
-    padding: t.controls.cardPadding,
+    padding: 14,
     marginBottom: 8,
     borderWidth: 1,
     borderColor: COLORS.primaryAction,

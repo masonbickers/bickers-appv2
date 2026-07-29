@@ -1,7 +1,7 @@
 // app/(protected)/service/settings.js
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useRouter } from "expo-router";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   Alert,
   ScrollView,
@@ -14,18 +14,17 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
-import { sendPasswordResetEmail, signOut } from "firebase/auth";
-import { auth } from "../../../firebaseConfig";
 import {
-  cancelAllMaintenanceReminders,
-  DEFAULT_MAINTENANCE_REMINDER_TIME,
-  getMaintenanceReminderTime,
-  getMaintenanceRemindersEnabled,
-  setMaintenanceReminderTime,
-  setMaintenanceRemindersEnabled,
-} from "../../../lib/maintenanceReminders";
-
+  EmailAuthProvider,
+  reauthenticateWithCredential,
+  sendPasswordResetEmail,
+  signOut,
+  updatePassword,
+} from "firebase/auth";
+import ChangePasswordModal from "../../../components/ChangePasswordModal";
+import { auth } from "../../../firebaseConfig";
 import { useAuth } from "../../../providers/AuthProvider";
+import { useNotificationPreferences } from "../../../providers/NotificationPreferencesProvider";
 import { useTheme } from "../../../providers/ThemeProvider";
 
 /* --------- SERVICE STYLE COLOURS --------- */
@@ -44,13 +43,25 @@ const COLORS = {
 
 export default function ServiceSettingsPage() {
   const router = useRouter();
-  const { reloadSession } = useAuth();
+  const { reloadSession, user, employee } = useAuth();
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
-  const [maintenanceReminderEnabled, setMaintenanceReminderEnabled] = useState(false);
-  const [maintenanceReminderTime, setMaintenanceReminderTimeState] = useState(
-    DEFAULT_MAINTENANCE_REMINDER_TIME
-  );
-  const [maintenanceReminderSaving, setMaintenanceReminderSaving] = useState(false);
+  const {
+    maintenanceRemindersEnabled: maintenanceReminderEnabled,
+    maintenanceReminderTime,
+    isLoading: maintenanceReminderLoading,
+    isSaving: maintenanceReminderSaving,
+    error: maintenanceReminderError,
+    refresh: refreshMaintenancePreferences,
+    setMaintenanceRemindersEnabled,
+    setMaintenanceReminderTime,
+  } = useNotificationPreferences();
+  const [passwordModalVisible, setPasswordModalVisible] = useState(false);
+  const [passwordSaving, setPasswordSaving] = useState(false);
+  const [passwordForm, setPasswordForm] = useState({
+    currentPassword: "",
+    newPassword: "",
+    confirmPassword: "",
+  });
 
   const { theme, colors, setTheme } = useTheme();
   const maintenanceReminderTimes = ["07:00", "09:00", "12:00", "17:00"];
@@ -67,7 +78,7 @@ export default function ServiceSettingsPage() {
         {
           label: "Change Password",
           icon: "lock",
-          onPress: handleChangePassword,
+          onPress: () => handleChangePassword(),
         },
       ],
     },
@@ -120,93 +131,136 @@ export default function ServiceSettingsPage() {
     setTheme(mode); // "system" | "light" | "dark"
   };
 
-  useEffect(() => {
-    let alive = true;
-    Promise.all([
-      getMaintenanceRemindersEnabled(),
-      getMaintenanceReminderTime(),
-    ])
-      .then(([enabled, reminderTime]) => {
-        if (alive) setMaintenanceReminderEnabled(enabled);
-        if (alive) setMaintenanceReminderTimeState(reminderTime);
-      })
-      .catch((e) => {
-        console.warn("[maintenance-reminders] failed to load setting:", e);
-      });
+  const passwordEmail = () =>
+    String(user?.email || auth.currentUser?.email || employee?.email || "")
+      .trim()
+      .toLowerCase();
 
-    return () => {
-      alive = false;
-    };
-  }, []);
+  const resetPasswordForm = () => {
+    setPasswordForm({
+      currentPassword: "",
+      newPassword: "",
+      confirmPassword: "",
+    });
+  };
+
+  const handlePasswordFieldChange = (field, value) => {
+    setPasswordForm((current) => ({ ...current, [field]: value }));
+  };
 
   const handleMaintenanceReminderToggle = async (next) => {
     if (maintenanceReminderSaving) return;
 
     try {
-      setMaintenanceReminderSaving(true);
-      setMaintenanceReminderEnabled(next);
       await setMaintenanceRemindersEnabled(next);
-      if (!next) {
-        await cancelAllMaintenanceReminders();
-      }
     } catch (e) {
-      setMaintenanceReminderEnabled(!next);
       Alert.alert(
         "Could not update reminders",
         e?.message || "Please try again."
       );
-    } finally {
-      setMaintenanceReminderSaving(false);
     }
   };
 
   const handleMaintenanceReminderTimeChange = async (time) => {
     if (maintenanceReminderSaving || time === maintenanceReminderTime) return;
 
-    const previous = maintenanceReminderTime;
     try {
-      setMaintenanceReminderSaving(true);
-      setMaintenanceReminderTimeState(time);
       await setMaintenanceReminderTime(time);
     } catch (e) {
-      setMaintenanceReminderTimeState(previous);
       Alert.alert(
         "Could not update reminder time",
         e?.message || "Please try again."
       );
-    } finally {
-      setMaintenanceReminderSaving(false);
     }
   };
 
   const handleChangePassword = () => {
-    const email = String(auth.currentUser?.email || "").trim().toLowerCase();
+    const email = passwordEmail();
     if (!email) {
       Alert.alert("No email found", "Please log out and sign in again.");
       return;
     }
 
-    Alert.alert(
-      "Change password?",
-      `We will send a password reset link to ${email}.`,
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Send email",
-          onPress: async () => {
-            try {
-              await sendPasswordResetEmail(auth, email);
-              Alert.alert(
-                "Email sent",
-                "Check your email and follow the link to choose a new password."
-              );
-            } catch (err) {
-              Alert.alert("Could not send email", err?.message || "Please try again.");
-            }
-          },
-        },
-      ]
-    );
+    resetPasswordForm();
+    setPasswordModalVisible(true);
+  };
+
+  const handleClosePasswordModal = () => {
+    if (passwordSaving) return;
+    setPasswordModalVisible(false);
+    resetPasswordForm();
+  };
+
+  const handleForgotCurrentPassword = async () => {
+    const email = passwordEmail();
+    if (!email) {
+      Alert.alert("No email found", "Please log out and sign in again.");
+      return;
+    }
+
+    try {
+      await sendPasswordResetEmail(auth, email);
+      Alert.alert(
+        "Reset email sent",
+        `Check ${email} and follow the link to choose a new password.`
+      );
+    } catch (err) {
+      Alert.alert("Could not send email", err?.message || "Please try again.");
+    }
+  };
+
+  const handleSubmitPasswordChange = async () => {
+    const firebaseUser = user || auth.currentUser;
+    const email = passwordEmail();
+    const currentPassword = String(passwordForm.currentPassword || "");
+    const newPassword = String(passwordForm.newPassword || "");
+    const confirmPassword = String(passwordForm.confirmPassword || "");
+
+    if (!firebaseUser || !email) {
+      Alert.alert("No signed-in user", "Please log out and sign in again.");
+      return;
+    }
+    if (!currentPassword) {
+      Alert.alert("Current password required", "Enter your current password.");
+      return;
+    }
+    if (newPassword.length < 8) {
+      Alert.alert("Weak password", "Use at least 8 characters for the new password.");
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      Alert.alert("Password mismatch", "The new passwords do not match.");
+      return;
+    }
+    if (currentPassword === newPassword) {
+      Alert.alert("Choose a new password", "The new password must be different.");
+      return;
+    }
+
+    try {
+      setPasswordSaving(true);
+      const credential = EmailAuthProvider.credential(email, currentPassword);
+      await reauthenticateWithCredential(firebaseUser, credential);
+      await updatePassword(firebaseUser, newPassword);
+      setPasswordModalVisible(false);
+      resetPasswordForm();
+      Alert.alert("Password changed", "Your password has been updated.");
+    } catch (err) {
+      if (
+        err?.code === "auth/wrong-password" ||
+        err?.code === "auth/invalid-credential"
+      ) {
+        Alert.alert("Wrong current password", "Check your current password and try again.");
+      } else if (err?.code === "auth/weak-password") {
+        Alert.alert("Weak password", "Use a stronger new password.");
+      } else if (err?.code === "auth/requires-recent-login") {
+        Alert.alert("Sign in again", "Please log out, sign back in, then try again.");
+      } else {
+        Alert.alert("Could not change password", err?.message || "Please try again.");
+      }
+    } finally {
+      setPasswordSaving(false);
+    }
   };
 
   // 🔐 LOGOUT – mirror HomeScreen behaviour so root layout sends you to (auth)/login
@@ -272,14 +326,24 @@ export default function ServiceSettingsPage() {
           />
         </TouchableOpacity>
 
-        <Text
-          style={[
-            styles.headerTitle,
-            { color: colors.text || COLORS.textHigh },
-          ]}
-        >
-          Service Settings
-        </Text>
+        <View style={{ flex: 1 }}>
+          <Text
+            style={[
+              styles.headerTitle,
+              { color: colors.text || COLORS.textHigh },
+            ]}
+          >
+            Service Settings
+          </Text>
+          <Text
+            style={[
+              styles.headerSubtitle,
+              { color: colors.textMuted || COLORS.textMid },
+            ]}
+          >
+            Workshop preferences and account controls.
+          </Text>
+        </View>
       </View>
 
       <ScrollView
@@ -347,16 +411,34 @@ export default function ServiceSettingsPage() {
                     thumbColor={notificationsEnabled ? "#fff" : "#888"}
                   />
                 ) : item.type === "maintenance-reminder-toggle" ? (
-                  <Switch
-                    value={maintenanceReminderEnabled}
-                    onValueChange={handleMaintenanceReminderToggle}
-                    disabled={maintenanceReminderSaving}
-                    trackColor={{
-                      false: "#444",
-                      true: colors.accent || COLORS.primaryAction,
-                    }}
-                    thumbColor={maintenanceReminderEnabled ? "#fff" : "#888"}
-                  />
+                  maintenanceReminderError ? (
+                    <TouchableOpacity
+                      onPress={() => refreshMaintenancePreferences().catch(() => {})}
+                      accessibilityRole="button"
+                      accessibilityLabel="Retry loading maintenance reminder settings"
+                      style={{ paddingHorizontal: 12, paddingVertical: 9 }}
+                    >
+                      <Text
+                        style={{
+                          color: colors.accent || COLORS.primaryAction,
+                          fontWeight: "700",
+                        }}
+                      >
+                        Retry
+                      </Text>
+                    </TouchableOpacity>
+                  ) : (
+                    <Switch
+                      value={maintenanceReminderEnabled}
+                      onValueChange={handleMaintenanceReminderToggle}
+                      disabled={maintenanceReminderSaving || maintenanceReminderLoading}
+                      trackColor={{
+                        false: "#444",
+                        true: colors.accent || COLORS.primaryAction,
+                      }}
+                      thumbColor={maintenanceReminderEnabled ? "#fff" : "#888"}
+                    />
+                  )
                 ) : item.type === "maintenance-reminder-time" ? (
                   <View style={styles.timeButtonsRow}>
                     {maintenanceReminderTimes.map((time) => {
@@ -479,6 +561,16 @@ export default function ServiceSettingsPage() {
 
         <View style={{ height: 24 }} />
       </ScrollView>
+      <ChangePasswordModal
+        visible={passwordModalVisible}
+        colors={colors}
+        values={passwordForm}
+        saving={passwordSaving}
+        onChange={handlePasswordFieldChange}
+        onClose={handleClosePasswordModal}
+        onSubmit={handleSubmitPasswordChange}
+        onForgotPassword={handleForgotCurrentPassword}
+      />
     </SafeAreaView>
   );
 }
@@ -497,8 +589,13 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   headerTitle: {
-    fontSize: 20,
+    fontSize: 22,
     fontWeight: "800",
+  },
+  headerSubtitle: {
+    marginTop: 2,
+    fontSize: 13,
+    color: COLORS.textMid,
   },
   scrollContent: {
     paddingHorizontal: 16,

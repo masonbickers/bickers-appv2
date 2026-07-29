@@ -1,8 +1,6 @@
 import { useRouter } from "expo-router";
-import { collection, getDocs, query, where } from "firebase/firestore";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  ActivityIndicator,
   Modal,
   RefreshControl,
   SafeAreaView,
@@ -15,8 +13,9 @@ import {
 } from "react-native";
 import { Calendar } from "react-native-calendars";
 import Icon from "react-native-vector-icons/Feather";
-import { db } from "../../firebaseConfig";
-import { useAuth } from "../../providers/AuthProvider";
+import { AsyncContentState, EmptyState } from "../../components/AsyncState";
+import { useBookings, useVehicles } from "../../hooks/useOperationalData";
+import { useResponsiveLayout } from "../../hooks/useResponsiveLayout";
 import { useTheme } from "../../providers/ThemeProvider";
 
 function withAlpha(hex, alpha) {
@@ -31,24 +30,28 @@ function withAlpha(hex, alpha) {
 
 export default function WorkDiaryPage() {
   const router = useRouter();
-  const { employee } = useAuth();
   const { colors } = useTheme();
+  const responsive = useResponsiveLayout();
+  const bookingsResource = useBookings();
+  const vehiclesResource = useVehicles();
 
   const [selectedDate, setSelectedDate] = useState(
     new Date().toISOString().split("T")[0]
   );
-  const [allBookings, setAllBookings] = useState([]);
   const [jobsForSelectedDate, setJobsForSelectedDate] = useState([]);
-  const [upcomingBookings, setUpcomingBookings] = useState([]);
   const [selectedJob, setSelectedJob] = useState(null);
   const [searchQuery, setSearchQuery] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [fetchError, setFetchError] = useState("");
-  const [reloadToken, setReloadToken] = useState(0);
-
-  // ✅ NEW: vehicle id -> display name map
-  const [vehicleNameById, setVehicleNameById] = useState({});
+  const allBookings = bookingsResource.data;
+  const vehicleNameById = useMemo(() => {
+    const map = {};
+    vehiclesResource.data.forEach((vehicle) => {
+      const name = vehicle.name || vehicle.label || vehicle.title || "Vehicle";
+      const registration =
+        vehicle.reg || vehicle.registration || vehicle.numberPlate || "";
+      map[vehicle.id] = registration ? `${name} (${registration})` : name;
+    });
+    return map;
+  }, [vehiclesResource.data]);
 
   const todayISO = useMemo(() => new Date().toISOString().split("T")[0], []);
 
@@ -58,134 +61,11 @@ export default function WorkDiaryPage() {
     return d.toISOString().split("T")[0];
   }, []);
 
-  useEffect(() => {
-    let alive = true;
-
-    const fetchData = async () => {
-      setFetchError("");
-      setLoading(true);
-      const localGetISO = (val) => {
-        if (!val) return null;
-        if (val?.toDate && typeof val.toDate === "function") {
-          return val.toDate().toISOString().split("T")[0];
-        }
-        if (val instanceof Date) {
-          return val.toISOString().split("T")[0];
-        }
-        const s = String(val).trim();
-        if (!s) return null;
-        if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.split("T")[0];
-        const d = new Date(s);
-        if (Number.isNaN(d.getTime())) return null;
-        return d.toISOString().split("T")[0];
-      };
-
-      const localNextDateOnOrAfter = (b, isoRef) => {
-        if (Array.isArray(b?.bookingDates) && b.bookingDates.length) {
-          const sorted = b.bookingDates.map(localGetISO).filter(Boolean).sort();
-          const match = sorted.find((d) => d >= isoRef);
-          return match || null;
-        }
-
-        const single = localGetISO(b?.date);
-        const start = localGetISO(b?.startDate);
-        const end = localGetISO(b?.endDate);
-
-        if (single) return single >= isoRef ? single : null;
-        if (start && end) {
-          if (end < isoRef) return null;
-          if (isoRef < start) return start;
-          return isoRef;
-        }
-        if (start) return start >= isoRef ? start : null;
-        return null;
-      };
-
-      try {
-        const bookingsQuery = employee?.userCode
-          ? query(
-              collection(db, "bookings"),
-              where("employeeCodes", "array-contains", String(employee.userCode))
-            )
-          : collection(db, "bookings");
-        const [bookingsSnap, vehiclesSnap] = await Promise.all([
-          getDocs(bookingsQuery),
-          getDocs(collection(db, "vehicles")),
-        ]);
-
-        if (!alive) return;
-
-        const rawBookings = bookingsSnap.docs.map((doc) => ({
-          id: doc.id,
-          ...doc.data(),
-        }));
-
-        // Upcoming: bookings that still have a date from tomorrow onwards
-        const upcomingWithNext = rawBookings
-          .map((b) => {
-            const next = localNextDateOnOrAfter(b, tomorrowISO);
-            return { booking: b, nextDate: next };
-          })
-          .filter((x) => !!x.nextDate)
-          .sort((a, b) => (a.nextDate < b.nextDate ? -1 : a.nextDate > b.nextDate ? 1 : 0));
-
-        const upcoming = upcomingWithNext.map(({ booking, nextDate }) => ({
-          ...booking,
-          _nextDate: nextDate,
-        }));
-
-        const map = {};
-        vehiclesSnap.docs.forEach((d) => {
-          const v = d.data() || {};
-          const name = v.name || v.label || v.title || "Vehicle";
-          const reg = v.reg || v.registration || v.numberPlate || "";
-          map[d.id] = reg ? `${name} (${reg})` : name;
-        });
-
-        setAllBookings(rawBookings);
-        setUpcomingBookings(upcoming);
-        setVehicleNameById(map);
-      } catch (error) {
-        if (!alive) return;
-        setFetchError("Could not load work diary data. Pull to refresh and try again.");
-        console.error("Error fetching diary data:", error);
-      } finally {
-        if (!alive) return;
-        setLoading(false);
-        setRefreshing(false);
-      }
-    };
-
-    fetchData();
-    return () => {
-      alive = false;
-    };
-  }, [employee?.userCode, tomorrowISO, reloadToken]);
-
-  useEffect(() => {
-    const day = selectedDate;
-
-    const filtered = allBookings.filter((b) => {
-      // bookingDates array (usually plain "YYYY-MM-DD" strings)
-      if (Array.isArray(b.bookingDates) && b.bookingDates.length) {
-        const dates = b.bookingDates.map(getISO).filter(Boolean);
-        if (dates.includes(day)) return true;
-      }
-
-      // single/legacy
-      const singleDate = getISO(b.date);
-      const start = getISO(b.startDate);
-      const end = getISO(b.endDate);
-
-      if (singleDate === day) return true;
-      if (start && end && day >= start && day <= end) return true;
-      if (start && !end && start === day) return true;
-
-      return false;
-    });
-
-    setJobsForSelectedDate(filtered);
-  }, [selectedDate, allBookings]);
+  const refreshBookings = bookingsResource.refresh;
+  const refreshVehicles = vehiclesResource.refresh;
+  const refreshDiary = useCallback(async () => {
+    await Promise.all([refreshBookings(), refreshVehicles()]);
+  }, [refreshBookings, refreshVehicles]);
 
   /* ---------- helpers ---------- */
 
@@ -231,7 +111,7 @@ export default function WorkDiaryPage() {
   };
 
   // 🔧 web-style date normaliser → "YYYY-MM-DD" or null
-  const getISO = (val) => {
+  const getISO = useCallback((val) => {
     if (!val) return null;
 
     // Firestore Timestamp
@@ -256,7 +136,24 @@ export default function WorkDiaryPage() {
     const d = new Date(s);
     if (Number.isNaN(d.getTime())) return null;
     return d.toISOString().split("T")[0];
-  };
+  }, []);
+
+  useEffect(() => {
+    const day = selectedDate;
+    const filtered = allBookings.filter((booking) => {
+      if (Array.isArray(booking.bookingDates) && booking.bookingDates.length) {
+        const dates = booking.bookingDates.map(getISO).filter(Boolean);
+        if (dates.includes(day)) return true;
+      }
+      const singleDate = getISO(booking.date);
+      const start = getISO(booking.startDate);
+      const end = getISO(booking.endDate);
+      if (singleDate === day) return true;
+      if (start && end && day >= start && day <= end) return true;
+      return Boolean(start && !end && start === day);
+    });
+    setJobsForSelectedDate(filtered);
+  }, [allBookings, getISO, selectedDate]);
 
   // First main date for job (like dashboard "first date")
   const firstDateStr = (b) => {
@@ -273,7 +170,7 @@ export default function WorkDiaryPage() {
   };
 
   // Next date on/after a reference (similar to web’s `nextDateOnOrAfter`)
-  const nextDateOnOrAfter = (b, isoRef) => {
+  const nextDateOnOrAfter = useCallback((b, isoRef) => {
     const ref = isoRef;
 
     // If bookingDates exists, pick first >= ref
@@ -305,7 +202,20 @@ export default function WorkDiaryPage() {
     }
 
     return null;
-  };
+  }, [getISO]);
+
+  const upcomingBookings = useMemo(
+    () =>
+      allBookings
+        .map((booking) => ({
+          booking,
+          nextDate: nextDateOnOrAfter(booking, tomorrowISO),
+        }))
+        .filter(({ nextDate }) => Boolean(nextDate))
+        .sort((a, b) => a.nextDate.localeCompare(b.nextDate))
+        .map(({ booking, nextDate }) => ({ ...booking, _nextDate: nextDate })),
+    [allBookings, nextDateOnOrAfter, tomorrowISO]
+  );
 
   const formatDateNice = (isoDate) => {
     if (!isoDate) return "Not set";
@@ -493,6 +403,9 @@ export default function WorkDiaryPage() {
         ]}
         onPress={() => setSelectedJob(job)}
         activeOpacity={0.9}
+        accessibilityRole="button"
+        accessibilityLabel={`Open job ${job.jobNumber || "N/A"}, ${productionOf(job)}`}
+        accessibilityHint="Shows the full booking details"
       >
         {/* left status bar */}
         <View style={[styles.leftBar, leftTone]} />
@@ -695,15 +608,17 @@ export default function WorkDiaryPage() {
     <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>
       <View style={[styles.container, { backgroundColor: colors.background }]}>
         <ScrollView
-          contentContainerStyle={styles.content}
+          contentContainerStyle={[
+            styles.content,
+            { width: "100%", maxWidth: responsive.maxContentWidth, alignSelf: "center" },
+          ]}
           keyboardShouldPersistTaps="handled"
           refreshControl={
             <RefreshControl
-              refreshing={refreshing}
-              onRefresh={() => {
-                setRefreshing(true);
-                setReloadToken((prev) => prev + 1);
-              }}
+              refreshing={
+                bookingsResource.isRefreshing || vehiclesResource.isRefreshing
+              }
+              onRefresh={refreshDiary}
               colors={[colors.accent]}
               tintColor={colors.accent}
             />
@@ -715,6 +630,8 @@ export default function WorkDiaryPage() {
               <View style={styles.heroTopRow}>
                 <TouchableOpacity
                   onPress={() => router.back()}
+                  accessibilityRole="button"
+                  accessibilityLabel="Go back"
                   activeOpacity={0.85}
                   style={[
                     styles.backBtn,
@@ -736,6 +653,8 @@ export default function WorkDiaryPage() {
 
                 <TouchableOpacity
                   onPress={() => router.push("/work-diary-board")}
+                  accessibilityRole="button"
+                  accessibilityLabel="Open work diary board"
                   activeOpacity={0.85}
                   style={[
                     styles.boardBtn,
@@ -775,12 +694,16 @@ export default function WorkDiaryPage() {
                 ]}
                 autoCorrect={false}
                 autoCapitalize="none"
+                accessibilityLabel="Search work diary"
+                accessibilityHint="Search by job number, production, location, crew, vehicle or status"
               />
 
               {searchActive ? (
                 <TouchableOpacity
                   style={[styles.clearSearchBtn, { backgroundColor: colors.accentSoft, borderColor: colors.border }]}
                   onPress={() => setSearchQuery("")}
+                  accessibilityRole="button"
+                  accessibilityLabel="Clear work diary search"
                 >
                   <Text style={[styles.clearSearchText, { color: colors.accent }]}>Clear</Text>
                 </TouchableOpacity>
@@ -795,6 +718,9 @@ export default function WorkDiaryPage() {
                   selectedDate === todayISO && { backgroundColor: colors.accentSoft, borderColor: colors.accent },
                 ]}
                 onPress={() => setSelectedDate(todayISO)}
+                accessibilityRole="button"
+                accessibilityLabel="Show today in work diary"
+                accessibilityState={{ selected: selectedDate === todayISO }}
               >
                 <Text style={[styles.quickDateText, { color: selectedDate === todayISO ? colors.accent : colors.textMuted }]}>
                   Today
@@ -808,6 +734,9 @@ export default function WorkDiaryPage() {
                   selectedDate === tomorrowISO && { backgroundColor: colors.accentSoft, borderColor: colors.accent },
                 ]}
                 onPress={() => setSelectedDate(tomorrowISO)}
+                accessibilityRole="button"
+                accessibilityLabel="Show tomorrow in work diary"
+                accessibilityState={{ selected: selectedDate === tomorrowISO }}
               >
                 <Text style={[styles.quickDateText, { color: selectedDate === tomorrowISO ? colors.accent : colors.textMuted }]}>
                   Tomorrow
@@ -815,18 +744,6 @@ export default function WorkDiaryPage() {
               </TouchableOpacity>
             </View>
           </View>
-
-          {fetchError ? (
-            <View style={[styles.errorCard, { backgroundColor: colors.surfaceAlt, borderColor: colors.danger }]}>
-              <Text style={[styles.errorText, { color: colors.danger }]}>{fetchError}</Text>
-              <TouchableOpacity
-                style={[styles.retryBtn, { backgroundColor: colors.accent }]}
-                onPress={() => setReloadToken((prev) => prev + 1)}
-              >
-                <Text style={[styles.retryText, { color: colors.background }]}>Retry</Text>
-              </TouchableOpacity>
-            </View>
-          ) : null}
 
           {/* Calendar Card */}
           <View style={[styles.card, { backgroundColor: colors.surfaceAlt, borderColor: colors.border }]}>
@@ -871,23 +788,26 @@ export default function WorkDiaryPage() {
           </View>
 
           {/* Jobs for Selected Day */}
+          <AsyncContentState
+            resources={[bookingsResource, vehiclesResource]}
+            hasContent={bookingsResource.data.length > 0}
+            onRetry={refreshDiary}
+            loadingLabel="Loading work diary…"
+          >
           <View style={styles.section}>
             <SelectedHeader count={visibleJobsForSelectedDate.length} />
 
-            {loading ? (
-              <View style={[styles.loadingCard, { backgroundColor: colors.surfaceAlt, borderColor: colors.border }]}>
-                <ActivityIndicator size="small" color={colors.accent} />
-                <Text style={[styles.loadingText, { color: colors.textMuted }]}>Loading jobs...</Text>
-              </View>
-            ) : visibleJobsForSelectedDate.length === 0 ? (
-              <View style={[styles.emptyCard, { backgroundColor: colors.surfaceAlt, borderColor: colors.border }]}>
-                <Text style={[styles.emptyTitle, { color: colors.text }]}>No jobs assigned</Text>
-                <Text style={[styles.emptySubtitle, { color: colors.textMuted }]}>
-                  {searchActive
+            {visibleJobsForSelectedDate.length === 0 ? (
+              <EmptyState
+                icon="calendar"
+                title="No jobs assigned"
+                message={
+                  searchActive
                     ? `No jobs matched "${searchQuery.trim()}".`
-                    : "Add a booking, change the date, or clear your search."}
-                </Text>
-              </View>
+                    : "Add a booking, change the date, or clear your search."
+                }
+                compact
+              />
             ) : (
               visibleJobsForSelectedDate.map((job) => (
                 <Card key={job.id} job={job} displayDate={selectedDate} />
@@ -905,6 +825,7 @@ export default function WorkDiaryPage() {
           <UpcomingSection title="Tomorrow" items={groupedUpcoming.tomorrow} />
           <UpcomingSection title="This Week" items={groupedUpcoming.thisWeek} />
           <UpcomingSection title="Later" items={groupedUpcoming.later} />
+          </AsyncContentState>
 
           <View style={{ height: 40 }} />
         </ScrollView>
@@ -1015,9 +936,9 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   backBtn: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
@@ -1032,9 +953,9 @@ const styles = StyleSheet.create({
     height: 34,
   },
   boardBtn: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
@@ -1077,6 +998,8 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     paddingHorizontal: 10,
     paddingVertical: 6,
+    minHeight: 44,
+    justifyContent: "center",
   },
   clearSearchText: { fontSize: 12, fontWeight: "800" },
   quickDateRow: {
@@ -1089,6 +1012,8 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     paddingHorizontal: 12,
     paddingVertical: 6,
+    minHeight: 44,
+    justifyContent: "center",
   },
   quickDateText: { fontSize: 12, fontWeight: "800" },
   errorCard: {

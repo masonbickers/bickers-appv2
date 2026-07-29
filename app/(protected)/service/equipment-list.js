@@ -14,7 +14,14 @@ import Icon from "react-native-vector-icons/Feather";
 
 import PageHeaderCard from "../../../components/PageHeaderCard";
 import { designTokens as t } from "../../../lib/design/tokens";
-import { useCachedServiceCollection } from "../../../lib/serviceCache";
+import {
+  getEquipmentCategory,
+  getEquipmentLastInspection,
+  getEquipmentName,
+  getEquipmentNextInspection,
+  getEquipmentStatus,
+} from "../../../lib/fleetSchema";
+import { useServiceCollection } from "../../../hooks/useServiceData";
 import { useTheme } from "../../../providers/ThemeProvider";
 
 const COLORS = {
@@ -121,7 +128,7 @@ export default function EquipmentListScreen() {
   const router = useRouter();
   const { colors } = useTheme();
 
-  const { rows: equipment, loading } = useCachedServiceCollection("equipment", {
+  const { rows: equipment, loading } = useServiceCollection("equipment", {
     label: "equipment list",
     orderByField: "name",
   });
@@ -136,7 +143,7 @@ export default function EquipmentListScreen() {
 
   const processed = useMemo(() => {
     return equipment.map((item) => {
-      const nextInspectionRaw = item.nextInspection || item.inspectionDueDate;
+      const nextInspectionRaw = getEquipmentNextInspection(item);
       const inspectionStatus = classifyStatus(nextInspectionRaw);
       return {
         ...item,
@@ -161,13 +168,13 @@ export default function EquipmentListScreen() {
       const q = normaliseKey(search);
       list = list.filter((item) =>
         [
-          item.name,
+          getEquipmentName(item),
           item.label,
           item.serialNumber,
           item.asset,
           item.notes,
-          item.status,
-          item.category,
+          getEquipmentStatus(item),
+          getEquipmentCategory(item),
           item.location,
         ]
           .map(normaliseKey)
@@ -188,7 +195,7 @@ export default function EquipmentListScreen() {
     });
     Object.keys(acc).forEach((key) => {
       acc[key].sort((a, b) =>
-        String(a.name || a.label || "").localeCompare(String(b.name || b.label || ""), "en", {
+        String(getEquipmentName(a)).localeCompare(String(getEquipmentName(b)), "en", {
           sensitivity: "base",
         })
       );
@@ -368,8 +375,10 @@ export default function EquipmentListScreen() {
 
                     {expanded &&
                       list.map((item) => {
-                        const name = item.name || item.label || "Unnamed equipment";
-                        const category = item.category || "Uncategorised";
+                        const name = getEquipmentName(item) || "Unnamed equipment";
+                        const category = getEquipmentCategory(item) || "Uncategorised";
+                        const status = getEquipmentStatus(item);
+                        const lastInspection = getEquipmentLastInspection(item);
                         const serialOrAsset = [item.serialNumber, item.asset].filter(Boolean).join(" · ");
                         const inspectionStatusWithDate = {
                           ...item.inspectionStatus,
@@ -426,15 +435,15 @@ export default function EquipmentListScreen() {
 
                             <View style={styles.statusRow}>
                               <StatusPill label="Inspection" status={inspectionStatusWithDate} />
-                              {!!item.status && (
+                              {!!status && (
                                 <View style={styles.neutralPill}>
-                                  <Text style={styles.neutralPillText}>{item.status}</Text>
+                                  <Text style={styles.neutralPillText}>{status}</Text>
                                 </View>
                               )}
                             </View>
 
                             <View style={styles.metaRow}>
-                              <MetaItem label="Last" value={formatDateShort(item.lastInspection) || "No date"} colors={colors} />
+                              <MetaItem label="Last" value={formatDateShort(lastInspection) || "No date"} colors={colors} />
                               <MetaItem label="Frequency" value={item.inspectionFrequency ? `${item.inspectionFrequency} wk` : "Not set"} colors={colors} />
                               <MetaItem label="Category" value={category} colors={colors} />
                             </View>

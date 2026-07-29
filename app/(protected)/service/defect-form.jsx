@@ -29,7 +29,15 @@ import {
 } from "firebase/firestore";
 import { getDownloadURL, ref, uploadBytesResumable } from "firebase/storage";
 import { db, storage } from "../../../firebaseConfig";
-import { getServiceCollectionRows } from "../../../lib/serviceCache";
+import { formatShortDate } from "../../../lib/dateDisplay";
+import {
+  getVehicleLastService,
+  getVehicleManufacturer,
+  getVehicleMileage,
+  getVehicleName,
+  getVehicleRegistration,
+} from "../../../lib/fleetSchema";
+import { useServiceCacheActions, useServiceCollectionReader } from "../../../hooks/useServiceData";
 import { runOrQueueFirestoreMutations } from "../../../lib/sync/firestoreQueue";
 import { useTheme } from "../../../providers/ThemeProvider";
 
@@ -115,6 +123,8 @@ export default function DefectFormScreen() {
   const router = useRouter();
   const navigation = useNavigation();
   const { colors } = useTheme();
+  const readServiceCollection = useServiceCollectionReader();
+  const { upsertServiceRow, patchServiceRow } = useServiceCacheActions();
   const params = useLocalSearchParams();
   const allowLeaveRef = useRef(false);
 
@@ -152,18 +162,18 @@ export default function DefectFormScreen() {
     const loadVehicles = async () => {
       try {
         setLoadingVehicles(true);
-        const rows = await getServiceCollectionRows("vehicles", {
+        const rows = await readServiceCollection("vehicles", {
           orderByField: "name",
         });
         const list = rows.map((data) => {
           return {
             id: data.id,
-            name: data.name || data.vehicleName || "Unnamed vehicle",
-            reg: data.registration || data.reg || "",
-            manufacturer: data.manufacturer || "",
+            name: getVehicleName(data) || "Unnamed vehicle",
+            reg: getVehicleRegistration(data) || "",
+            manufacturer: getVehicleManufacturer(data) || "",
             model: data.model || "",
-            mileage: data.mileage,
-            lastService: data.lastService || "",
+            mileage: getVehicleMileage(data),
+            lastService: getVehicleLastService(data) || "",
           };
         });
         setVehicles(list);
@@ -176,7 +186,7 @@ export default function DefectFormScreen() {
     };
 
     loadVehicles();
-  }, []);
+  }, [readServiceCollection]);
 
   const filteredVehicles = useMemo(() => {
     if (!vehicleSearch.trim()) return vehicles;
@@ -455,6 +465,10 @@ export default function DefectFormScreen() {
       }
 
       const { queued } = await runOrQueueFirestoreMutations(mutations);
+      await upsertServiceRow("defectReports", { ...payload, id: defectRef.id });
+      if (effectiveVehicleId && mutations[1]?.mutation?.data) {
+        await patchServiceRow("vehicles", effectiveVehicleId, mutations[1].mutation.data);
+      }
 
       Alert.alert(queued ? "Saved offline" : "Saved", queued
         ? "No internet right now. This defect report will upload automatically when internet returns."
@@ -485,7 +499,7 @@ export default function DefectFormScreen() {
     borderColor: colors.border || COLORS.border,
   };
   const themedInput = {
-    backgroundColor: colors.inputBackground || COLORS.inputBg,
+    backgroundColor: colors.inputBackground || "#FFFFFF",
     borderColor: colors.inputBorder || colors.border || COLORS.border,
     color: colors.text || COLORS.textHigh,
   };
@@ -513,7 +527,7 @@ export default function DefectFormScreen() {
         >
           <Icon
             name="chevron-left"
-            size={20}
+            size={22}
             color={colors.text || COLORS.textHigh}
           />
         </TouchableOpacity>
@@ -609,7 +623,7 @@ export default function DefectFormScreen() {
                     : "—"}
                 </Text>
                 <Text style={[styles.vehicleMeta, themedLabel]}>
-                  Last service: {selectedVehicle.lastService || "—"}
+                  Last service: {formatShortDate(selectedVehicle.lastService) || selectedVehicle.lastService || "—"}
                 </Text>
               </View>
             </>
@@ -647,7 +661,7 @@ export default function DefectFormScreen() {
                 </View>
               ) : (
                 <ScrollView
-                  style={{ maxHeight: 180, marginTop: 8 }}
+                  style={{ maxHeight: 150, marginTop: 8 }}
                   nestedScrollEnabled
                 >
                   {filteredVehicles.map((v) => {
@@ -731,15 +745,18 @@ export default function DefectFormScreen() {
         </View>
 
         {/* DEFECT DETAILS */}
-        <View style={[styles.card, themedCard]}>
+        <View style={styles.sectionHeaderRow}>
           <Text
             style={[
-              styles.sectionTitleAlt,
+              styles.sectionTitle,
               { color: colors.text || COLORS.textHigh },
             ]}
           >
             Defect details
           </Text>
+        </View>
+
+        <View style={[styles.card, themedCard]}>
 
           <Text style={[styles.label, themedLabel]}>Description</Text>
           <TextInput
@@ -783,7 +800,7 @@ export default function DefectFormScreen() {
               value={offRoad}
               onValueChange={setOffRoad}
               thumbColor={offRoad ? COLORS.primaryAction : "#999"}
-              trackColor={{ true: "rgba(255,59,48,0.4)", false: "#555" }}
+              trackColor={{ true: "rgba(255,59,48,0.4)", false: "#D5DEE8" }}
             />
           </View>
 
@@ -808,15 +825,18 @@ export default function DefectFormScreen() {
         </View>
 
         {/* PHOTOS */}
-        <View style={[styles.card, themedCard]}>
+        <View style={styles.sectionHeaderRow}>
           <Text
             style={[
-              styles.sectionTitleAlt,
+              styles.sectionTitle,
               { color: colors.text || COLORS.textHigh },
             ]}
           >
             Photos
           </Text>
+        </View>
+
+        <View style={[styles.card, themedCard]}>
           <Text style={[styles.photosHint, themedLabel]}>
             Add clear photos of the defect, damage or warning lights.
           </Text>
@@ -826,7 +846,7 @@ export default function DefectFormScreen() {
               style={[
                 styles.addPhotoButton,
                 {
-                  backgroundColor: colors.surfaceElevated || COLORS.pillBg,
+                  backgroundColor: colors.inputBackground || "#FFFFFF",
                   borderColor: colors.border || COLORS.border,
                 },
               ]}
@@ -897,7 +917,7 @@ export default function DefectFormScreen() {
           )}
         </TouchableOpacity>
 
-        <View style={{ height: 32 }} />
+        <View style={{ height: 20 }} />
       </ScrollView>
     </SafeAreaView>
   );
@@ -915,7 +935,7 @@ function SeverityPill({ label, active, onPress }) {
       style={[
         styles.severityPill,
         {
-          backgroundColor: colors.surfaceElevated || COLORS.pillBg,
+          backgroundColor: colors.inputBackground || "#FFFFFF",
           borderColor: colors.border || COLORS.border,
         },
         active && {
@@ -955,28 +975,21 @@ const styles = StyleSheet.create({
     borderBottomColor: COLORS.border,
   },
   backButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    alignItems: "center",
-    justifyContent: "center",
-    marginRight: 10,
+    paddingRight: 10,
   },
   title: {
-    fontSize: 18,
+    fontSize: 22,
     fontWeight: "800",
     color: COLORS.textHigh,
   },
   subtitle: {
-    fontSize: 12,
+    fontSize: 13,
     marginTop: 2,
     color: COLORS.textMid,
   },
   content: {
     padding: 16,
-    paddingBottom: 32,
+    paddingBottom: 110,
   },
   card: {
     backgroundColor: COLORS.card,
@@ -1026,7 +1039,7 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   input: {
-    backgroundColor: COLORS.inputBg,
+    backgroundColor: "#FFFFFF",
     borderRadius: 8,
     borderWidth: 1,
     borderColor: COLORS.border,
@@ -1044,7 +1057,7 @@ const styles = StyleSheet.create({
   searchBox: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: COLORS.inputBg,
+    backgroundColor: "#FFFFFF",
     borderRadius: 8,
     borderWidth: 1,
     borderColor: COLORS.border,
@@ -1074,6 +1087,8 @@ const styles = StyleSheet.create({
   },
   vehicleRowActive: {
     backgroundColor: "rgba(255,59,48,0.12)",
+    borderRadius: 8,
+    paddingHorizontal: 8,
   },
   vehicleName: {
     fontSize: 14,
@@ -1107,7 +1122,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 999,
-    backgroundColor: COLORS.pillBg,
+    backgroundColor: "#FFFFFF",
     marginRight: 8,
     borderWidth: 1,
     borderColor: COLORS.border,
@@ -1151,7 +1166,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 8,
     borderRadius: 999,
-    backgroundColor: "#262626",
+    backgroundColor: "#FFFFFF",
     borderWidth: 1,
     borderColor: COLORS.border,
   },

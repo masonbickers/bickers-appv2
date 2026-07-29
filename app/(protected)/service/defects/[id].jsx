@@ -10,9 +10,11 @@ import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Modal,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
@@ -20,8 +22,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
 import { db } from "../../../../firebaseConfig";
-import { designTokens as t } from "../../../../lib/design/tokens";
-import { getServiceCollectionRows } from "../../../../lib/serviceCache";
+import { useServiceCollectionReader } from "../../../../hooks/useServiceData";
 import { useTheme } from "../../../../providers/ThemeProvider";
 
 const COLORS = {
@@ -86,6 +87,14 @@ function formatDate(value) {
   });
 }
 
+function formatStatus(value) {
+  const status = String(value || "open").trim();
+  if (!status) return "Open";
+  return status
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
 function getVehicleLabel(record) {
   return (
     record?.vehicle ||
@@ -119,7 +128,7 @@ function findVehicleForRecord(record, vehicles) {
   });
 }
 
-function buildDefectHistoryItem({ source, route, record, defect }) {
+function buildDefectHistoryItem({ source, route, record, defect, completionNote }) {
   return {
     source,
     sourceDocId: route.docId,
@@ -130,6 +139,7 @@ function buildDefectHistoryItem({ source, route, record, defect }) {
     sourceLabel: defect.sourceLabel,
     reporter: defect.reporter || "",
     jobNumber: defect.jobNumber || "",
+    completionNote,
     reportedAt:
       record?.createdAt ||
       record?.dateISO ||
@@ -209,6 +219,7 @@ export default function DefectDetailScreen() {
   const router = useRouter();
   const { id } = useLocalSearchParams();
   const { colors } = useTheme();
+  const readServiceCollection = useServiceCollectionReader();
   const route = useMemo(() => parseRouteId(Array.isArray(id) ? id[0] : id), [id]);
 
   const [record, setRecord] = useState(null);
@@ -216,6 +227,8 @@ export default function DefectDetailScreen() {
   const [matchedVehicle, setMatchedVehicle] = useState(null);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [completeModalVisible, setCompleteModalVisible] = useState(false);
+  const [completionNote, setCompletionNote] = useState("");
 
   useEffect(() => {
     const loadDefect = async () => {
@@ -238,7 +251,7 @@ export default function DefectDetailScreen() {
 
         const data = { id: snap.id, ...snap.data() };
         setRecord(data);
-        const vehicles = await getServiceCollectionRows("vehicles", {
+        const vehicles = await readServiceCollection("vehicles", {
           orderByField: "name",
         });
         setMatchedVehicle(findVehicleForRecord(data, vehicles) || null);
@@ -274,93 +287,97 @@ export default function DefectDetailScreen() {
     };
 
     loadDefect();
-  }, [route.docId, route.itemIndex, route.source]);
+  }, [readServiceCollection, route.docId, route.itemIndex, route.source]);
+
+  const submitComplete = async () => {
+    if (!record || !defect) return;
+    const trimmedCompletionNote = completionNote.trim();
+    if (!trimmedCompletionNote) {
+      Alert.alert("Completion note required", "Add a short note explaining what was done.");
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const targetVehicleId = getRecordVehicleId(record, matchedVehicle);
+      if (!targetVehicleId && route.source !== "defectReports") {
+        Alert.alert(
+          "Vehicle not linked",
+          "This defect cannot be completed until it is linked to a vehicle."
+        );
+        setSubmitting(false);
+        return;
+      }
+
+      const historyItem = buildDefectHistoryItem({
+        source: route.source,
+        route,
+        record,
+        defect,
+        completionNote: trimmedCompletionNote,
+      });
+
+      const batch = writeBatch(db);
+
+      if (route.source === "vehicleChecks") {
+        const items = Array.isArray(record.items) ? [...record.items] : [];
+        if (!items[route.itemIndex]) {
+          throw new Error("Check item no longer exists.");
+        }
+
+        items[route.itemIndex] = {
+          ...items[route.itemIndex],
+          maintenance: {
+            ...(items[route.itemIndex].maintenance || {}),
+            status: "resolved",
+            completedAt: new Date(),
+            completionNote: trimmedCompletionNote,
+          },
+        };
+
+        batch.update(doc(db, "vehicleChecks", route.docId), {
+          items,
+          updatedAt: serverTimestamp(),
+        });
+      } else if (route.source === "defectReports") {
+        batch.update(doc(db, "defectReports", route.docId), {
+          status: "resolved",
+          completionNote: trimmedCompletionNote,
+          completedAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      } else {
+        batch.update(doc(db, "vehicleIssues", route.docId), {
+          "maintenance.status": "resolved",
+          "maintenance.completionNote": trimmedCompletionNote,
+          "maintenance.completedAt": serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      }
+
+      if (targetVehicleId) {
+        batch.update(doc(db, "vehicles", targetVehicleId), {
+          defectHistory: arrayUnion(historyItem),
+        });
+      }
+      await batch.commit();
+
+      setCompleteModalVisible(false);
+      Alert.alert("Defect completed", "The defect has been resolved.", [
+        { text: "OK", onPress: () => router.back() },
+      ]);
+    } catch (err) {
+      console.error("Failed to complete defect:", err);
+      Alert.alert("Error", "Could not complete this defect.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   const handleComplete = () => {
     if (!record || !defect) return;
-
-    Alert.alert(
-      "Complete defect?",
-      "This will mark the defect as resolved and remove it from open defects.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Complete",
-          onPress: async () => {
-            setSubmitting(true);
-            try {
-              const targetVehicleId = getRecordVehicleId(record, matchedVehicle);
-              if (!targetVehicleId && route.source !== "defectReports") {
-                Alert.alert(
-                  "Vehicle not linked",
-                  "This defect cannot be completed until it is linked to a vehicle."
-                );
-                setSubmitting(false);
-                return;
-              }
-
-              const historyItem = buildDefectHistoryItem({
-                source: route.source,
-                route,
-                record,
-                defect,
-              });
-
-              const batch = writeBatch(db);
-
-              if (route.source === "vehicleChecks") {
-                const items = Array.isArray(record.items) ? [...record.items] : [];
-                if (!items[route.itemIndex]) {
-                  throw new Error("Check item no longer exists.");
-                }
-
-                items[route.itemIndex] = {
-                  ...items[route.itemIndex],
-                  maintenance: {
-                    ...(items[route.itemIndex].maintenance || {}),
-                    status: "resolved",
-                    completedAt: new Date(),
-                  },
-                };
-
-                batch.update(doc(db, "vehicleChecks", route.docId), {
-                  items,
-                  updatedAt: serverTimestamp(),
-                });
-              } else if (route.source === "defectReports") {
-                batch.update(doc(db, "defectReports", route.docId), {
-                  status: "resolved",
-                  completedAt: serverTimestamp(),
-                  updatedAt: serverTimestamp(),
-                });
-              } else {
-                batch.update(doc(db, "vehicleIssues", route.docId), {
-                  "maintenance.status": "resolved",
-                  "maintenance.completedAt": serverTimestamp(),
-                  updatedAt: serverTimestamp(),
-                });
-              }
-
-              if (targetVehicleId) {
-                batch.update(doc(db, "vehicles", targetVehicleId), {
-                  defectHistory: arrayUnion(historyItem),
-                });
-              }
-              await batch.commit();
-
-              Alert.alert("Defect completed", "The defect has been resolved.", [
-                { text: "OK", onPress: () => router.back() },
-              ]);
-            } catch (err) {
-              console.error("Failed to complete defect:", err);
-              Alert.alert("Error", "Could not complete this defect.");
-            } finally {
-              setSubmitting(false);
-            }
-          },
-        },
-      ]
-    );
+    setCompletionNote("");
+    setCompleteModalVisible(true);
   };
 
   const categoryColor =
@@ -381,7 +398,11 @@ export default function DefectDetailScreen() {
           { borderBottomColor: colors.border || COLORS.border },
         ]}
       >
-        <TouchableOpacity onPress={router.back} style={styles.backButton}>
+        <TouchableOpacity
+          onPress={router.back}
+          style={styles.backButton}
+          activeOpacity={0.8}
+        >
           <Icon
             name="chevron-left"
             size={22}
@@ -456,28 +477,17 @@ export default function DefectDetailScreen() {
             </View>
 
             {!!defect.description && (
-              <View
-                style={[
-                  styles.descriptionBox,
-                  { backgroundColor: colors.inputBackground || COLORS.inputBg },
-                ]}
-              >
-                <Text
-                  style={[
-                    styles.description,
-                    { color: colors.text || COLORS.textHigh },
-                  ]}
-                >
-                  {defect.description}
-                </Text>
-              </View>
+              <NoteField label="Defect" value={defect.description} />
             )}
 
+            <View style={[styles.divider, { backgroundColor: colors.border || COLORS.border }]} />
+
             <Field label="Source" value={defect.sourceLabel} />
-            <Field label="Review status" value={defect.status || "approved"} />
-            <Field label="Maintenance status" value={defect.maintenanceStatus || "open"} />
+            <Field label="Status" value={formatStatus(defect.maintenanceStatus)} />
             <Field label="Reporter" value={defect.reporter || "-"} />
-            <Field label="Job number" value={defect.jobNumber || "-"} />
+            {!!defect.jobNumber && (
+              <Field label="Job number" value={defect.jobNumber} />
+            )}
             <Field label="Reported" value={defect.dateText || "-"} />
           </View>
 
@@ -506,6 +516,81 @@ export default function DefectDetailScreen() {
               </>
             )}
           </TouchableOpacity>
+
+          <Modal
+            visible={completeModalVisible}
+            transparent
+            animationType="fade"
+            onRequestClose={() => {
+              if (!submitting) setCompleteModalVisible(false);
+            }}
+          >
+            <View style={styles.modalOverlay}>
+              <View
+                style={[
+                  styles.modalCard,
+                  {
+                    backgroundColor: colors.surfaceAlt || COLORS.card,
+                    borderColor: colors.border || COLORS.border,
+                  },
+                ]}
+              >
+                <Text style={[styles.modalTitle, { color: colors.text || COLORS.textHigh }]}>
+                  Complete defect
+                </Text>
+                <Text
+                  style={[
+                    styles.modalSubtitle,
+                    { color: colors.textMuted || COLORS.textMid },
+                  ]}
+                >
+                  Add a short note on what was done to fix it.
+                </Text>
+                <TextInput
+                  value={completionNote}
+                  onChangeText={setCompletionNote}
+                  placeholder="Example: Greased rear suspension joints and road tested."
+                  placeholderTextColor={colors.textMuted || COLORS.textLow}
+                  multiline
+                  textAlignVertical="top"
+                  style={[
+                    styles.completionInput,
+                    {
+                      backgroundColor: colors.inputBackground || COLORS.inputBg,
+                      borderColor: colors.border || COLORS.border,
+                      color: colors.text || COLORS.textHigh,
+                    },
+                  ]}
+                />
+                <View style={styles.modalActions}>
+                  <TouchableOpacity
+                    style={[
+                      styles.modalButton,
+                      styles.modalCancelButton,
+                      { borderColor: colors.border || COLORS.border },
+                    ]}
+                    onPress={() => setCompleteModalVisible(false)}
+                    disabled={submitting}
+                  >
+                    <Text style={[styles.modalCancelText, { color: colors.text || COLORS.textHigh }]}>
+                      Cancel
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.modalButton, styles.modalCompleteButton]}
+                    onPress={submitComplete}
+                    disabled={submitting}
+                  >
+                    {submitting ? (
+                      <ActivityIndicator size="small" color={COLORS.textHigh} />
+                    ) : (
+                      <Text style={styles.modalCompleteText}>Complete</Text>
+                    )}
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+          </Modal>
         </ScrollView>
       )}
     </SafeAreaView>
@@ -516,27 +601,27 @@ function Field({ label, value }) {
   const { colors } = useTheme();
 
   return (
-    <View
-      style={[
-        styles.fieldRow,
-        { borderTopColor: colors.border || COLORS.border },
-      ]}
-    >
-      <Text
-        style={[
-          styles.fieldLabel,
-          { color: colors.textMuted || COLORS.textLow },
-        ]}
-      >
+    <View style={styles.fieldRow}>
+      <Text style={[styles.fieldLabel, { color: colors.textMuted || COLORS.textLow }]}>
         {label}
       </Text>
-      <Text
-        style={[
-          styles.fieldValue,
-          { color: colors.text || COLORS.textHigh },
-        ]}
-      >
+      <Text style={[styles.fieldValue, { color: colors.text || COLORS.textMid }]}>
         {value}
+      </Text>
+    </View>
+  );
+}
+
+function NoteField({ label, value }) {
+  const { colors } = useTheme();
+
+  return (
+    <View style={styles.noteField}>
+      <Text style={[styles.noteLabel, { color: colors.textMuted || COLORS.textLow }]}>
+        {label}
+      </Text>
+      <Text style={[styles.noteValue, { color: colors.text || COLORS.textMid }]}>
+        {value || "-"}
       </Text>
     </View>
   );
@@ -559,13 +644,13 @@ const styles = StyleSheet.create({
     paddingRight: 10,
   },
   pageTitle: {
-    fontSize: 20,
+    fontSize: 22,
     fontWeight: "800",
     color: COLORS.textHigh,
   },
   pageSubtitle: {
     marginTop: 2,
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.textMid,
   },
   center: {
@@ -575,29 +660,29 @@ const styles = StyleSheet.create({
     paddingHorizontal: 30,
   },
   scrollContent: {
-    padding: t.spacing.md,
-    paddingTop: 8,
+    padding: 16,
+    paddingBottom: 28,
   },
   card: {
     borderWidth: 1,
     borderRadius: 10,
     borderColor: COLORS.border,
     backgroundColor: COLORS.card,
-    padding: t.controls.cardPadding,
+    padding: 14,
   },
   titleRow: {
     flexDirection: "row",
     alignItems: "flex-start",
-    marginBottom: 14,
+    marginBottom: 8,
   },
   title: {
-    fontSize: 18,
-    fontWeight: "800",
+    fontSize: 16,
+    fontWeight: "700",
     color: COLORS.textHigh,
   },
   vehicleText: {
-    marginTop: 4,
-    fontSize: 13,
+    marginTop: 2,
+    fontSize: 12,
     color: COLORS.textMid,
   },
   badge: {
@@ -611,31 +696,41 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "700",
   },
-  descriptionBox: {
-    marginBottom: 12,
-    borderRadius: 8,
-    backgroundColor: COLORS.inputBg,
-    padding: 12,
-  },
-  description: {
-    fontSize: 14,
-    lineHeight: 20,
-    color: COLORS.textHigh,
+  divider: {
+    height: 1,
+    backgroundColor: COLORS.border,
+    opacity: 0.6,
+    marginVertical: 8,
   },
   fieldRow: {
-    paddingVertical: 9,
-    borderTopWidth: 1,
-    borderTopColor: COLORS.border,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    paddingVertical: 4,
   },
   fieldLabel: {
     fontSize: 12,
     color: COLORS.textLow,
-    marginBottom: 2,
   },
   fieldValue: {
-    fontSize: 14,
-    color: COLORS.textHigh,
-    fontWeight: "600",
+    fontSize: 12,
+    color: COLORS.textMid,
+    textAlign: "right",
+    flex: 1,
+    marginLeft: 10,
+  },
+  noteField: {
+    paddingTop: 8,
+  },
+  noteLabel: {
+    fontSize: 12,
+    color: COLORS.textLow,
+    marginBottom: 3,
+  },
+  noteValue: {
+    fontSize: 13,
+    color: COLORS.textMid,
+    lineHeight: 18,
+    textAlign: "left",
   },
   completeButton: {
     marginTop: 12,
@@ -650,6 +745,68 @@ const styles = StyleSheet.create({
     color: COLORS.textHigh,
     fontSize: 15,
     fontWeight: "800",
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.72)",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 20,
+  },
+  modalCard: {
+    width: "100%",
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 16,
+    backgroundColor: COLORS.card,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: "800",
+    color: COLORS.textHigh,
+  },
+  modalSubtitle: {
+    marginTop: 4,
+    fontSize: 13,
+    color: COLORS.textMid,
+  },
+  completionInput: {
+    marginTop: 14,
+    minHeight: 110,
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: 12,
+    fontSize: 14,
+    lineHeight: 20,
+    color: COLORS.textHigh,
+  },
+  modalActions: {
+    marginTop: 14,
+    flexDirection: "row",
+    gap: 10,
+  },
+  modalButton: {
+    flex: 1,
+    minHeight: 44,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  modalCancelButton: {
+    borderWidth: 1,
+  },
+  modalCompleteButton: {
+    backgroundColor: COLORS.primaryAction,
+  },
+  modalCancelText: {
+    fontSize: 14,
+    fontWeight: "800",
+    color: COLORS.textHigh,
+  },
+  modalCompleteText: {
+    fontSize: 14,
+    fontWeight: "800",
+    color: COLORS.textHigh,
   },
   emptyTitle: {
     marginTop: 10,

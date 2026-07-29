@@ -10,6 +10,9 @@ type Props = {
   title: string;
   subtitle?: string;
   topSlot?: ReactNode;
+  action?: ReactNode;
+  metadata?: ReactNode;
+  compact?: boolean;
   children?: ReactNode;
   style?: StyleProp<ViewStyle>;
   contentStyle?: StyleProp<ViewStyle>;
@@ -23,6 +26,9 @@ export default function PageHeaderCard({
   title,
   subtitle,
   topSlot,
+  action,
+  metadata,
+  compact = false,
   children,
   style,
   contentStyle,
@@ -50,13 +56,28 @@ export default function PageHeaderCard({
           </Text>
         ) : null}
 
-        <Text style={[styles.title, { color: colors.text }, titleStyle]}>{title}</Text>
+        <View style={styles.titleRow}>
+          <Text
+            accessibilityRole="header"
+            style={[
+              styles.title,
+              compact && styles.compactTitle,
+              { color: colors.text },
+              titleStyle,
+            ]}
+          >
+            {title}
+          </Text>
+          {action ? <View style={styles.action}>{action}</View> : null}
+        </View>
 
         {subtitle ? (
           <Text style={[styles.subtitle, { color: colors.textMuted }, subtitleStyle]}>
             {subtitle}
           </Text>
         ) : null}
+
+        {metadata ? <View style={styles.metadata}>{metadata}</View> : null}
 
         {children}
       </View>
@@ -86,6 +107,28 @@ const styles = StyleSheet.create({
     ...t.typography.pageTitle,
     marginTop: 3,
     letterSpacing: 0.2,
+  },
+  titleRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    flexWrap: "wrap",
+    gap: t.spacing.sm,
+  },
+  compactTitle: {
+    fontSize: 21,
+    lineHeight: 27,
+  },
+  action: {
+    minHeight: t.controls.buttonHeightLg,
+    justifyContent: "center",
+  },
+  metadata: {
+    marginTop: t.spacing.sm,
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: t.spacing.xs,
   },
   subtitle: {
     marginTop: 3,

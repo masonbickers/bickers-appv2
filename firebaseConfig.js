@@ -4,13 +4,13 @@ import { getApp, getApps, initializeApp } from "firebase/app";
 import {
   browserLocalPersistence,
   getAuth,
-  getReactNativePersistence,
   initializeAuth,
   setPersistence,
 } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
 import { getStorage } from "firebase/storage";
 import { Platform } from "react-native";
+import { getAsyncStoragePersistence } from "./lib/firebaseAuthPersistence";
 
 /** ---- Your project config ---- */
 const firebaseConfig = {
@@ -41,7 +41,7 @@ if (!auth) {
     // Native: must initialize with AsyncStorage persistence
     try {
       auth = initializeAuth(app, {
-        persistence: getReactNativePersistence(AsyncStorage),
+        persistence: getAsyncStoragePersistence(AsyncStorage),
       });
     } catch {
       // Already initialised (e.g., after fast refresh)

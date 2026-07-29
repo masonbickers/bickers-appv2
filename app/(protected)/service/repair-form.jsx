@@ -23,7 +23,17 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
 import { db } from "../../../firebaseConfig";
-import { getServiceCollectionRows } from "../../../lib/serviceCache";
+import { formatShortDate } from "../../../lib/dateDisplay";
+import {
+  buildVehicleIdentityMirrorUpdate,
+  buildVehicleOdometerMirrorUpdate,
+  getVehicleLastService,
+  getVehicleManufacturer,
+  getVehicleMileage,
+  getVehicleName,
+  getVehicleRegistration,
+} from "../../../lib/fleetSchema";
+import { useServiceCacheActions, useServiceCollectionReader } from "../../../hooks/useServiceData";
 import { runOrQueueFirestoreMutations } from "../../../lib/sync/firestoreQueue";
 import { useTheme } from "../../../providers/ThemeProvider";
 
@@ -40,12 +50,6 @@ const COLORS = {
 
 function todayISO() {
   return new Date().toISOString().slice(0, 10);
-}
-
-function addPresent(target, key, value) {
-  if (value !== undefined && value !== null && value !== "") {
-    target[key] = value;
-  }
 }
 
 function buildRepairHistoryItem({
@@ -75,6 +79,8 @@ export default function RepairFormRoute() {
   const navigation = useNavigation();
   const params = useLocalSearchParams();
   const { colors } = useTheme();
+  const readServiceCollection = useServiceCollectionReader();
+  const { upsertServiceRow, patchServiceRow } = useServiceCacheActions();
   const allowLeaveRef = useRef(false);
 
   const initialVehicleId = params.vehicleId || params.id || null;
@@ -107,18 +113,18 @@ export default function RepairFormRoute() {
     const loadVehicles = async () => {
       try {
         setLoadingVehicles(true);
-        const rows = await getServiceCollectionRows("vehicles", {
+        const rows = await readServiceCollection("vehicles", {
           orderByField: "name",
         });
         const list = rows.map((data) => {
           return {
             id: data.id,
-            name: data.name || data.vehicleName || "Unnamed vehicle",
-            reg: data.registration || data.reg || "",
-            manufacturer: data.manufacturer || "",
+            name: getVehicleName(data) || "Unnamed vehicle",
+            reg: getVehicleRegistration(data) || "",
+            manufacturer: getVehicleManufacturer(data) || "",
             model: data.model || "",
-            mileage: data.mileage,
-            lastService: data.lastService || "",
+            mileage: getVehicleMileage(data),
+            lastService: getVehicleLastService(data) || "",
           };
         });
         setVehicles(list);
@@ -131,7 +137,7 @@ export default function RepairFormRoute() {
     };
 
     loadVehicles();
-  }, []);
+  }, [readServiceCollection]);
 
   const filteredVehicles = useMemo(() => {
     if (!vehicleSearch.trim()) return vehicles;
@@ -316,6 +322,12 @@ export default function RepairFormRoute() {
           completedBy: completedBy.trim(),
         });
         const updatePayload = {
+          ...buildVehicleIdentityMirrorUpdate({
+            ...v,
+            name: v?.name || vehicleName.trim(),
+            registration: v?.reg || registration.trim(),
+            manufacturer: getVehicleManufacturer(v) || "",
+          }),
           lastRepair: {
             date: repairDate,
             summary: repairSummary,
@@ -324,14 +336,8 @@ export default function RepairFormRoute() {
           repairHistory: arrayUnion(repairHistoryItem),
         };
 
-        addPresent(updatePayload, "name", v?.name || vehicleName.trim());
-        addPresent(updatePayload, "vehicleName", v?.name || vehicleName.trim());
-        addPresent(updatePayload, "registration", v?.reg || registration.trim());
-        addPresent(updatePayload, "reg", v?.reg || registration.trim());
-        addPresent(updatePayload, "manufacturer", v?.manufacturer || "");
-        addPresent(updatePayload, "model", v?.model || "");
         if (odoNumber !== null) {
-          updatePayload.mileage = odoNumber;
+          Object.assign(updatePayload, buildVehicleOdometerMirrorUpdate(odoNumber));
         }
         mutations.push({
           run: () => updateDoc(vehicleRef, updatePayload),
@@ -346,6 +352,10 @@ export default function RepairFormRoute() {
       }
 
       const { queued } = await runOrQueueFirestoreMutations(mutations);
+      await upsertServiceRow("serviceRecords", { ...record, id: repairRecordRef.id });
+      if (effectiveVehicleId) {
+        await patchServiceRow("vehicles", effectiveVehicleId, mutations[1]?.mutation?.data || {});
+      }
 
       Alert.alert(
         queued ? "Saved offline" : "Repair saved",
@@ -374,7 +384,7 @@ export default function RepairFormRoute() {
     borderColor: colors.border || COLORS.border,
   };
   const themedInput = {
-    backgroundColor: colors.inputBackground || COLORS.inputBg,
+    backgroundColor: colors.inputBackground || "#FFFFFF",
     borderColor: colors.inputBorder || colors.border || COLORS.border,
     color: colors.text || COLORS.textHigh,
   };
@@ -474,7 +484,7 @@ export default function RepairFormRoute() {
                     : "-"}
                 </Text>
                 <Text style={[styles.vehicleMeta, themedLabel]}>
-                  Last service: {selectedVehicle.lastService || "-"}
+                  Last service: {formatShortDate(selectedVehicle.lastService) || selectedVehicle.lastService || "-"}
                 </Text>
               </View>
             </>
@@ -512,7 +522,7 @@ export default function RepairFormRoute() {
                 </View>
               ) : (
                 <ScrollView
-                  style={{ maxHeight: 180, marginTop: 8 }}
+                  style={{ maxHeight: 150, marginTop: 8 }}
                   nestedScrollEnabled
                 >
                   {filteredVehicles.map((v) => {
@@ -582,15 +592,18 @@ export default function RepairFormRoute() {
           />
         </View>
 
-        <View style={[styles.card, themedCard]}>
+        <View style={styles.sectionHeaderRow}>
           <Text
             style={[
-              styles.sectionTitleAlt,
+              styles.sectionTitle,
               { color: colors.text || COLORS.textHigh },
             ]}
           >
             Repair details
           </Text>
+        </View>
+
+        <View style={[styles.card, themedCard]}>
 
           <Text style={[styles.label, themedLabel]}>Date completed</Text>
           <TextInput
@@ -722,7 +735,7 @@ const styles = StyleSheet.create({
   },
   content: {
     padding: 16,
-    paddingBottom: 34,
+    paddingBottom: 110,
   },
   sectionHeaderRow: {
     flexDirection: "row",
@@ -765,7 +778,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.border,
     borderRadius: 8,
-    backgroundColor: COLORS.inputBg,
+    backgroundColor: "#FFFFFF",
     paddingHorizontal: 12,
     paddingVertical: 10,
     marginBottom: 12,
@@ -783,7 +796,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.border,
     borderRadius: 8,
-    backgroundColor: COLORS.inputBg,
+    backgroundColor: "#FFFFFF",
     paddingHorizontal: 10,
   },
   searchInput: {
@@ -820,6 +833,8 @@ const styles = StyleSheet.create({
   },
   vehicleRowActive: {
     backgroundColor: "rgba(237,28,37,0.08)",
+    borderRadius: 8,
+    paddingHorizontal: 8,
   },
   vehicleName: {
     fontSize: 14,

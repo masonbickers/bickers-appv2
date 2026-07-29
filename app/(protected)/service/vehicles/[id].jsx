@@ -1,6 +1,6 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { doc, getDoc } from "firebase/firestore";
+import { doc, serverTimestamp, updateDoc } from "firebase/firestore";
 import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
@@ -15,6 +15,22 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
 import { db } from "../../../../firebaseConfig";
+import { useServiceCacheActions, useServiceCollection } from "../../../../hooks/useServiceData";
+import {
+  getVehicleInsuranceExpiry,
+  getVehicleLastMot,
+  getVehicleLastService,
+  getVehicleManufacturer,
+  getVehicleMileage,
+  getVehicleName,
+  getVehicleNextMot,
+  getVehicleNextService,
+  getVehicleOperationalStatus,
+  getVehicleRegistration,
+  isVehicleActiveForMaintenance,
+  isVehicleMotApplicable,
+  isVehicleServiceApplicable,
+} from "../../../../lib/fleetSchema";
 import { useTheme } from "../../../../providers/ThemeProvider";
 
 /* ---------- CONSTANTS ---------- */
@@ -79,6 +95,32 @@ function formatDateShort(value) {
   });
 }
 
+function formatFieldValue(value) {
+  if (value === null || value === undefined || value === "") return "—";
+
+  if (typeof value === "object") {
+    const d = typeof value.toDate === "function" ? value.toDate() : null;
+    return d ? formatDateShort(d) : "—";
+  }
+
+  const text = String(value);
+  const looksLikeDate =
+    /^\d{4}-\d{1,2}-\d{1,2}(?:[T\s].*)?$/.test(text) ||
+    /^\d{4}\/\d{1,2}\/\d{1,2}$/.test(text);
+
+  if (looksLikeDate) return formatDateShort(text) || text;
+  return text || "—";
+}
+
+function hasMeaningfulValue(value) {
+  const display = formatFieldValue(value);
+  return display !== "—" && display !== "";
+}
+
+function buildResolvedDefectRouteId(vehicleId, itemIndex = "") {
+  return encodeURIComponent(["vehicles", vehicleId, itemIndex].join("|"));
+}
+
 function isRepairHistoryItem(item) {
   const type = String(item?.type || item?.serviceType || item?.recordType || "")
     .trim()
@@ -96,41 +138,27 @@ export default function VehicleDetailScreen() {
   const { id } = useLocalSearchParams();
   const router = useRouter();
   const { colors } = useTheme();
+  const { patchServiceRow } = useServiceCacheActions();
+  const vehiclesResource = useServiceCollection("vehicles");
 
   const [vehicle, setVehicle] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [savingStatus, setSavingStatus] = useState(false);
 
   useEffect(() => {
     if (!id) return;
-
-    const load = async () => {
-      setLoading(true);
-      try {
-        const ref = doc(db, "vehicles", String(id));
-        const snap = await getDoc(ref);
-        if (snap.exists()) {
-          setVehicle({ id: snap.id, ...snap.data() });
-        } else {
-          setVehicle(null);
-        }
-      } catch (err) {
-        console.error("Failed to load vehicle detail:", err);
-        setVehicle(null);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    load();
-  }, [id]);
+    setVehicle(
+      vehiclesResource.data.find((row) => String(row.id) === String(id)) || null
+    );
+    setLoading(vehiclesResource.isInitialLoading);
+  }, [id, vehiclesResource.data, vehiclesResource.isInitialLoading]);
 
   const motStatus = useMemo(() => {
     if (!vehicle) return null;
-    const raw =
-      vehicle.nextMOT ||
-      vehicle.nextMot ||
-      vehicle.motDueDate ||
-      vehicle.motExpiryDate;
+    if (!isVehicleMotApplicable(vehicle)) {
+      return { label: "N/A", code: "not-applicable", display: "N/A" };
+    }
+    const raw = getVehicleNextMot(vehicle);
     const base = classifyStatus(raw);
     return {
       ...base,
@@ -140,11 +168,10 @@ export default function VehicleDetailScreen() {
 
   const serviceStatus = useMemo(() => {
     if (!vehicle) return null;
-    const raw =
-      vehicle.nextService ||
-      vehicle.nextServiceDate ||
-      vehicle.serviceDueDate ||
-      vehicle.nextSvc;
+    if (!isVehicleServiceApplicable(vehicle)) {
+      return { label: "N/A", code: "not-applicable", display: "N/A" };
+    }
+    const raw = getVehicleNextService(vehicle);
     const base = classifyStatus(raw);
     return {
       ...base,
@@ -154,10 +181,16 @@ export default function VehicleDetailScreen() {
 
   const taxStatus = vehicle?.taxStatus || "Unknown";
   const insuranceStatus = vehicle?.insuranceStatus || "Unknown";
+  const insuranceExpiry = getVehicleInsuranceExpiry(vehicle);
+  const mileageValue = getVehicleMileage(vehicle);
   const mileageDisplay =
-    typeof vehicle?.mileage === "number"
-      ? `${vehicle.mileage.toLocaleString("en-GB")} mi`
-      : vehicle?.mileage || "—";
+    typeof mileageValue === "number"
+      ? `${mileageValue.toLocaleString("en-GB")} mi`
+      : mileageValue || "—";
+  const activeForMaintenance = vehicle
+    ? isVehicleActiveForMaintenance(vehicle)
+    : true;
+  const operationalStatus = getVehicleOperationalStatus(vehicle) || "Active";
 
   const isLorry = useMemo(() => {
     const cat = (vehicle?.category || "").toLowerCase();
@@ -207,7 +240,7 @@ export default function VehicleDetailScreen() {
 
   const defectHistory = useMemo(() => {
     if (!Array.isArray(vehicle?.defectHistory)) return [];
-    return [...vehicle.defectHistory].sort((a, b) => {
+    return vehicle.defectHistory.map((item, index) => ({ ...item, historyIndex: index })).sort((a, b) => {
       const da =
         toDateMaybe(a?.completedAt || a?.resolvedAt || a?.recordedAt)?.getTime() || 0;
       const db =
@@ -216,16 +249,49 @@ export default function VehicleDetailScreen() {
     });
   }, [vehicle]);
 
+  const paperworkRows = useMemo(() => {
+    if (!vehicle) return [];
+
+    return [
+      ["V5 status", vehicle.v5Present || vehicle.v5Status],
+      ["V5 reference", vehicle.v5Reference],
+      ["Certificates", vehicle.certificatesSummary || vehicle.certificateType],
+      ["DVLA status", vehicle.dvlaStatus],
+      ["DVLA reference", vehicle.dvlaRef],
+      ["DVLA contact", vehicle.dvlaContact],
+      ["DVLA notes", vehicle.dvlaNotes || vehicle.dlvaNotes],
+      ["Warranty", vehicle.warranty || vehicle.warrantyProvider],
+      [
+        "Warranty expiry",
+        vehicle.warrantyExpiry ? formatDateShort(vehicle.warrantyExpiry) : "",
+      ],
+    ].filter(([, value]) => hasMeaningfulValue(value));
+  }, [vehicle]);
+
+  const hasPaperworkFiles =
+    Array.isArray(vehicle?.v5Files) && vehicle.v5Files.length > 0 ||
+    Array.isArray(vehicle?.dvlaFiles) && vehicle.dvlaFiles.length > 0;
+  const hasPaperwork = paperworkRows.length > 0 || hasPaperworkFiles;
+  const hasMaintenanceStatusPills =
+    activeForMaintenance &&
+    ((!!motStatus && motStatus.code !== "unknown") ||
+      (!!serviceStatus && serviceStatus.code !== "unknown"));
+  const preChecksText =
+    (typeof vehicle?.preChecksSummary === "string" && vehicle.preChecksSummary) ||
+    (typeof vehicle?.preChecksNotes === "string" && vehicle.preChecksNotes) ||
+    (typeof vehicle?.preChecks === "string" && vehicle.preChecks) ||
+    "";
+  const hasPreChecks =
+    !!preChecksText ||
+    (Array.isArray(vehicle?.preChecksFiles) && vehicle.preChecksFiles.length > 0);
+  const hasVehicleNotes = !!String(vehicle?.notes || "").trim();
+
   /* ---------- ACTION HANDLERS ---------- */
 
   const handleStartFullService = async () => {
     if (!vehicle) return;
 
-    const nextServiceRaw =
-      vehicle.nextService ||
-      vehicle.nextServiceDate ||
-      vehicle.serviceDueDate ||
-      vehicle.nextSvc;
+    const nextServiceRaw = getVehicleNextService(vehicle);
 
     const days = daysUntilDate(nextServiceRaw);
 
@@ -248,8 +314,8 @@ export default function VehicleDetailScreen() {
 
         const newDraft = {
           selectedVehicleId: vehicle.id,
-          vehicleName: vehicle.name || vehicle.vehicleName || "",
-          registration: vehicle.registration || vehicle.reg || "",
+          vehicleName: getVehicleName(vehicle) || "",
+          registration: getVehicleRegistration(vehicle) || "",
           serviceType: "Full service",
           serviceDate: undefined,
           serviceTime: undefined,
@@ -311,8 +377,8 @@ export default function VehicleDetailScreen() {
 
       const newDraft = {
         selectedVehicleId: vehicle.id,
-        vehicleName: vehicle.name || vehicle.vehicleName || "",
-        registration: vehicle.registration || vehicle.reg || "",
+        vehicleName: getVehicleName(vehicle) || "",
+        registration: getVehicleRegistration(vehicle) || "",
         serviceType: "Interim / minor service",
         serviceDate: undefined,
         serviceTime: undefined,
@@ -345,8 +411,8 @@ export default function VehicleDetailScreen() {
       pathname: "/service/service-history/[vehicleId]",
       params: {
         vehicleId: vehicle.id,
-        name: vehicle.name || vehicle.vehicleName || "",
-        registration: vehicle.registration || vehicle.reg || "",
+        name: getVehicleName(vehicle) || "",
+        registration: getVehicleRegistration(vehicle) || "",
       },
     });
   };
@@ -357,10 +423,36 @@ export default function VehicleDetailScreen() {
       pathname: "/service/vehicle-timeline/[id]",
       params: {
         id: vehicle.id,
-        name: vehicle.name || vehicle.vehicleName || "",
-        registration: vehicle.registration || vehicle.reg || "",
+        name: getVehicleName(vehicle) || "",
+        registration: getVehicleRegistration(vehicle) || "",
       },
     });
+  };
+
+  const handleSetMaintenanceStatus = async (nextStatus) => {
+    if (!vehicle?.id || savingStatus) return;
+
+    const nextActive = nextStatus === "Active";
+    const update = {
+      operationalStatus: nextStatus,
+      fleetStatus: nextStatus,
+      vehicleStatus: nextStatus,
+      active: nextActive,
+      inactive: !nextActive,
+      updatedAt: serverTimestamp(),
+    };
+
+    setSavingStatus(true);
+    try {
+      await updateDoc(doc(db, "vehicles", String(vehicle.id)), update);
+      await patchServiceRow("vehicles", vehicle.id, update);
+      setVehicle((prev) => (prev ? { ...prev, ...update } : prev));
+    } catch (err) {
+      console.error("Failed to update vehicle maintenance status:", err);
+      Alert.alert("Could not update status", "Please try again.");
+    } finally {
+      setSavingStatus(false);
+    }
   };
 
   return (
@@ -385,7 +477,7 @@ export default function VehicleDetailScreen() {
         >
           <Icon
             name="chevron-left"
-            size={20}
+            size={22}
             color={colors.text || COLORS.textHigh}
           />
         </TouchableOpacity>
@@ -453,29 +545,29 @@ export default function VehicleDetailScreen() {
                     { color: colors.text || COLORS.textHigh },
                   ]}
                 >
-                  {vehicle.name || vehicle.vehicleName || "Unnamed vehicle"}
+                  {getVehicleName(vehicle) || "Unnamed vehicle"}
                 </Text>
 
-                {!!(vehicle.registration || vehicle.reg) && (
+                {!!getVehicleRegistration(vehicle) && (
                   <Text
                     style={[
                       styles.reg,
                       { color: colors.textMuted || COLORS.textMid },
                     ]}
                   >
-                    {vehicle.registration || vehicle.reg}
+                    {getVehicleRegistration(vehicle)}
                   </Text>
                 )}
 
-                {(vehicle.manufacturer || vehicle.model) && (
+                {(getVehicleManufacturer(vehicle) || vehicle.model) && (
                   <Text
                     style={[
                       styles.sub,
                       { color: colors.textMuted || COLORS.textLow },
                     ]}
                   >
-                    {vehicle.manufacturer}
-                    {vehicle.manufacturer && vehicle.model ? " · " : ""}
+                    {getVehicleManufacturer(vehicle)}
+                    {getVehicleManufacturer(vehicle) && vehicle.model ? " · " : ""}
                     {vehicle.model}
                   </Text>
                 )}
@@ -505,6 +597,104 @@ export default function VehicleDetailScreen() {
               </View>
             </View>
           </View>
+
+          <View
+            style={[
+              styles.statusControlCard,
+              {
+                backgroundColor: colors.surfaceAlt || COLORS.card,
+                borderColor: colors.border || COLORS.border,
+              },
+            ]}
+          >
+            <View style={{ flex: 1 }}>
+              <Text
+                style={[
+                  styles.statusControlTitle,
+                  { color: colors.text || COLORS.textHigh },
+                ]}
+              >
+                Maintenance status
+              </Text>
+              <Text
+                style={[
+                  styles.statusControlSub,
+                  { color: colors.textMuted || COLORS.textMid },
+                ]}
+              >
+                {operationalStatus}: {activeForMaintenance
+                  ? "Active vehicles appear in MOT and service attention."
+                  : "Inactive vehicles are hidden from MOT and service attention."}
+              </Text>
+            </View>
+
+            <View style={styles.statusToggle}>
+              {["Active", "Inactive"].map((option) => {
+                const selected =
+                  option === "Active" ? activeForMaintenance : !activeForMaintenance;
+                return (
+                  <TouchableOpacity
+                    key={option}
+                    style={[
+                      styles.statusToggleButton,
+                      selected && styles.statusToggleButtonActive,
+                    ]}
+                    onPress={() => handleSetMaintenanceStatus(option)}
+                    disabled={savingStatus || selected}
+                    activeOpacity={0.85}
+                  >
+                    <Text
+                      style={[
+                        styles.statusToggleText,
+                        selected && styles.statusToggleTextActive,
+                      ]}
+                    >
+                      {option}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </View>
+
+          <TouchableOpacity
+            style={[
+              styles.timelineButton,
+              {
+                borderColor: colors.border || COLORS.border,
+                backgroundColor: colors.surfaceAlt || COLORS.card,
+              },
+            ]}
+            activeOpacity={0.9}
+            onPress={handleViewTimeline}
+          >
+            <View style={styles.timelineIconWrap}>
+              <Icon name="clock" size={18} color={COLORS.textHigh} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text
+                style={[
+                  styles.timelineButtonTitle,
+                  { color: colors.text || COLORS.textHigh },
+                ]}
+              >
+                View full timeline
+              </Text>
+              <Text
+                style={[
+                  styles.timelineButtonSub,
+                  { color: colors.textMuted || COLORS.textMid },
+                ]}
+              >
+                Services, repairs, defects, MOT checks and prep history
+              </Text>
+            </View>
+            <Icon
+              name="chevron-right"
+              size={18}
+              color={colors.textMuted || COLORS.textMid}
+            />
+          </TouchableOpacity>
 
           {/* QUICK ACTIONS – SERVICE BUTTONS */}
           <SectionHeader label="Quick maintenance actions" colors={colors} />
@@ -568,45 +758,6 @@ export default function VehicleDetailScreen() {
             </View>
           </View>
 
-          <TouchableOpacity
-            style={[
-              styles.timelineButton,
-              {
-                borderColor: colors.border || COLORS.border,
-                backgroundColor: colors.surfaceAlt || COLORS.card,
-              },
-            ]}
-            activeOpacity={0.9}
-            onPress={handleViewTimeline}
-          >
-            <View style={styles.timelineIconWrap}>
-              <Icon name="clock" size={18} color={COLORS.textHigh} />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text
-                style={[
-                  styles.timelineButtonTitle,
-                  { color: colors.text || COLORS.textHigh },
-                ]}
-              >
-                View full timeline
-              </Text>
-              <Text
-                style={[
-                  styles.timelineButtonSub,
-                  { color: colors.textMuted || COLORS.textMid },
-                ]}
-              >
-                Services, repairs, defects, MOT checks and prep history
-              </Text>
-            </View>
-            <Icon
-              name="chevron-right"
-              size={18}
-              color={colors.textMuted || COLORS.textMid}
-            />
-          </TouchableOpacity>
-
           {/* MAINTENANCE SECTION */}
           <SectionHeader label="Maintenance" colors={colors} />
           <View
@@ -618,42 +769,35 @@ export default function VehicleDetailScreen() {
               },
             ]}
           >
-            <View style={styles.statusRow}>
-              <StatusPill label="MOT" status={motStatus} />
-              <StatusPill label="Service" status={serviceStatus} />
-            </View>
+            {hasMaintenanceStatusPills && (
+              <>
+                <View style={styles.statusRow}>
+                  <StatusPill label="MOT" status={motStatus} />
+                  <StatusPill label="Service" status={serviceStatus} />
+                </View>
 
-            <View style={styles.divider} />
+                <View style={styles.divider} />
+              </>
+            )}
 
             <Field
               label="Last MOT"
-              value={vehicle.lastMOT || vehicle.lastMot || "—"}
+              value={getVehicleLastMot(vehicle) || "—"}
               colors={colors}
             />
             <Field
               label="Next MOT"
-              value={
-                vehicle.nextMOT ||
-                vehicle.nextMot ||
-                vehicle.motDueDate ||
-                vehicle.motExpiryDate ||
-                "—"
-              }
+              value={isVehicleMotApplicable(vehicle) ? getVehicleNextMot(vehicle) || "—" : "N/A"}
               colors={colors}
             />
             <Field
               label="Last service"
-              value={vehicle.lastService || "—"}
+              value={getVehicleLastService(vehicle) || "—"}
               colors={colors}
             />
             <Field
               label="Next service"
-              value={
-                vehicle.nextService ||
-                vehicle.nextServiceDate ||
-                vehicle.serviceDueDate ||
-                "—"
-              }
+              value={isVehicleServiceApplicable(vehicle) ? getVehicleNextService(vehicle) || "—" : "N/A"}
               colors={colors}
             />
           </View>
@@ -740,6 +884,7 @@ export default function VehicleDetailScreen() {
                             styles.historySummary,
                             { color: colors.textMuted || COLORS.textMid },
                           ]}
+                          numberOfLines={2}
                         >
                           {summaryText}
                         </Text>
@@ -758,18 +903,19 @@ export default function VehicleDetailScreen() {
           </View>
 
           {/* REPAIR HISTORY */}
-          <SectionHeader label="Repair history" colors={colors} />
-          <View
-            style={[
-              styles.card,
-              {
-                backgroundColor: colors.surfaceAlt || COLORS.card,
-                borderColor: colors.border || COLORS.border,
-              },
-            ]}
-          >
-            {repairHistory.length > 0 ? (
-              repairHistory.slice(0, 5).map((item, index) => {
+          {repairHistory.length > 0 && (
+            <>
+              <SectionHeader label="Repair history" colors={colors} />
+              <View
+                style={[
+                  styles.card,
+                  {
+                    backgroundColor: colors.surfaceAlt || COLORS.card,
+                    borderColor: colors.border || COLORS.border,
+                  },
+                ]}
+              >
+                {repairHistory.slice(0, 5).map((item, index) => {
                 const dateValue =
                   item?.completedDate || item?.date || item?.recordedAt;
                 const dateLabel = dateValue
@@ -817,6 +963,7 @@ export default function VehicleDetailScreen() {
                           styles.historySummary,
                           { color: colors.textMuted || COLORS.textMid },
                         ]}
+                        numberOfLines={2}
                       >
                         {summaryText}
                       </Text>
@@ -827,24 +974,17 @@ export default function VehicleDetailScreen() {
                           styles.historySummary,
                           { color: colors.textMuted || COLORS.textMid },
                         ]}
+                        numberOfLines={2}
                       >
                         {partsText}
                       </Text>
                     )}
                   </View>
                 );
-              })
-            ) : (
-              <Text
-                style={[
-                  styles.notesText,
-                  { color: colors.textMuted || COLORS.textMid },
-                ]}
-              >
-                No general repairs recorded for this vehicle.
-              </Text>
-            )}
-          </View>
+                })}
+              </View>
+            </>
+          )}
 
           {/* DEFECT HISTORY */}
           <SectionHeader label="Defect history" colors={colors} />
@@ -867,13 +1007,26 @@ export default function VehicleDetailScreen() {
                 const category =
                   item?.category === "immediate" ? "Immediate" : "General";
                 const summaryText =
+                  item?.completionNote ||
                   item?.description ||
                   item?.notes ||
                   item?.sourceLabel ||
                   "";
 
                 return (
-                  <View key={`${item?.sourceDocId || index}-${index}`} style={styles.historyItem}>
+                  <TouchableOpacity
+                    key={`${item?.sourceDocId || index}-${index}`}
+                    style={styles.historyItem}
+                    activeOpacity={0.85}
+                    onPress={() => {
+                      router.push(
+                        `/service/resolved-defects/${buildResolvedDefectRouteId(
+                          vehicle.id,
+                          item.historyIndex
+                        )}`
+                      );
+                    }}
+                  >
                     <View style={styles.historyHeaderRow}>
                       <Text
                         style={[
@@ -893,16 +1046,17 @@ export default function VehicleDetailScreen() {
                       </Text>
                     </View>
                     {!!summaryText && (
-                      <Text
-                        style={[
-                          styles.historySummary,
-                          { color: colors.textMuted || COLORS.textMid },
-                        ]}
-                      >
-                        {summaryText}
-                      </Text>
-                    )}
-                  </View>
+                        <Text
+                          style={[
+                            styles.historySummary,
+                            { color: colors.textMuted || COLORS.textMid },
+                          ]}
+                          numberOfLines={2}
+                        >
+                          {summaryText}
+                        </Text>
+                      )}
+                  </TouchableOpacity>
                 );
               })
             ) : (
@@ -918,114 +1072,71 @@ export default function VehicleDetailScreen() {
           </View>
 
           {/* PRE-CHECKS / DAILY INSPECTIONS */}
-          <SectionHeader
-            label="Pre-checks & daily inspections"
-            colors={colors}
-          />
-          <View
-            style={[
-              styles.card,
-              {
-                backgroundColor: colors.surfaceAlt || COLORS.card,
-                borderColor: colors.border || COLORS.border,
-              },
-            ]}
-          >
-            <Text
-              style={[
-                styles.notesText,
-                { color: colors.textMuted || COLORS.textMid },
-              ]}
-            >
-              {(typeof vehicle.preChecksSummary === "string" && vehicle.preChecksSummary) ||
-                (typeof vehicle.preChecksNotes === "string" && vehicle.preChecksNotes) ||
-                (typeof vehicle.preChecks === "string" && vehicle.preChecks) ||
-                "No pre-checks or daily inspection notes recorded."}
-            </Text>
+          {hasPreChecks && (
+            <>
+              <SectionHeader
+                label="Pre-checks & daily inspections"
+                colors={colors}
+              />
+              <View
+                style={[
+                  styles.card,
+                  {
+                    backgroundColor: colors.surfaceAlt || COLORS.card,
+                    borderColor: colors.border || COLORS.border,
+                  },
+                ]}
+              >
+                {!!preChecksText && (
+                  <Text
+                    style={[
+                      styles.notesText,
+                      { color: colors.textMuted || COLORS.textMid },
+                    ]}
+                  >
+                    {preChecksText}
+                  </Text>
+                )}
 
-            <AttachmentList
-              label="Pre-checks attachments"
-              files={vehicle.preChecksFiles}
-              colors={colors}
-            />
-          </View>
+                <AttachmentList
+                  label="Pre-checks attachments"
+                  files={vehicle.preChecksFiles}
+                  colors={colors}
+                />
+              </View>
+            </>
+          )}
 
           {/* PAPERWORK / CERTIFICATES / V5 / DVLA / WARRANTY */}
-          <SectionHeader label="Paperwork & certificates" colors={colors} />
-          <View
-            style={[
-              styles.card,
-              {
-                backgroundColor: colors.surfaceAlt || COLORS.card,
-                borderColor: colors.border || COLORS.border,
-              },
-            ]}
-          >
-            <Field
-              label="V5 status"
-              value={vehicle.v5Present || vehicle.v5Status || "—"}
-              colors={colors}
-            />
-            <Field
-              label="V5 reference"
-              value={vehicle.v5Reference || "—"}
-              colors={colors}
-            />
-            <Field
-              label="Certificates"
-              value={
-                vehicle.certificatesSummary ||
-                vehicle.certificateType ||
-                "—"
-              }
-              colors={colors}
-            />
-            <Field
-              label="DVLA status"
-              value={vehicle.dvlaStatus || "—"}
-              colors={colors}
-            />
-            <Field
-              label="DVLA reference"
-              value={vehicle.dvlaRef || "—"}
-              colors={colors}
-            />
-            <Field
-              label="DVLA contact"
-              value={vehicle.dvlaContact || "—"}
-              colors={colors}
-            />
-            <Field
-              label="DVLA notes"
-              value={vehicle.dvlaNotes || vehicle.dlvaNotes || "—"}
-              colors={colors}
-            />
-            <Field
-              label="Warranty"
-              value={vehicle.warranty || vehicle.warrantyProvider || "—"}
-              colors={colors}
-            />
-            <Field
-              label="Warranty expiry"
-              value={
-                vehicle.warrantyExpiry
-                  ? formatDateShort(vehicle.warrantyExpiry)
-                  : "—"
-              }
-              colors={colors}
-            />
+          {hasPaperwork && (
+            <>
+              <SectionHeader label="Paperwork & certificates" colors={colors} />
+              <View
+                style={[
+                  styles.card,
+                  {
+                    backgroundColor: colors.surfaceAlt || COLORS.card,
+                    borderColor: colors.border || COLORS.border,
+                  },
+                ]}
+              >
+                {paperworkRows.map(([label, value]) => (
+                  <Field key={label} label={label} value={value} colors={colors} />
+                ))}
 
-            <AttachmentList
-              label="V5 & certificate files"
-              files={vehicle.v5Files}
-              colors={colors}
-            />
-            <AttachmentList
-              label="DVLA paperwork files"
-              files={vehicle.dvlaFiles}
-              colors={colors}
-            />
-          </View>
+                <AttachmentList
+                  label="V5 & certificate files"
+                  files={vehicle.v5Files}
+                  colors={colors}
+                />
+                <AttachmentList
+                  label="DVLA paperwork files"
+                  files={vehicle.dvlaFiles}
+                  colors={colors}
+                />
+              </View>
+            </>
+          )}
 
           {/* LORRY-ONLY: INSPECTIONS + TACHO CALIBRATION */}
           {isLorry && (
@@ -1132,6 +1243,11 @@ export default function VehicleDetailScreen() {
               colors={colors}
             />
             <Field
+              label="Insurance expiry"
+              value={insuranceExpiry ? formatDateShort(insuranceExpiry) : "—"}
+              colors={colors}
+            />
+            <Field
               label="MOT frequency (weeks)"
               value={
                 typeof vehicle.motFreq === "number"
@@ -1143,25 +1259,29 @@ export default function VehicleDetailScreen() {
           </View>
 
           {/* NOTES SECTION */}
-          <SectionHeader label="Notes" colors={colors} />
-          <View
-            style={[
-              styles.card,
-              {
-                backgroundColor: colors.surfaceAlt || COLORS.card,
-                borderColor: colors.border || COLORS.border,
-              },
-            ]}
-          >
-            <Text
-              style={[
-                styles.notesText,
-                { color: colors.textMuted || COLORS.textMid },
-              ]}
-            >
-              {vehicle.notes || "No notes recorded for this vehicle."}
-            </Text>
-          </View>
+          {hasVehicleNotes && (
+            <>
+              <SectionHeader label="Notes" colors={colors} />
+              <View
+                style={[
+                  styles.card,
+                  {
+                    backgroundColor: colors.surfaceAlt || COLORS.card,
+                    borderColor: colors.border || COLORS.border,
+                  },
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.notesText,
+                    { color: colors.textMuted || COLORS.textMid },
+                  ]}
+                >
+                  {vehicle.notes}
+                </Text>
+              </View>
+            </>
+          )}
 
           <View style={{ height: 40 }} />
         </ScrollView>
@@ -1188,17 +1308,7 @@ function SectionHeader({ label, colors }) {
 }
 
 function Field({ label, value, colors }) {
-  let display;
-  if (value === null || value === undefined || value === "") {
-    display = "—";
-  } else if (typeof value === "object") {
-    const d = typeof value.toDate === "function" ? value.toDate() : null;
-    display = d
-      ? d.toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit", year: "2-digit" })
-      : "—";
-  } else {
-    display = String(value) || "—";
-  }
+  const display = formatFieldValue(value);
 
   return (
     <View style={styles.fieldRow}>
@@ -1226,6 +1336,8 @@ function StatusPill({ label, status }) {
   if (!status) return null;
 
   const code = status.code;
+  if (code === "unknown") return null;
+
   let bg = "rgba(74,74,74,0.7)";
   let fg = COLORS.textHigh;
 
@@ -1238,9 +1350,6 @@ function StatusPill({ label, status }) {
   } else if (code === "ok") {
     bg = "rgba(52,199,89,0.22)";
     fg = "#34C759";
-  } else if (code === "unknown") {
-    bg = "rgba(142,142,147,0.22)";
-    fg = COLORS.textMid;
   }
 
   return (
@@ -1345,21 +1454,14 @@ const styles = StyleSheet.create({
     borderBottomColor: COLORS.border,
   },
   backButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    alignItems: "center",
-    justifyContent: "center",
-    marginRight: 10,
+    paddingRight: 10,
   },
   title: {
-    fontSize: 18,
+    fontSize: 22,
     fontWeight: "800",
   },
   subtitle: {
-    fontSize: 12,
+    fontSize: 13,
     marginTop: 2,
     color: COLORS.textMid,
   },
@@ -1415,6 +1517,49 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: COLORS.textMid,
     fontWeight: "600",
+  },
+  statusControlCard: {
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 12,
+    borderWidth: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  statusControlTitle: {
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  statusControlSub: {
+    marginTop: 2,
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  statusToggle: {
+    flexDirection: "row",
+    padding: 3,
+    borderRadius: 999,
+    backgroundColor: "rgba(100,116,139,0.14)",
+  },
+  statusToggleButton: {
+    minWidth: 72,
+    minHeight: 34,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 999,
+    paddingHorizontal: 10,
+  },
+  statusToggleButtonActive: {
+    backgroundColor: COLORS.primaryAction,
+  },
+  statusToggleText: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: COLORS.textLow,
+  },
+  statusToggleTextActive: {
+    color: COLORS.textHigh,
   },
   sectionHeaderRow: {
     marginTop: 6,

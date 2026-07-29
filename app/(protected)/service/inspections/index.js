@@ -11,7 +11,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
-import { useCachedServiceCollection } from "../../../../lib/serviceCache";
+import { useServiceCollection } from "../../../../hooks/useServiceData";
 import { useTheme } from "../../../../providers/ThemeProvider";
 
 const COLORS = {
@@ -45,7 +45,7 @@ function formatDate(raw) {
 export default function InspectionsScreen() {
   const router = useRouter();
   const { colors } = useTheme();
-  const { rows: inspections, loading } = useCachedServiceCollection(
+  const { rows: inspections, loading } = useServiceCollection(
     "equipmentInspections",
     {
       label: "equipment inspections",

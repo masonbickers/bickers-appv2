@@ -16,7 +16,13 @@ import Icon from "react-native-vector-icons/Feather";
 import PageHeaderCard from "../../../components/PageHeaderCard";
 
 import { designTokens as t } from "../../../lib/design/tokens";
-import { getServiceCollectionRows } from "../../../lib/serviceCache";
+import {
+  getVehicleManufacturer,
+  getVehicleName,
+  getVehicleNextService,
+  getVehicleRegistration,
+} from "../../../lib/fleetSchema";
+import { useServiceCollectionReader } from "../../../hooks/useServiceData";
 import { useTheme } from "../../../providers/ThemeProvider";
 
 const COLORS = {
@@ -130,6 +136,16 @@ function toJsDate(value) {
   return new Date(value);
 }
 
+function formatDateShort(value) {
+  const d = toJsDate(value);
+  if (!d || Number.isNaN(d.getTime())) return "";
+  return d.toLocaleDateString("en-GB", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "2-digit",
+  });
+}
+
 // turn any booking into an array of per-day dates within a window
 function getBookingDaysWithinWindow(booking, from, to) {
   const days = [];
@@ -208,7 +224,7 @@ function normalizeVehicles(list, vehiclesData) {
     if (
       vRaw &&
       typeof vRaw === "object" &&
-      (vRaw.name || vRaw.registration || vRaw.id)
+      (getVehicleName(vRaw) || getVehicleRegistration(vRaw) || vRaw.id)
     ) {
       return vRaw;
     }
@@ -217,12 +233,12 @@ function normalizeVehicles(list, vehiclesData) {
       vehiclesData.find((x) => x.id === needle) ||
       vehiclesData.find(
         (x) =>
-          String(x.registration ?? "").trim().toUpperCase() ===
+          String(getVehicleRegistration(x) ?? "").trim().toUpperCase() ===
           needle.toUpperCase()
       ) ||
       vehiclesData.find(
         (x) =>
-          String(x.name ?? "").trim().toLowerCase() === needle.toLowerCase()
+          String(getVehicleName(x) ?? "").trim().toLowerCase() === needle.toLowerCase()
       );
     return match || { name: needle };
   });
@@ -230,7 +246,8 @@ function normalizeVehicles(list, vehiclesData) {
 
 export default function BookWorkScreen() {
   const router = useRouter();
-  const { colors } = useTheme();
+  const { colors, colorScheme } = useTheme();
+  const readServiceCollection = useServiceCollectionReader();
 
   const [tasks, setTasks] = useState(INITIAL_TASKS);
   const [filter, setFilter] = useState("open");
@@ -309,14 +326,14 @@ export default function BookWorkScreen() {
     };
 
     loadDrafts();
-  }, []);
+  }, [readServiceCollection]);
 
   /* ---------------- LOAD VEHICLES & FIND SERVICE DUE ---------------- */
   useEffect(() => {
     const fetchServiceDueVehicles = async () => {
       setServiceLoading(true);
       try {
-        const vehicleRows = await getServiceCollectionRows("vehicles");
+        const vehicleRows = await readServiceCollection("vehicles");
 
         const today = new Date();
         today.setHours(0, 0, 0, 0);
@@ -332,9 +349,9 @@ export default function BookWorkScreen() {
 
           allVehicles.push({ id, ...data });
 
-          const name = data.name || data.vehicleName || "Unnamed vehicle";
-          const reg = data.registration || data.reg || "";
-          const nextService = data.nextService;
+          const name = getVehicleName(data) || "Unnamed vehicle";
+          const reg = getVehicleRegistration(data) || "";
+          const nextService = getVehicleNextService(data);
 
           if (!nextService) return;
 
@@ -387,7 +404,7 @@ export default function BookWorkScreen() {
     };
 
     fetchServiceDueVehicles();
-  }, []);
+  }, [readServiceCollection]);
 
   /* ---------------- LOAD BOOKINGS FOR VEHICLE PREP LIST ---------------- */
   useEffect(() => {
@@ -395,8 +412,8 @@ export default function BookWorkScreen() {
       try {
         setPrepLoading(true);
         const [legacyData, maintenanceRows] = await Promise.all([
-          getServiceCollectionRows("bookings"),
-          getServiceCollectionRows("maintenanceBookings"),
+          readServiceCollection("bookings"),
+          readServiceCollection("maintenanceBookings"),
         ]);
         const maintenanceData = maintenanceRows.map((booking) => ({
           id: booking.id,
@@ -412,7 +429,7 @@ export default function BookWorkScreen() {
     };
 
     fetchBookings();
-  }, []);
+  }, [readServiceCollection]);
 
   const hasAnyServiceDue =
     overdueServices.length > 0 || dueSoonServices.length > 0;
@@ -496,11 +513,10 @@ export default function BookWorkScreen() {
 
         normVehicles.forEach((v) => {
           const name =
-            v.name ||
-            [v.manufacturer, v.model].filter(Boolean).join(" ") ||
+            getVehicleName(v) ||
+            [getVehicleManufacturer(v), v.model].filter(Boolean).join(" ") ||
             "Vehicle";
-          const reg =
-            v.registration || v.reg || v.plate || v.license || "";
+          const reg = getVehicleRegistration(v) || "";
 
           const taxStatus = v.taxStatus || "";
           const insuranceStatus = v.insuranceStatus || "";
@@ -583,8 +599,8 @@ export default function BookWorkScreen() {
   // ⚙️ when starting a service from this page for a specific vehicle
   const handleStartServiceForVehicle = async (vehicle) => {
     try {
-      const name = vehicle.name || "Unnamed vehicle";
-      const reg = vehicle.reg || "";
+      const name = getVehicleName(vehicle) || "Unnamed vehicle";
+      const reg = getVehicleRegistration(vehicle) || "";
 
       const existingDraft = serviceDrafts.find(
         (d) => d.selectedVehicleId === vehicle.id
@@ -637,7 +653,10 @@ export default function BookWorkScreen() {
       edges={["left", "right"]}
       style={[
         styles.container,
-        { backgroundColor: colors.background || COLORS.background },
+        {
+          backgroundColor:
+            colorScheme === "light" ? "#FFFFFF" : colors.background || COLORS.background,
+        },
       ]}
     >
       <PageHeaderCard
@@ -902,7 +921,7 @@ export default function BookWorkScreen() {
                               { color: colors.textMuted || COLORS.textMid },
                             ]}
                           >
-                            Next service was due {v.nextService} ·{" "}
+                            Next service was due {formatDateShort(v.nextService) || v.nextService} ·{" "}
                             {v.daysOverdue} day
                             {v.daysOverdue === 1 ? "" : "s"} overdue
                           </Text>
@@ -978,7 +997,7 @@ export default function BookWorkScreen() {
                               { color: colors.textMuted || COLORS.textMid },
                             ]}
                           >
-                            Next service {v.nextService} · due in {v.daysUntil}{" "}
+                            Next service {formatDateShort(v.nextService) || v.nextService} · due in {v.daysUntil}{" "}
                             day{v.daysUntil === 1 ? "" : "s"}
                           </Text>
                         </View>
@@ -1481,9 +1500,10 @@ const styles = StyleSheet.create({
   },
   infoCard: {
     backgroundColor: COLORS.card,
-    borderRadius: t.radius.sm,
-    padding: t.controls.cardPadding,
+    borderRadius: 10,
+    padding: 14,
     marginBottom: t.spacing.sm,
+    borderWidth: 1,
   },
   infoTitle: {
     fontSize: 16,
@@ -1504,8 +1524,9 @@ const styles = StyleSheet.create({
   prepCard: {
     backgroundColor: COLORS.card,
     borderRadius: 10,
-    padding: t.controls.cardPadding,
+    padding: 14,
     marginBottom: 16,
+    borderWidth: 1,
   },
   prepDateLabel: {
     fontSize: 12,
@@ -1574,8 +1595,9 @@ const styles = StyleSheet.create({
   serviceCard: {
     backgroundColor: COLORS.card,
     borderRadius: 10,
-    padding: t.controls.cardPadding,
+    padding: 14,
     marginBottom: 16,
+    borderWidth: 1,
   },
   serviceLoadingRow: {
     flexDirection: "row",
@@ -1661,7 +1683,7 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.card,
     borderRadius: 10,
     minHeight: 72,
-    padding: t.controls.cardPadding,
+    padding: 14,
     marginBottom: 14,
     borderWidth: 1,
     borderColor: COLORS.primaryAction,
@@ -1715,8 +1737,8 @@ const styles = StyleSheet.create({
     alignItems: "flex-end",
   },
   sectionTitle: {
-    fontSize: 15,
-    fontWeight: "700",
+    fontSize: 17,
+    fontWeight: "800",
   },
   sectionSubtitle: {
     fontSize: 12,
@@ -1725,7 +1747,7 @@ const styles = StyleSheet.create({
   addTaskCard: {
     backgroundColor: COLORS.card,
     borderRadius: 10,
-    padding: t.controls.cardPadding,
+    padding: 14,
     marginBottom: 16,
     borderWidth: 1,
     borderColor: COLORS.border,

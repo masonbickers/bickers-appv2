@@ -1,6 +1,5 @@
 // app/(protected)/contacts.js
-import { collection, getDocs } from "firebase/firestore";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Alert,
   Linking,
@@ -17,7 +16,9 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
 import PageHeaderCard from "../../components/PageHeaderCard";
-import { db } from "../../firebaseConfig";
+import { AsyncContentState, EmptyState } from "../../components/AsyncState";
+import { useContacts } from "../../hooks/useOperationalData";
+import { useResponsiveLayout } from "../../hooks/useResponsiveLayout";
 import { designTokens as t } from "../../lib/design/tokens";
 
 import { useTheme } from "../../providers/ThemeProvider";
@@ -34,31 +35,18 @@ function withAlpha(hex, alpha) {
 
 export default function ContactsPage() {
   const { colors, colorScheme } = useTheme();
+  const responsive = useResponsiveLayout();
   const isDark = colorScheme === "dark";
 
-  const [employees, setEmployees] = useState([]);
   const [q, setQ] = useState("");
-  const [loading, setLoading] = useState(false);
-
-  const loadEmployees = useCallback(async () => {
-    try {
-      setLoading(true);
-      const snapshot = await getDocs(collection(db, "employees"));
-      const data = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
-      const sorted = data.sort((a, b) =>
+  const contactsResource = useContacts();
+  const employees = useMemo(
+    () =>
+      [...contactsResource.data].sort((a, b) =>
         (a.name || "").toLowerCase().localeCompare((b.name || "").toLowerCase())
-      );
-      setEmployees(sorted);
-    } catch (error) {
-      console.error("Error fetching employees:", error);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    loadEmployees();
-  }, [loadEmployees]);
+      ),
+    [contactsResource.data]
+  );
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -165,7 +153,6 @@ export default function ContactsPage() {
   const inputBorder = colors.inputBorder ?? colors.border;
   const placeholder = colors.placeholder ?? textMuted;
   const iconMuted = colors.iconMuted ?? textMuted;
-  const emptyBg = colors.surface ?? colors.surfaceAlt;
   const avatarBg = colors.avatarBg ?? colors.surface;
   const avatarBorder = colors.avatarBorder ?? colors.border;
   const metaText = colors.metaText ?? textMuted;
@@ -175,15 +162,21 @@ export default function ContactsPage() {
   const disabledBg = colors.disabled ?? (isDark ? "#2a2a2a" : "#d1d1d6");
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: bg }]}>
+    <SafeAreaView
+      edges={["top", "left", "right"]}
+      style={[styles.container, { backgroundColor: bg }]}
+    >
       <View style={{ flex: 1 }}>
         <ScrollView
-          contentContainerStyle={styles.content}
+          contentContainerStyle={[
+            styles.content,
+            { width: "100%", maxWidth: responsive.maxContentWidth, alignSelf: "center" },
+          ]}
           keyboardShouldPersistTaps="handled"
           refreshControl={
             <RefreshControl
-              refreshing={loading}
-              onRefresh={loadEmployees}
+              refreshing={contactsResource.isRefreshing}
+              onRefresh={contactsResource.refresh}
               tintColor={colors.accent}
             />
           }
@@ -248,6 +241,8 @@ export default function ContactsPage() {
                 style={{ marginRight: 8 }}
               />
               <TextInput
+                accessibilityLabel="Search employee contacts"
+                accessibilityHint="Enter an employee name or phone number"
                 style={[styles.searchInput, { color: textPrimary }]}
                 placeholder="Search by name or phone"
                 placeholderTextColor={placeholder}
@@ -260,7 +255,9 @@ export default function ContactsPage() {
               {q.length > 0 && (
                 <TouchableOpacity
                   onPress={() => setQ("")}
+                  accessibilityRole="button"
                   accessibilityLabel="Clear search"
+                  hitSlop={6}
                   style={[styles.clearBtn, { backgroundColor: clearBg }]}
                 >
                   <Text
@@ -277,33 +274,25 @@ export default function ContactsPage() {
           </View>
 
           {/* List */}
-          {filtered.length === 0 ? (
-            <View
-              style={[
-                styles.emptyWrap,
-                {
-                  backgroundColor: emptyBg,
-                  borderColor,
-                },
-              ]}
-            >
-              <Icon
-                name="user-x"
-                size={26}
-                color={iconMuted}
-                style={{ marginBottom: 8 }}
+          <AsyncContentState
+            resources={[contactsResource]}
+            hasContent={employees.length > 0}
+            onRetry={contactsResource.refresh}
+            loadingLabel="Loading contacts…"
+          >
+            {filtered.length === 0 ? (
+              <EmptyState
+                icon="user-x"
+                title={q ? "No matches found" : "No employees found"}
+                message={
+                  q
+                    ? "Try a different name or number."
+                    : "Add employees in the web app."
+                }
+                compact
               />
-              <Text style={[styles.emptyTitle, { color: textPrimary }]}>
-                {q ? "No matches found" : "No employees found"}
-              </Text>
-              <Text style={[styles.emptySubtitle, { color: textMuted }]}>
-                {q
-                  ? "Try a different name or number."
-                  : "Add employees in the web app."}
-              </Text>
-            </View>
-          ) : (
-            filtered.map((emp) => {
+            ) : (
+              filtered.map((emp) => {
               const initials = (emp.name || "")
                 .split(" ")
                 .map((n) => n[0])
@@ -356,6 +345,11 @@ export default function ContactsPage() {
                       <TouchableOpacity
                         onPress={() => hasPhone && callNumber(phone)}
                         activeOpacity={hasPhone ? 0.7 : 1}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Call ${emp.name || "employee"}`}
+                        accessibilityHint={hasPhone ? `Calls ${phone}` : "No phone number available"}
+                        accessibilityState={{ disabled: !hasPhone }}
+                        disabled={!hasPhone}
                       >
                         <Text
                           style={[
@@ -385,6 +379,9 @@ export default function ContactsPage() {
                       ]}
                       onPress={() => hasPhone && messageWhatsApp(phone, emp.name)}
                       disabled={!hasPhone}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Message ${emp.name || "employee"} on WhatsApp`}
+                      accessibilityState={{ disabled: !hasPhone }}
                     >
                       <Icon
                         name="message-circle"
@@ -404,6 +401,9 @@ export default function ContactsPage() {
                       ]}
                       onPress={() => hasPhone && callNumber(phone)}
                       disabled={!hasPhone}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Call ${emp.name || "employee"}`}
+                      accessibilityState={{ disabled: !hasPhone }}
                     >
                       <Icon
                         name="phone-call"
@@ -416,8 +416,9 @@ export default function ContactsPage() {
                   </View>
                 </View>
               );
-            })
-          )}
+              })
+            )}
+          </AsyncContentState>
 
           <View style={{ height: 18 }} />
         </ScrollView>

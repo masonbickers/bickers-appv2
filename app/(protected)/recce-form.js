@@ -25,8 +25,10 @@ import { doc, getDoc, serverTimestamp, setDoc } from "firebase/firestore";
 import { getDownloadURL, ref, uploadBytesResumable } from "firebase/storage";
 
 import { auth, db, storage } from "../../firebaseConfig";
+import { isBookingVisibleToEmployee } from "../../lib/bookingVisibility";
 import { formatDateDDMMYYYY } from "../../lib/dateFormat";
 import { useAuth } from "../../providers/AuthProvider";
+import { useDataCache } from "../../providers/DataCacheProvider";
 import { useTheme } from "../../providers/ThemeProvider";
 
 /* ---------- CONSTANTS AND UTILS ---------- */
@@ -86,6 +88,7 @@ export default function RecceFormScreen() {
   const router = useRouter();
   const { colors } = useTheme();
   const { employee: authEmployee } = useAuth();
+  const { invalidate } = useDataCache();
 
   // In a real Expo Router app, params are passed directly in the URL query.
   // { pathname: '/recce-form', params: { jobId: '...', dateISO: '...' } }
@@ -142,6 +145,14 @@ export default function RecceFormScreen() {
         : null;
       if (!jobData) {
         Alert.alert("Error", "Job data not found.");
+        router.back();
+        return;
+      }
+      if (!isBookingVisibleToEmployee(jobData, employee)) {
+        Alert.alert(
+          "Booking unavailable",
+          "This booking is not currently published to your employee app."
+        );
         router.back();
         return;
       }
@@ -329,6 +340,7 @@ export default function RecceFormScreen() {
         },
         { merge: true }
       );
+      await invalidate("collection:bookings");
 
       Alert.alert("Success 🎉", "Recce form submitted successfully!");
       router.back();

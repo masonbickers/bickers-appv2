@@ -31,8 +31,14 @@ type Colors = {
   accent: string;
   accentSoft: string;
   danger: string;
+  dangerSoft: string;
   warning: string;
+  warningSoft: string;
   success: string;
+  successSoft: string;
+  info: string;
+  infoSoft: string;
+  focusRing: string;
   inputBackground: string;
   inputBorder: string;
 };
@@ -55,7 +61,7 @@ interface ThemeProviderProps {
 function buildColors(scheme: ColorScheme): Colors {
   if (scheme === "light") {
     return {
-      background: "#F4F7FA",
+      background: "#FFFFFF",
       surface: "#FFFFFF",
       surfaceAlt: "#E9EEF5",
       surfaceElevated: "#FFFFFF",
@@ -67,8 +73,14 @@ function buildColors(scheme: ColorScheme): Colors {
       accent: "#ED1C25",
       accentSoft: "#F8E6E7",
       danger: "#B42318",
+      dangerSoft: "#FEE2E2",
       warning: "#B76800",
+      warningSoft: "#FEF3C7",
       success: "#157347",
+      successSoft: "#DCFCE7",
+      info: "#1D4ED8",
+      infoSoft: "#DBEAFE",
+      focusRing: "#1D4ED8",
       inputBackground: "#FFFFFF",
       inputBorder: "#C7D1DD",
     };
@@ -87,8 +99,14 @@ function buildColors(scheme: ColorScheme): Colors {
     accent: "#ED1C25",
     accentSoft: "#3A1216",
     danger: "#ED1C25",
+    dangerSoft: "#3B1212",
     warning: "#F2A93B",
+    warningSoft: "#33280C",
     success: "#34C38F",
+    successSoft: "#112A1B",
+    info: "#60A5FA",
+    infoSoft: "#14213D",
+    focusRing: "#93C5FD",
     inputBackground: "#111114",
     inputBorder: "#303038",
   };

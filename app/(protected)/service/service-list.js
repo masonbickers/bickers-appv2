@@ -15,7 +15,18 @@ import Icon from "react-native-vector-icons/Feather";
 
 import PageHeaderCard from "../../../components/PageHeaderCard";
 import { designTokens as t } from "../../../lib/design/tokens";
-import { useCachedServiceCollection } from "../../../lib/serviceCache";
+import {
+  getVehicleOperationalStatus,
+  getVehicleManufacturer,
+  getVehicleName,
+  getVehicleNextMot,
+  getVehicleNextService,
+  getVehicleRegistration,
+  isVehicleActiveForMaintenance,
+  isVehicleMotApplicable,
+  isVehicleServiceApplicable,
+} from "../../../lib/fleetSchema";
+import { useServiceCollection } from "../../../hooks/useServiceData";
 import { useTheme } from "../../../providers/ThemeProvider";
 
 /* ---------- CONSTANTS & HELPERS ---------- */
@@ -93,6 +104,7 @@ const FILTER_OPTIONS = [
   { key: "due-soon", label: "Due soon" },
   { key: "ok", label: "OK" },
   { key: "unknown", label: "No date" },
+  { key: "inactive", label: "Inactive" },
 ];
 
 const STATUS_SECTIONS = [
@@ -116,15 +128,20 @@ const STATUS_SECTIONS = [
     title: "No date recorded",
     description: "Missing MOT or service dates – update vehicle records.",
   },
+  {
+    key: "inactive",
+    title: "Inactive vehicles",
+    description: "Hidden from MOT and service attention until marked active again.",
+  },
 ];
 
 /* ---------- MAIN SCREEN ---------- */
 
 export default function ServiceListScreen() {
   const router = useRouter();
-  const { colors } = useTheme();
+  const { colors, colorScheme } = useTheme();
 
-  const { rows: vehicles, loading } = useCachedServiceCollection("vehicles", {
+  const { rows: vehicles, loading } = useServiceCollection("vehicles", {
     label: "vehicles for service list",
     orderByField: "name",
   });
@@ -135,33 +152,34 @@ export default function ServiceListScreen() {
     "due-soon": true,
     ok: true,
     unknown: true,
+    inactive: true,
   });
 
 
   const processed = useMemo(() => {
     return vehicles.map((v) => {
-      const motDateRaw =
-        v.nextMOT ||
-        v.nextMot ||
-        v.nextMotDate ||
-        v.motDueDate ||
-        v.motExpiryDate;
-      const serviceDateRaw =
-        v.nextService ||
-        v.nextServiceDate ||
-        v.serviceDueDate ||
-        v.nextSvc;
+      const activeForMaintenance = isVehicleActiveForMaintenance(v);
+      const motDateRaw = getVehicleNextMot(v);
+      const serviceDateRaw = getVehicleNextService(v);
 
-      const motStatus = classifyStatus(motDateRaw);
-      const serviceStatus = classifyStatus(serviceDateRaw);
+      const motStatus = activeForMaintenance && isVehicleMotApplicable(v)
+        ? classifyStatus(motDateRaw)
+        : { label: "Inactive", code: "inactive" };
+      const serviceStatus = activeForMaintenance && isVehicleServiceApplicable(v)
+        ? classifyStatus(serviceDateRaw)
+        : { label: "Inactive", code: "inactive" };
+      const worstCode = activeForMaintenance
+        ? pickWorstStatusCode(motStatus.code, serviceStatus.code)
+        : "inactive";
 
       return {
         ...v,
+        activeForMaintenance,
         motStatus,
         serviceStatus,
         motDateRaw,
         serviceDateRaw,
-        worstCode: pickWorstStatusCode(motStatus.code, serviceStatus.code),
+        worstCode,
       };
     });
   }, [vehicles]);
@@ -172,6 +190,7 @@ export default function ServiceListScreen() {
       "due-soon": 0,
       ok: 0,
       unknown: 0,
+      inactive: 0,
     };
     processed.forEach((v) => {
       if (counts[v.worstCode] !== undefined) {
@@ -187,9 +206,9 @@ export default function ServiceListScreen() {
     if (search.trim()) {
       const q = search.toLowerCase();
       list = list.filter((v) => {
-        const name = (v.name || v.vehicleName || "").toLowerCase();
-        const reg = (v.registration || v.reg || "").toLowerCase();
-        const manufacturer = (v.manufacturer || "").toLowerCase();
+        const name = String(getVehicleName(v)).toLowerCase();
+        const reg = String(getVehicleRegistration(v)).toLowerCase();
+        const manufacturer = String(getVehicleManufacturer(v)).toLowerCase();
         const model = (v.model || "").toLowerCase();
         return (
           name.includes(q) ||
@@ -214,6 +233,7 @@ export default function ServiceListScreen() {
       "due-soon": [],
       ok: [],
       unknown: [],
+      inactive: [],
     };
 
     filtered.forEach((v) => {
@@ -224,7 +244,7 @@ export default function ServiceListScreen() {
     // Sort each list by vehicle name for consistency
     Object.keys(acc).forEach((key) => {
       acc[key].sort((a, b) =>
-        (a.name || "").localeCompare(b.name || "", "en", {
+        String(getVehicleName(a)).localeCompare(String(getVehicleName(b)), "en", {
           sensitivity: "base",
         })
       );
@@ -244,14 +264,18 @@ export default function ServiceListScreen() {
     byStatus.overdue.length ||
     byStatus["due-soon"].length ||
     byStatus.ok.length ||
-    byStatus.unknown.length;
+    byStatus.unknown.length ||
+    byStatus.inactive.length;
 
   return (
     <SafeAreaView
       edges={["left", "right"]}
       style={[
         styles.container,
-        { backgroundColor: colors.background || COLORS.background },
+        {
+          backgroundColor:
+            colorScheme === "light" ? "#FFFFFF" : colors.background || COLORS.background,
+        },
       ]}
     >
       <PageHeaderCard
@@ -259,10 +283,6 @@ export default function ServiceListScreen() {
         title="MOT & Service"
         subtitle="Prioritise overdue vehicles, then tap to view details and book work."
         style={styles.headerCard}
-        contentStyle={styles.headerContent}
-        eyebrowStyle={styles.headerEyebrow}
-        titleStyle={styles.headerTitle}
-        subtitleStyle={styles.headerSubtitle}
       />
 
       {loading ? (
@@ -299,6 +319,11 @@ export default function ServiceListScreen() {
             <SummaryPill
               label="No date"
               value={summaryCounts.unknown}
+              tone="muted"
+            />
+            <SummaryPill
+              label="Inactive"
+              value={summaryCounts.inactive}
               tone="muted"
             />
           </View>
@@ -424,6 +449,7 @@ export default function ServiceListScreen() {
                 if (section.key === "overdue") accentColour = colors.danger || "#ED1C25";
                 else if (section.key === "due-soon") accentColour = "#FF9500";
                 else if (section.key === "ok") accentColour = colors.success || "#34C759";
+                else if (section.key === "inactive") accentColour = colors.textMuted || COLORS.textLow;
 
                 return (
                   <View key={section.key} style={styles.sectionBlock}>
@@ -471,9 +497,9 @@ export default function ServiceListScreen() {
                     {/* Vehicles in this status */}
                     {expanded &&
                       list.map((v) => {
-                        const name = v.name || v.vehicleName || "Unnamed vehicle";
-                        const reg = v.registration || v.reg || "";
-                        const manufacturer = v.manufacturer || "";
+                        const name = getVehicleName(v) || "Unnamed vehicle";
+                        const reg = getVehicleRegistration(v);
+                        const manufacturer = getVehicleManufacturer(v);
                         const model = v.model || "";
                         const taxStatus = v.taxStatus || "Unknown";
                         const insuranceStatus = v.insuranceStatus || "Unknown";
@@ -502,6 +528,8 @@ export default function ServiceListScreen() {
                           borderAccent = "#FF9500";
                         else if (v.worstCode === "ok")
                           borderAccent = colors.success || "#34C759";
+                        else if (v.worstCode === "inactive")
+                          borderAccent = colors.textMuted || COLORS.textLow;
 
                         return (
                           <TouchableOpacity
@@ -581,11 +609,23 @@ export default function ServiceListScreen() {
                             </View>
 
                             <View style={styles.statusRow}>
-                              <StatusPill label="MOT" status={motStatusWithDate} />
-                              <StatusPill
-                                label="Service"
-                                status={serviceStatusWithDate}
-                              />
+                              {v.worstCode === "inactive" ? (
+                                <StatusPill
+                                  label="Status"
+                                  status={{
+                                    code: "inactive",
+                                    label: getVehicleOperationalStatus(v) || "Inactive",
+                                  }}
+                                />
+                              ) : (
+                                <>
+                                  <StatusPill label="MOT" status={motStatusWithDate} />
+                                  <StatusPill
+                                    label="Service"
+                                    status={serviceStatusWithDate}
+                                  />
+                                </>
+                              )}
                             </View>
 
                             <View style={styles.metaRow}>
@@ -700,6 +740,9 @@ function StatusPill({ label, status }) {
   } else if (code === "unknown") {
     bg = "rgba(142,142,147,0.22)";
     fg = colors.textMuted || COLORS.textMid;
+  } else if (code === "inactive") {
+    bg = "rgba(100,116,139,0.18)";
+    fg = colors.textMuted || COLORS.textMid;
   }
 
   return (
@@ -749,24 +792,6 @@ const styles = StyleSheet.create({
     marginHorizontal: t.spacing.md,
     marginTop: 0,
     marginBottom: 0,
-  },
-  headerContent: {
-    paddingTop: 10,
-    paddingBottom: 8,
-  },
-  headerEyebrow: {
-    fontSize: 11,
-    lineHeight: 14,
-  },
-  headerTitle: {
-    fontSize: 22,
-    lineHeight: 27,
-    marginTop: 1,
-  },
-  headerSubtitle: {
-    marginTop: 2,
-    fontSize: 12,
-    lineHeight: 16,
   },
   header: {
     paddingHorizontal: t.spacing.md,
@@ -882,8 +907,8 @@ const styles = StyleSheet.create({
     paddingBottom: 2,
   },
   sectionTitle: {
-    fontSize: 14,
-    fontWeight: "700",
+    fontSize: 17,
+    fontWeight: "800",
   },
   sectionCount: {
     fontSize: 12,
@@ -898,7 +923,8 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.card,
     borderRadius: 10,
     marginTop: 5,
-    padding: 11,
+    padding: 14,
+    borderWidth: 1,
     borderLeftWidth: 3,
   },
   vehicleHeaderRow: {

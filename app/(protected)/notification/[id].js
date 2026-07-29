@@ -17,6 +17,8 @@ import { db } from "../../../firebaseConfig";
 
 import { getInbox, markRead } from "../../../lib/notificationInbox";
 import { formatDateDDMMYYYY } from "../../../lib/dateFormat";
+import { isBookingVisibleToEmployee } from "../../../lib/bookingVisibility";
+import { useAuth } from "../../../providers/AuthProvider";
 import { useTheme } from "../../../providers/ThemeProvider";
 
 function withAlpha(hex, alpha) {
@@ -82,6 +84,7 @@ export default function NotificationDetailPage() {
   const router = useRouter();
   const { id } = useLocalSearchParams(); // /notification/[id]
   const { colors } = useTheme();
+  const { employee } = useAuth();
 
   const [item, setItem] = useState(null);
   const [navBusy, setNavBusy] = useState(false);
@@ -125,17 +128,20 @@ export default function NotificationDetailPage() {
       try {
         setNavBusy(true);
 
+        const snap = await getDoc(doc(db, "bookings", String(d.bookingId)));
+        const booking = snap.exists() ? { id: snap.id, ...snap.data() } : null;
+        if (!booking || !isBookingVisibleToEmployee(booking, employee)) {
+          router.replace("/notifications");
+          return;
+        }
+
         // 1) If notif already includes a date -> use it
         let iso = extractISOFromNotificationData(d);
 
         // 2) Otherwise fetch booking and use earliest booking date
         if (!iso) {
-          const snap = await getDoc(doc(db, "bookings", String(d.bookingId)));
-          if (snap.exists()) {
-            const booking = snap.data();
-            const arr = Array.isArray(booking?.bookingDates) ? booking.bookingDates : [];
-            iso = arr.length ? toISODate(arr[0]) : null;
-          }
+          const arr = Array.isArray(booking?.bookingDates) ? booking.bookingDates : [];
+          iso = arr.length ? toISODate(arr[0]) : null;
         }
 
         // 3) Final fallback: today
@@ -155,7 +161,7 @@ export default function NotificationDetailPage() {
       router.push("/holidaypage");
       return;
     }
-  }, [item, router]);
+  }, [employee, item, router]);
 
   if (!item) {
     return (

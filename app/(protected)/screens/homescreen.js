@@ -9,25 +9,27 @@ import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
 
 import {
-  collection,
   doc,
   getDoc,
-  getDocs,
-  query,
   serverTimestamp,
   setDoc,
-  where,
 } from "firebase/firestore";
 import { getDownloadURL, ref, uploadBytesResumable } from "firebase/storage";
 
 import { signOut } from "firebase/auth";
 import { auth, db, storage } from "../../../firebaseConfig";
+import { useBookings, useHolidays, useVehicles } from "../../../hooks/useOperationalData";
+import { useResponsiveLayout } from "../../../hooks/useResponsiveLayout";
 import { resolveWorkspaceAccess } from "../../../lib/access";
+import { isCrewedBooking } from "../../../lib/bookingVisibility";
 import { createDashboardCardStyles } from "../../../lib/design/dashboard";
+import { getStatusColors } from "../../../lib/design/semantics";
 import { designTokens as t } from "../../../lib/design/tokens";
 
 import { useAuth } from "../../../providers/AuthProvider";
+import { useDataCache } from "../../../providers/DataCacheProvider";
 import { useTheme } from "../../../providers/ThemeProvider";
+import { AsyncContentState, EmptyState } from "../../../components/AsyncState";
 
 
 import {
@@ -44,7 +46,6 @@ import {
   TextInput,
   TouchableOpacity,
   View,
-  useWindowDimensions,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -101,8 +102,6 @@ const ACTION_ROUTES = {
 };
 
 const HOME_LOGO = require("../../../assets/images/bickers-action-logo.png");
-let employeesCache = null;
-let employeesCacheCompanyId = null;
 
 function withAlpha(hex, alpha) {
   const safeAlpha = Math.max(0, Math.min(1, Number(alpha) || 0));
@@ -463,10 +462,14 @@ const isRecceDay = (job, dateISO) =>
 
 export default function HomeScreen() {
   const router = useRouter();
-  const { width } = useWindowDimensions();
 
   const { user, employee, reloadSession } = useAuth();
-  const { colors } = useTheme();
+  const { invalidate } = useDataCache();
+  const { colors, colorScheme } = useTheme();
+  const responsive = useResponsiveLayout();
+  const bookingsResource = useBookings();
+  const holidaysResource = useHolidays();
+  const vehiclesResource = useVehicles();
 
   const dashboardCards = useMemo(() => createDashboardCardStyles(colors), [colors]);
 
@@ -489,7 +492,6 @@ export default function HomeScreen() {
 
   const [vehicleNameById, setVehicleNameById] = useState({});
   const planningDataRef = useRef({ jobs: [], holidaysRaw: [], allEmployees: [] });
-  const planningRequestIdRef = useRef(0);
   const [planningVersion, setPlanningVersion] = useState(0);
 
   const [recceOpen, setRecceOpen] = useState(false);
@@ -581,7 +583,7 @@ export default function HomeScreen() {
 
   const selectedISO = useMemo(() => toISODate(selectedDate), [selectedDate]);
 
-  const gridWidth = Math.max(width - pagePadding * 2, 320);
+  const gridColumnCount = 3;
 
   const handleLogout = async () => {
     try {
@@ -609,34 +611,21 @@ export default function HomeScreen() {
     }
   };
 
-  const loadVehiclesMap = useCallback(async () => {
-    if (!companyId) return;
-
-    try {
-      const snap = await getDocs(
-        query(collection(db, "vehicles"), where("companyId", "==", companyId))
-      );
-      const map = {};
-
-      snap.docs.forEach((d) => {
-        const data = d.data() || {};
-        const name =
-          data.name ||
-          data.vehicleName ||
-          data.displayName ||
-          data.title ||
-          data.label ||
-          data.nickname ||
-          null;
-
-        map[d.id] = name || d.id;
-      });
-
-      setVehicleNameById(map);
-    } catch (e) {
-      console.warn("loadVehiclesMap error:", e);
-    }
-  }, [companyId]);
+  const loadVehiclesMap = useCallback(() => {
+    const map = {};
+    vehiclesResource.data.forEach((vehicle) => {
+      const name =
+        vehicle.name ||
+        vehicle.vehicleName ||
+        vehicle.displayName ||
+        vehicle.title ||
+        vehicle.label ||
+        vehicle.nickname ||
+        null;
+      map[vehicle.id] = name || vehicle.id;
+    });
+    setVehicleNameById(map);
+  }, [vehiclesResource.data]);
 
   useEffect(() => {
     const task = InteractionManager.runAfterInteractions(() => {
@@ -685,120 +674,31 @@ export default function HomeScreen() {
     [vehicleDisplayList]
   );
 
-  const loadPlanningData = useCallback(async () => {
+  const loadPlanningData = useCallback(() => {
     if (!employee || !companyId) return null;
-
-    const requestId = ++planningRequestIdRef.current;
-
-    try {
-      const bookingsPromise =
-        planningDates.length > 0
-          ? getDocs(
-              query(
-                collection(db, "bookings"),
-                where("companyId", "==", companyId),
-                where("bookingDates", "array-contains-any", planningDates)
-              )
-            )
-          : Promise.resolve({ docs: [] });
-      const holidayMap = new Map();
-      const holidayQueries = [];
-      const employeeCode = employee?.userCode ? String(employee.userCode) : "";
-      const employeeName = employee?.name || employee?.displayName || "";
-      if (employeeCode) {
-        holidayQueries.push(
-          query(
-            collection(db, "holidays"),
-            where("companyId", "==", companyId),
-            where("employeeCode", "==", employeeCode)
-          ),
-          query(
-            collection(db, "holidays"),
-            where("companyId", "==", companyId),
-            where("userCode", "==", employeeCode)
-          )
-        );
-      }
-      if (employeeName) {
-        holidayQueries.push(
-          query(
-            collection(db, "holidays"),
-            where("companyId", "==", companyId),
-            where("employee", "==", employeeName)
-          ),
-          query(
-            collection(db, "holidays"),
-            where("companyId", "==", companyId),
-            where("name", "==", employeeName)
-          )
-        );
-      }
-
-      const holidaysPromise = Promise.all(
-        holidayQueries.map((qRef) =>
-          getDocs(qRef).catch((e) => {
-            console.warn("loadPlanningData holidays query error:", e);
-            return null;
-          })
-        )
-      );
-      const employeesPromise =
-        employeesCache && employeesCacheCompanyId === companyId
-          ? Promise.resolve(employeesCache)
-          : getDocs(
-              query(collection(db, "employees"), where("companyId", "==", companyId))
-            )
-              .then((snap) => {
-                employeesCache = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-                employeesCacheCompanyId = companyId;
-                return employeesCache;
-              })
-              .catch((e) => {
-                console.warn("loadPlanningData employees error:", e);
-                return [];
-              });
-
-      const [jobsSnap, holidaySnaps, allEmployees] = await Promise.all([
-        bookingsPromise,
-        holidaysPromise,
-        employeesPromise,
-      ]);
-
-      if (requestId !== planningRequestIdRef.current) return null;
-
-      holidaySnaps.filter(Boolean).forEach((snap) => {
-        snap.docs.forEach((d) => {
-          holidayMap.set(d.id, { id: d.id, ...d.data() });
-        });
-      });
-
-      const next = {
-        jobs: jobsSnap.docs.map((docSnap) => ({
-          id: docSnap.id,
-          ...docSnap.data(),
-        })),
-        holidaysRaw: Array.from(holidayMap.values()),
-        allEmployees,
-      };
-
-      planningDataRef.current = next;
-      setPlanningVersion((prev) => prev + 1);
-
-      return next;
-    } catch (e) {
-      console.warn("loadPlanningData error:", e);
-      return null;
-    }
-  }, [employee, companyId, planningDates]);
+    const next = {
+      jobs: bookingsResource.data.filter(isCrewedBooking).filter((job) => {
+        const dates = Array.isArray(job.bookingDates) ? job.bookingDates : [];
+        return dates.some((date) => planningDates.includes(toISODate(date)));
+      }),
+      holidaysRaw: holidaysResource.data,
+      allEmployees: bookingsResource.employees,
+    };
+    planningDataRef.current = next;
+    setPlanningVersion((prev) => prev + 1);
+    return next;
+  }, [
+    bookingsResource.data,
+    bookingsResource.employees,
+    companyId,
+    employee,
+    holidaysResource.data,
+    planningDates,
+  ]);
 
   useEffect(() => {
-    if (!employee) return undefined;
-
-    const task = InteractionManager.runAfterInteractions(() => {
-      loadPlanningData();
-    });
-
-    return () => task.cancel?.();
+    if (!employee) return;
+    loadPlanningData();
   }, [employee, loadPlanningData]);
 
   const buildJobsForDate = useCallback(
@@ -921,27 +821,18 @@ export default function HomeScreen() {
     setRefreshing(true);
 
     try {
-      const [, planningData] = await Promise.all([
-        loadVehiclesMap(),
-        loadPlanningData(),
+      await Promise.all([
+        bookingsResource.refresh(),
+        holidaysResource.refresh(),
+        vehiclesResource.refresh(),
       ]);
-
-      if (planningData) {
-        loadHeaderStatus(planningData);
-        loadDayStatus(selectedDate, planningData);
-      } else {
-        loadHeaderStatus();
-        loadDayStatus(selectedDate);
-      }
     } finally {
       setRefreshing(false);
     }
   }, [
-    loadVehiclesMap,
-    loadPlanningData,
-    loadHeaderStatus,
-    loadDayStatus,
-    selectedDate,
+    bookingsResource,
+    holidaysResource,
+    vehiclesResource,
   ]);
 
   const goPrevDay = useCallback(() => {
@@ -1153,6 +1044,7 @@ export default function HomeScreen() {
         },
         { merge: true }
       );
+      await invalidate("collection:bookings");
 
       setRecceOpen(false);
       setRecceJob(null);
@@ -1182,33 +1074,13 @@ export default function HomeScreen() {
       }
 
       return (
-        <View
-          style={[
-            styles.emptyState,
-            {
-              backgroundColor: colors.surface,
-              borderColor: colors.border,
-            },
-          ]}
-        >
-          <View
-            style={[
-              styles.emptyIcon,
-              {
-                backgroundColor: withAlpha(colors.accent, 0.12),
-                borderColor: withAlpha(colors.accent, 0.35),
-              },
-            ]}
-          >
-            <Icon name={icon} size={18} color={colors.accent} />
-          </View>
-
-          <Text style={[styles.statusText, { color: colors.text }]}>{label}</Text>
-
-          <Text style={[styles.emptySubText, { color: colors.textMuted }]}>
-            No assigned job details for this date.
-          </Text>
-        </View>
+        <EmptyState
+          icon={icon}
+          title={label}
+          message="No assigned job details for this date."
+          style={{ backgroundColor: colors.surface }}
+          compact
+        />
       );
     },
     [colors]
@@ -1223,26 +1095,22 @@ export default function HomeScreen() {
       const statusText = String(job.status || "");
       const statusLower = statusText.toLowerCase();
 
-      let statusTone = "#2563EB";
-
-      if (statusLower.includes("cancel") || statusLower.includes("postpon")) {
-        statusTone = "#6B7280";
-      } else if (statusLower.includes("first pencil")) {
-        statusTone = "#D97706";
-      } else if (statusLower.includes("second pencil")) {
-        statusTone = "#DC2626";
-      } else if (
-        statusLower.includes("confirmed") ||
-        statusLower.includes("active")
-      ) {
-        statusTone = "#3B9A58";
-      }
+      const semanticStatus = statusLower.includes("cancel") || statusLower.includes("postpon")
+        ? "neutral"
+        : statusLower.includes("first pencil")
+        ? "first pencil"
+        : statusLower.includes("second pencil")
+        ? "second pencil"
+        : statusText;
+      const statusTone = getStatusColors(semanticStatus, colorScheme).border;
 
       return (
         <TouchableOpacity
           key={job.id}
           onPress={() => setSelectedJob(job)}
           activeOpacity={0.86}
+          accessibilityRole="button"
+          accessibilityLabel={`Open job ${job.jobNumber || "details"}${job.client ? ` for ${job.client}` : ""}`}
         >
           <View
             style={[
@@ -1380,6 +1248,8 @@ export default function HomeScreen() {
                   style={[styles.recceBtn, { backgroundColor: colors.accent }]}
                   onPress={() => openRecceFor(job, dateISO)}
                   activeOpacity={0.9}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Fill recce form for job ${job.jobNumber || ""}`.trim()}
                 >
                   <Icon name="file-text" size={14} color="#fff" />
                   <Text style={styles.recceBtnText}>Fill Recce Form</Text>
@@ -1390,7 +1260,7 @@ export default function HomeScreen() {
         </TouchableOpacity>
       );
     },
-    [colors, openRecceFor, vehiclesText]
+    [colorScheme, colors, openRecceFor, vehiclesText]
   );
 
   const renderActionGroup = ([groupName, groupItems]) => {
@@ -1402,9 +1272,12 @@ export default function HomeScreen() {
 
     if (!filteredItems.length) return null;
 
-    const colCount = width < 390 ? 2 : filteredItems.length === 2 ? 2 : 3;
-    const totalGap = gridGap * (colCount - 1);
-    const buttonWidth = (gridWidth - totalGap) / colCount;
+    const colCount = gridColumnCount;
+    const rows = [];
+
+    for (let i = 0; i < filteredItems.length; i += colCount) {
+      rows.push(filteredItems.slice(i, i + colCount));
+    }
 
     return (
       <View key={groupName} style={styles.groupSection}>
@@ -1425,58 +1298,82 @@ export default function HomeScreen() {
         </View>
 
         <View style={styles.grid}>
-          {filteredItems.map((btn, index) => {
-            const actionTint = actionTintForLabel(btn.label, colors);
-            const actionDescription =
-              ACTION_DESCRIPTIONS[btn.label] || "Open section";
+          {rows.map((row, rowIndex) => (
+            <View
+              key={`${groupName}-row-${rowIndex}`}
+              style={[
+                styles.gridRow,
+                rowIndex === rows.length - 1 && styles.gridRowLast,
+              ]}
+            >
+              {row.map((btn, index) => {
+                const actionTint = actionTintForLabel(btn.label, colors);
+                const actionDescription =
+                  ACTION_DESCRIPTIONS[btn.label] || "Open section";
+                const isLastColumn = index === colCount - 1;
 
-            return (
-              <TouchableOpacity
-                key={`${btn.label}-${index}`}
-                style={[
-                  styles.button,
-                  {
-                    width: buttonWidth,
-                    ...dashboardCards.quickActionCard,
-                    borderColor: withAlpha(actionTint, 0.2),
-                  },
-                ]}
-                activeOpacity={0.86}
-                onPress={() => {
-                  const route = ACTION_ROUTES[btn.label];
-                  if (route) router.push(route);
-                }}
-              >
-                <View
-                  style={[
-                    styles.buttonIconWrap,
-                    {
-                      backgroundColor: withAlpha(actionTint, 0.08),
-                      borderColor: withAlpha(actionTint, 0.24),
-                    },
-                  ]}
-                >
-                  <Icon name={btn.icon} size={20} color={actionTint} />
-                </View>
-
-                <View style={styles.buttonTextWrap}>
-                  <Text
-                    style={[styles.buttonText, { color: colors.text }]}
-                    numberOfLines={2}
+                return (
+                  <TouchableOpacity
+                    key={`${btn.label}-${index}`}
+                    style={[
+                      styles.button,
+                      !isLastColumn && styles.gridItemSpacing,
+                      {
+                        ...dashboardCards.quickActionCard,
+                        borderColor: withAlpha(actionTint, 0.2),
+                      },
+                    ]}
+                    activeOpacity={0.86}
+                    onPress={() => {
+                      const route = ACTION_ROUTES[btn.label];
+                      if (route) router.push(route);
+                    }}
+                    accessibilityRole="button"
+                    accessibilityLabel={btn.label}
+                    accessibilityHint={actionDescription}
                   >
-                    {btn.label}
-                  </Text>
+                    <View
+                      style={[
+                        styles.buttonIconWrap,
+                        {
+                          backgroundColor: withAlpha(actionTint, 0.08),
+                          borderColor: withAlpha(actionTint, 0.24),
+                        },
+                      ]}
+                    >
+                      <Icon name={btn.icon} size={20} color={actionTint} />
+                    </View>
 
-                  <Text
-                    style={[styles.buttonMeta, { color: colors.textMuted }]}
-                    numberOfLines={2}
-                  >
-                    {actionDescription}
-                  </Text>
-                </View>
-              </TouchableOpacity>
-            );
-          })}
+                    <View style={styles.buttonTextWrap}>
+                      <Text
+                        style={[styles.buttonText, { color: colors.text }]}
+                      >
+                        {btn.label}
+                      </Text>
+
+                      <Text
+                        style={[styles.buttonMeta, { color: colors.textMuted }]}
+                      >
+                        {actionDescription}
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
+                );
+              })}
+
+              {row.length < colCount
+                ? Array.from({ length: colCount - row.length }).map((_, index) => (
+                    <View
+                      key={`${groupName}-spacer-${rowIndex}-${index}`}
+                      style={[
+                        styles.gridSpacer,
+                        row.length + index < colCount - 1 && styles.gridItemSpacing,
+                      ]}
+                    />
+                  ))
+                : null}
+            </View>
+          ))}
         </View>
       </View>
     );
@@ -1484,6 +1381,7 @@ export default function HomeScreen() {
 
   return (
     <SafeAreaView
+      edges={["top", "left", "right"]}
       style={[
         styles.container,
         {
@@ -1492,7 +1390,10 @@ export default function HomeScreen() {
       ]}
     >
       <ScrollView
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[
+          styles.scrollContent,
+          { width: "100%", maxWidth: responsive.maxContentWidth, alignSelf: "center" },
+        ]}
         showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl
@@ -1502,6 +1403,15 @@ export default function HomeScreen() {
           />
         }
       >
+        <AsyncContentState
+          resources={[bookingsResource, holidaysResource, vehiclesResource]}
+          hasContent={
+            bookingsResource.data.length > 0 ||
+            holidaysResource.data.length > 0
+          }
+          onRetry={onRefresh}
+          loadingLabel="Loading your dashboard…"
+        >
         <View
           style={[
             styles.heroCard,
@@ -1539,6 +1449,8 @@ export default function HomeScreen() {
               ]}
               onPress={() => setShowAccountModal(true)}
               activeOpacity={0.85}
+              accessibilityRole="button"
+              accessibilityLabel="Open my account"
             >
               <Text style={[styles.userInitials, { color: colors.text }]}>
                 {userInitials}
@@ -1598,6 +1510,8 @@ export default function HomeScreen() {
                     borderColor: withAlpha(colors.accent, 0.42),
                   },
                 ]}
+                accessibilityRole="button"
+                accessibilityLabel="Switch to Service workspace"
               >
                 <Icon name="repeat" size={12} color={colors.accent} />
 
@@ -1688,6 +1602,9 @@ export default function HomeScreen() {
                 ]}
                 onPress={goPrevDay}
                 activeOpacity={0.85}
+                accessibilityRole="button"
+                accessibilityLabel="Previous planning day"
+                hitSlop={4}
               >
                 <Icon name="arrow-left" size={16} color={colors.text} />
               </TouchableOpacity>
@@ -1702,6 +1619,9 @@ export default function HomeScreen() {
                 ]}
                 onPress={goNextDay}
                 activeOpacity={0.85}
+                accessibilityRole="button"
+                accessibilityLabel="Next planning day"
+                hitSlop={4}
               >
                 <Icon name="arrow-right" size={16} color={colors.text} />
               </TouchableOpacity>
@@ -1712,6 +1632,7 @@ export default function HomeScreen() {
             ? dayJobs.map((job) => renderJobCard(job, selectedISO))
             : renderStatusFallback(dayHolidayInfo, selectedDate)}
         </View>
+        </AsyncContentState>
 
         {Object.entries(groups).map(renderActionGroup)}
 
@@ -1773,12 +1694,14 @@ const DetailLine = ({ label, value, colors }) => {
   );
 };
 
-const BaseModal = ({ visible, children, colors, onClose }) => (
+const BaseModal = ({ visible, children, colors, onClose, contentStyle }) => (
   <Modal
     visible={visible}
     transparent
     animationType="fade"
     onRequestClose={onClose}
+    accessibilityViewIsModal
+    onAccessibilityEscape={onClose}
   >
     <View style={styles.modalBackdrop}>
       <View
@@ -1788,6 +1711,7 @@ const BaseModal = ({ visible, children, colors, onClose }) => (
             backgroundColor: colors.surface,
             borderColor: colors.border,
           },
+          contentStyle,
         ]}
       >
         {children}
@@ -1879,6 +1803,8 @@ const JobDetailsModal = ({ visible, job, colors, onClose, vehiclesText }) => {
         ]}
         onPress={onClose}
         activeOpacity={0.9}
+        accessibilityRole="button"
+        accessibilityLabel="Close job details"
       >
         <Text style={styles.modalPrimaryButtonText}>Close</Text>
       </TouchableOpacity>
@@ -1894,17 +1820,30 @@ const AccountModal = ({
   onLogout,
   onViewProfile,
 }) => (
-  <BaseModal visible={visible} colors={colors} onClose={onClose}>
+  <BaseModal
+    visible={visible}
+    colors={colors}
+    onClose={onClose}
+    contentStyle={styles.accountModalContent}
+  >
     <View style={styles.modalHandle} />
 
     <Text style={[styles.modalTitle, { color: colors.text }]}>My Account</Text>
 
-    <View style={styles.accountHero}>
+    <View
+      style={[
+        styles.accountSummaryCard,
+        {
+          backgroundColor: colors.surfaceAlt,
+          borderColor: colors.border,
+        },
+      ]}
+    >
       <View
         style={[
           styles.accountAvatar,
           {
-            backgroundColor: colors.surfaceAlt,
+            backgroundColor: colors.surface,
             borderColor: colors.border,
           },
         ]}
@@ -1915,74 +1854,136 @@ const AccountModal = ({
             .map((n) => n[0])
             .join("")
             .toUpperCase()
-            .slice(0, 2)}
+          .slice(0, 2)}
         </Text>
       </View>
 
-      <Text style={[styles.accountHeroName, { color: colors.text }]}>
-        {account.name}
-      </Text>
+      <View style={styles.accountSummaryTextWrap}>
+        <Text
+          style={[styles.accountHeroName, { color: colors.text }]}
+        >
+          {account.name}
+        </Text>
 
-      <Text style={[styles.accountHeroMeta, { color: colors.textMuted }]}>
-        Code {account.userCode}
-      </Text>
+        <Text style={[styles.accountHeroMeta, { color: colors.textMuted }]}>
+          Code {account.userCode}
+        </Text>
+      </View>
     </View>
 
-    <View
-      style={[
-        styles.modalInfoBox,
-        {
-          backgroundColor: "transparent",
-          borderColor: "transparent",
-        },
-      ]}
-    >
-      <ModalDetail icon="mail" label="Email" value={account.email} colors={colors} />
-      <ModalDetail icon="hash" label="Code" value={account.userCode} colors={colors} />
+    <View style={styles.accountRows}>
+      <AccountSettingRow
+        icon="mail"
+        label="Email"
+        value={account.email}
+        colors={colors}
+      />
+      <AccountSettingRow
+        icon="hash"
+        label="Code"
+        value={account.userCode}
+        colors={colors}
+      />
     </View>
 
     <TouchableOpacity
       style={[
-        styles.modalSecondaryButton,
+        styles.accountActionRow,
         {
-          backgroundColor: "transparent",
-          borderColor: "transparent",
+          backgroundColor: colors.surfaceAlt,
+          borderColor: colors.border,
         },
       ]}
       onPress={onViewProfile}
       activeOpacity={0.9}
+      accessibilityRole="button"
+      accessibilityLabel="View profile"
     >
-      <Icon name="edit-3" size={15} color={colors.text} />
-      <Text style={[styles.modalSecondaryButtonText, { color: colors.text }]}>
-        View Profile
-      </Text>
+      <View style={styles.accountActionLeft}>
+        <View
+          style={[
+            styles.accountIconWrap,
+            {
+              backgroundColor: colors.surface,
+              borderColor: colors.border,
+            },
+          ]}
+        >
+          <Icon name="edit-3" size={16} color={colors.textMuted} />
+        </View>
+        <Text style={[styles.accountActionText, { color: colors.text }]}>
+          View Profile
+        </Text>
+      </View>
+      <Icon name="chevron-right" size={20} color={colors.textMuted} />
     </TouchableOpacity>
 
     <TouchableOpacity
-      style={[styles.modalPrimaryButton, { backgroundColor: "#C8102E" }]}
+      style={[styles.accountLogoutButton, { backgroundColor: colors.accent }]}
       onPress={onLogout}
       activeOpacity={0.9}
+      accessibilityRole="button"
+      accessibilityLabel="Log out"
     >
-      <Icon name="log-out" size={15} color="#fff" />
-      <Text style={styles.modalPrimaryButtonText}>Logout</Text>
+      <Icon name="log-out" size={17} color="#fff" />
+      <Text style={styles.accountLogoutText}>Logout</Text>
     </TouchableOpacity>
 
     <TouchableOpacity
       style={[
-        styles.modalSecondaryButton,
+        styles.accountCloseButton,
         {
-          backgroundColor: "transparent",
-          borderColor: "transparent",
+          backgroundColor: colors.surfaceAlt,
+          borderColor: colors.border,
         },
       ]}
       onPress={onClose}
       activeOpacity={0.9}
+      accessibilityRole="button"
+      accessibilityLabel="Close account"
     >
-      <Text style={[styles.modalSecondaryButtonText, { color: colors.text }]}>
+      <Text style={[styles.accountCloseText, { color: colors.text }]}>
         Close
       </Text>
     </TouchableOpacity>
   </BaseModal>
+);
+
+const AccountSettingRow = ({ icon, label, value, colors }) => (
+  <View
+    style={[
+      styles.accountSettingRow,
+      {
+        backgroundColor: colors.surfaceAlt,
+        borderColor: colors.border,
+      },
+    ]}
+  >
+    <View
+      style={[
+        styles.accountIconWrap,
+        {
+          backgroundColor: colors.surface,
+          borderColor: colors.border,
+        },
+      ]}
+    >
+      <Icon name={icon} size={16} color={colors.textMuted} />
+    </View>
+    <View style={styles.accountSettingTextWrap}>
+      <Text style={[styles.accountSettingLabel, { color: colors.textMuted }]}>
+        {label}
+      </Text>
+      <Text
+        style={[styles.accountSettingValue, { color: colors.text }]}
+        numberOfLines={1}
+        adjustsFontSizeToFit
+        minimumFontScale={0.84}
+      >
+        {value || "Not set"}
+      </Text>
+    </View>
+  </View>
 );
 
 const RecceModal = ({
@@ -2654,12 +2655,31 @@ const styles = StyleSheet.create({
   },
 
   grid: {
+    width: "100%",
+  },
+
+  gridRow: {
     flexDirection: "row",
-    flexWrap: "wrap",
-    gap: gridGap,
+    alignItems: "stretch",
+    marginBottom: gridGap,
+  },
+
+  gridRowLast: {
+    marginBottom: 0,
+  },
+
+  gridItemSpacing: {
+    marginRight: gridGap,
+  },
+
+  gridSpacer: {
+    flex: 1,
+    minWidth: 0,
   },
 
   button: {
+    flex: 1,
+    minWidth: 0,
     minHeight: 112,
     borderRadius: 16,
     justifyContent: "space-between",
@@ -2713,6 +2733,12 @@ const styles = StyleSheet.create({
     width: "92%",
     maxHeight: "82%",
     borderWidth: 1,
+  },
+
+  accountModalContent: {
+    padding: 14,
+    borderRadius: 18,
+    width: "92%",
   },
 
   recceModalContent: {
@@ -2780,38 +2806,145 @@ const styles = StyleSheet.create({
   },
 
   accountAvatar: {
-    width: 70,
-    height: 70,
-    borderRadius: 35,
-    alignSelf: "center",
+    width: 56,
+    height: 56,
+    borderRadius: 28,
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
-    marginBottom: 8,
   },
 
   accountAvatarText: {
-    fontSize: 24,
+    fontSize: 20,
     fontWeight: "900",
   },
 
-  accountHero: {
+  accountSummaryCard: {
+    marginTop: 8,
+    marginBottom: 10,
+    padding: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    flexDirection: "row",
     alignItems: "center",
-    marginTop: 2,
-    marginBottom: 2,
+    gap: 12,
+  },
+
+  accountSummaryTextWrap: {
+    flex: 1,
+    minWidth: 0,
   },
 
   accountHeroName: {
-    fontSize: 18,
+    fontSize: 17,
     fontWeight: "900",
-    marginBottom: 2,
-    textAlign: "center",
+    marginBottom: 3,
   },
 
   accountHeroMeta: {
     fontSize: 12,
-    fontWeight: "700",
-    textAlign: "center",
+    fontWeight: "800",
+  },
+
+  accountRows: {
+    marginBottom: 2,
+  },
+
+  accountSettingRow: {
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    borderRadius: 12,
+    marginBottom: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    borderWidth: 1,
+    gap: 10,
+  },
+
+  accountIconWrap: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  accountSettingTextWrap: {
+    flex: 1,
+    minWidth: 0,
+  },
+
+  accountSettingLabel: {
+    fontSize: 11,
+    fontWeight: "800",
+    textTransform: "uppercase",
+    letterSpacing: 0.35,
+    marginBottom: 2,
+  },
+
+  accountSettingValue: {
+    fontSize: 15,
+    lineHeight: 19,
+    fontWeight: "800",
+  },
+
+  accountActionRow: {
+    minHeight: 58,
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    marginTop: 0,
+    marginBottom: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+
+  accountActionLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    flex: 1,
+    minWidth: 0,
+    gap: 10,
+  },
+
+  accountActionText: {
+    fontSize: 15,
+    fontWeight: "900",
+  },
+
+  accountLogoutButton: {
+    minHeight: 52,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 2,
+    paddingHorizontal: 13,
+  },
+
+  accountLogoutText: {
+    color: "#fff",
+    fontWeight: "900",
+    fontSize: 15,
+  },
+
+  accountCloseButton: {
+    minHeight: 46,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 8,
+    paddingHorizontal: 13,
+    borderWidth: 1,
+  },
+
+  accountCloseText: {
+    fontWeight: "900",
+    fontSize: 14,
   },
 
   modalPrimaryButton: {

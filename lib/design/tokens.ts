@@ -35,6 +35,26 @@ export const typography = {
     lineHeight: 20,
     fontWeight: "700",
   } satisfies TextStyle,
+  bodySmall: {
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: "400",
+  } satisfies TextStyle,
+  metadata: {
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: "600",
+  } satisfies TextStyle,
+  button: {
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: "800",
+  } satisfies TextStyle,
+  formLabel: {
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: "700",
+  } satisfies TextStyle,
   label: {
     fontSize: 12,
     lineHeight: 16,
@@ -85,13 +105,29 @@ export const shadows = {
 } as const;
 
 export const controls = {
-  buttonHeight: 40,
+  buttonHeight: 44,
   buttonHeightLg: 44,
-  iconButton: 40,
-  iconButtonSm: 32,
+  iconButton: 44,
+  iconButtonSm: 44,
   chipMinHeight: 32,
   cardPadding: 12,
   cardPaddingLg: 16,
+} as const;
+
+export const layout = {
+  compactBreakpoint: 480,
+  tabletBreakpoint: 768,
+  wideBreakpoint: 1180,
+  compactGutter: 16,
+  tabletGutter: 24,
+  wideGutter: 32,
+  maxContentWidth: 1080,
+  maxFormWidth: 760,
+} as const;
+
+export const focus = {
+  width: 2,
+  offset: 2,
 } as const;
 
 export const designTokens = {
@@ -100,6 +136,8 @@ export const designTokens = {
   typography,
   shadows,
   controls,
+  layout,
+  focus,
 } as const;
 
 export type DesignTokens = typeof designTokens;

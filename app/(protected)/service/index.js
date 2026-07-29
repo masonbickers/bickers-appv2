@@ -12,7 +12,15 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
-import { useCachedServiceCollection } from "../../../lib/serviceCache";
+import {
+  getVehicleName,
+  getVehicleNextMot,
+  getVehicleNextService,
+  getVehicleRegistration,
+  isVehicleMotApplicable,
+  isVehicleServiceApplicable,
+} from "../../../lib/fleetSchema";
+import { useServiceCollection } from "../../../hooks/useServiceData";
 import { useTheme } from "../../../providers/ThemeProvider";
 
 const COLORS = {
@@ -74,23 +82,19 @@ export default function ServiceOverviewScreen() {
   const router = useRouter();
   const { colors } = useTheme();
 
-  const { rows: vehicles, loading } = useCachedServiceCollection("vehicles", {
+  const { rows: vehicles, loading } = useServiceCollection("vehicles", {
     label: "vehicles for service overview",
     orderByField: "name",
   });
 
   const processed = useMemo(() => {
     return vehicles.map((v) => {
-      const motStatus = classifyStatus(
-        v.nextMOT ||
-          v.nextMot ||
-          v.nextMotDate ||
-          v.motDueDate ||
-          v.motExpiryDate
-      );
-      const serviceStatus = classifyStatus(
-        v.nextService || v.nextServiceDate || v.serviceDueDate || v.nextSvc
-      );
+      const motStatus = isVehicleMotApplicable(v)
+        ? classifyStatus(getVehicleNextMot(v))
+        : { label: "N/A", code: "not-applicable" };
+      const serviceStatus = isVehicleServiceApplicable(v)
+        ? classifyStatus(getVehicleNextService(v))
+        : { label: "N/A", code: "not-applicable" };
       const defects = Array.isArray(v.defects) ? v.defects : [];
       const hasDefects = defects.length > 0;
 
@@ -186,7 +190,8 @@ export default function ServiceOverviewScreen() {
               styles.infoCard,
               {
                 backgroundColor: colors.surfaceAlt || COLORS.card,
-                borderLeftColor: COLORS.primaryAction,
+                borderColor: colors.border || COLORS.border,
+                borderLeftColor: colors.accent || COLORS.primaryAction,
               },
             ]}
           >
@@ -204,15 +209,17 @@ export default function ServiceOverviewScreen() {
                 label="Total vehicles"
                 value={summary.total}
                 color={colors.text || COLORS.textHigh}
+                labelColor={colors.textMuted || COLORS.textMid}
               />
               <SummaryItem
                 label="Overdue"
                 value={summary.overdue}
                 color={
                   summary.overdue > 0
-                    ? "#ED1C25"
+                    ? colors.danger || "#ED1C25"
                     : colors.textMuted || COLORS.textMid
                 }
+                labelColor={colors.textMuted || COLORS.textMid}
               />
             </View>
 
@@ -225,15 +232,17 @@ export default function ServiceOverviewScreen() {
                     ? "#FF9500"
                     : colors.textMuted || COLORS.textMid
                 }
+                labelColor={colors.textMuted || COLORS.textMid}
               />
               <SummaryItem
                 label="With defects"
                 value={summary.defects}
                 color={
                   summary.defects > 0
-                    ? "#ED1C25"
+                    ? colors.danger || "#ED1C25"
                     : colors.textMuted || COLORS.textMid
                 }
+                labelColor={colors.textMuted || COLORS.textMid}
               />
             </View>
           </View>
@@ -312,8 +321,8 @@ export default function ServiceOverviewScreen() {
             </View>
           ) : (
             attentionVehicles.map((v) => {
-              const name = v.name || v.vehicleName || "Unnamed vehicle";
-              const reg = v.reg || v.registration || "";
+              const name = getVehicleName(v) || "Unnamed vehicle";
+              const reg = getVehicleRegistration(v);
               const worstCode = v.worstCode;
 
               let borderAccent = COLORS.border;
@@ -393,11 +402,13 @@ export default function ServiceOverviewScreen() {
 
 /* Small components */
 
-function SummaryItem({ label, value, color }) {
+function SummaryItem({ label, value, color, labelColor }) {
   return (
     <View style={summaryStyles.item}>
       <Text style={[summaryStyles.value, { color }]}>{value}</Text>
-      <Text style={summaryStyles.label}>{label}</Text>
+      <Text style={[summaryStyles.label, { color: labelColor || COLORS.textMid }]}>
+        {label}
+      </Text>
     </View>
   );
 }
@@ -447,6 +458,7 @@ function StatusPill({ label, status }) {
 const summaryStyles = StyleSheet.create({
   item: {
     flex: 1,
+    minWidth: 0,
     paddingRight: 12,
   },
   value: {
@@ -463,10 +475,10 @@ const summaryStyles = StyleSheet.create({
 const quickStyles = StyleSheet.create({
   card: {
     flex: 1,
+    minWidth: 0,
     backgroundColor: COLORS.card,
     borderRadius: 10,
     padding: 12,
-    marginHorizontal: 4,
     borderWidth: 1,
     borderColor: COLORS.border,
   },
@@ -484,10 +496,12 @@ const quickStyles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "700",
     marginBottom: 2,
+    flexShrink: 1,
   },
   subtitle: {
     color: COLORS.textLow,
     fontSize: 12,
+    flexShrink: 1,
   },
 });
 
@@ -530,6 +544,7 @@ const styles = StyleSheet.create({
     padding: 12,
     borderRadius: 10,
     marginBottom: 12,
+    borderWidth: 1,
     borderLeftWidth: 4,
     borderLeftColor: COLORS.primaryAction,
   },
@@ -541,6 +556,7 @@ const styles = StyleSheet.create({
   },
   summaryRow: {
     flexDirection: "row",
+    gap: 10,
   },
   sectionDivider: {
     flexDirection: "row",
@@ -556,7 +572,8 @@ const styles = StyleSheet.create({
   },
   quickRow: {
     flexDirection: "row",
-    marginHorizontal: -4,
+    alignItems: "stretch",
+    gap: 10,
   },
   emptyState: {
     alignItems: "center",

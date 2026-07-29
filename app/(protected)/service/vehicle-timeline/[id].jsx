@@ -1,5 +1,4 @@
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { doc, getDoc } from "firebase/firestore";
 import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
@@ -13,8 +12,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
-import { db } from "../../../../firebaseConfig";
-import { useCachedServiceCollection } from "../../../../lib/serviceCache";
+import { useServiceCollection } from "../../../../hooks/useServiceData";
 import { useTheme } from "../../../../providers/ThemeProvider";
 
 const COLORS = {
@@ -60,6 +58,14 @@ function getVehicleLabel(vehicle, params) {
   const name = vehicle?.name || vehicle?.vehicleName || params.name || "Vehicle";
   const reg = vehicle?.registration || vehicle?.reg || params.registration || "";
   return reg ? `${name} · ${reg}` : name;
+}
+
+function buildResolvedDefectRouteId(vehicleId, itemIndex = "") {
+  return encodeURIComponent(["vehicles", vehicleId, itemIndex].join("|"));
+}
+
+function buildManualResolvedDefectRouteId(reportId) {
+  return encodeURIComponent(["defectReports", reportId, ""].join("|"));
 }
 
 function matchesVehicle(item, vehicleId, vehicle) {
@@ -151,7 +157,10 @@ function buildTimelineItems({
         .join(" · "),
       date: getActivityDate(report),
       photos: photosFromRecord(report),
-      route: "/service/defects",
+      route:
+        report.status === "resolved"
+          ? `/service/resolved-defects/${buildManualResolvedDefectRouteId(report.id)}`
+          : "/service/defects",
     }));
 
   const prepItems = vehiclePrepRecords
@@ -213,11 +222,11 @@ function buildTimelineItems({
         id: `embedded-defect-${index}`,
         icon: "check-circle",
         title: item?.title || "Resolved defect",
-        subtitle: item?.description || item?.notes || "",
+        subtitle: item?.completionNote || item?.description || item?.notes || "",
         meta: item?.category || "",
         date: item?.completedAt || item?.resolvedAt || item?.recordedAt,
         photos: [],
-        route: null,
+        route: `/service/resolved-defects/${buildResolvedDefectRouteId(vehicleId, index)}`,
       }))
     : [];
 
@@ -240,7 +249,7 @@ function buildTimelineItems({
 }
 
 function useCollectionRows(collectionName) {
-  const { rows } = useCachedServiceCollection(collectionName);
+  const { rows } = useServiceCollection(collectionName);
   return rows;
 }
 
@@ -256,25 +265,15 @@ export default function VehicleTimelineScreen() {
   const defectReports = useCollectionRows("defectReports");
   const vehiclePrepRecords = useCollectionRows("vehiclePrepRecords");
   const motPreChecks = useCollectionRows("motPreChecks");
+  const vehiclesResource = useServiceCollection("vehicles");
 
   useEffect(() => {
     if (!vehicleId) return;
-
-    const loadVehicle = async () => {
-      setLoadingVehicle(true);
-      try {
-        const snap = await getDoc(doc(db, "vehicles", String(vehicleId)));
-        setVehicle(snap.exists() ? { id: snap.id, ...snap.data() } : null);
-      } catch (err) {
-        console.error("Failed to load vehicle timeline:", err);
-        setVehicle(null);
-      } finally {
-        setLoadingVehicle(false);
-      }
-    };
-
-    loadVehicle();
-  }, [vehicleId]);
+    setVehicle(
+      vehiclesResource.data.find((row) => String(row.id) === String(vehicleId)) || null
+    );
+    setLoadingVehicle(vehiclesResource.isInitialLoading);
+  }, [vehicleId, vehiclesResource.data, vehiclesResource.isInitialLoading]);
 
   const timeline = useMemo(
     () =>

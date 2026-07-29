@@ -8,6 +8,8 @@ import { useAuth } from "../../providers/AuthProvider";
 // ✅ Use ThemeProvider hook instead of custom useColorScheme
 import { useTheme } from "../../providers/ThemeProvider";
 
+const FOOTER_BAR_HEIGHT = 64;
+
 export default function Footer() {
   const router = useRouter();
   const pathname = usePathname();
@@ -115,12 +117,13 @@ export default function Footer() {
 const styles = StyleSheet.create({
   container: { paddingTop: 0 },
   footer: {
+    height: FOOTER_BAR_HEIGHT,
     flexDirection: "row",
     alignItems: "center",
     borderTopWidth: StyleSheet.hairlineWidth,
     marginHorizontal: 0,
     borderRadius: 0,
-    paddingVertical: 7,
+    paddingVertical: 0,
     paddingHorizontal: 4,
     ...Platform.select({
       ios: {

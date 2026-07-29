@@ -26,13 +26,26 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Calendar } from "react-native-calendars";
 import Icon from "react-native-vector-icons/Feather";
 
+import {
+  AsyncContentState,
+  EmptyState,
+  LoadingState,
+} from "../../components/AsyncState";
 import { createDashboardCardStyles } from "../../lib/design/dashboard";
 import { designTokens as t } from "../../lib/design/tokens";
+import {
+  useEmployeeTimesheets,
+  useEmployees,
+  useHolidays,
+  useTimesheetQueries,
+} from "../../hooks/useOperationalData";
+import { useResponsiveLayout } from "../../hooks/useResponsiveLayout";
 
 // 🔑 Provider + Firebase
 import { auth, db } from "../../firebaseConfig";
 import { useAuth } from "../../providers/AuthProvider";
 import { useTheme } from "../../providers/ThemeProvider";
+import { useDataCache } from "../../providers/DataCacheProvider";
 
 function withAlpha(hex, alpha) {
   const safeAlpha = Math.max(0, Math.min(1, Number(alpha) || 0));
@@ -56,6 +69,7 @@ const TIMESHEET_DAYS = [
 const TIMESHEET_WEEKEND_SET = new Set(["Saturday", "Sunday"]);
 const DEFAULT_YARD_START = "08:00";
 const DEFAULT_YARD_END = "16:30";
+const ME_CACHE_TTL_MS = 10 * 60 * 1000;
 
 function timeToMinutes(value) {
   const raw = String(value || "").trim();
@@ -193,10 +207,25 @@ export default function MePage() {
   const router = useRouter();
   const { user, employee, isAuthed, loading } = useAuth();
   const { colors } = useTheme();
+  const responsive = useResponsiveLayout();
+  const employeesResource = useEmployees();
+  const holidaysResource = useHolidays();
+  const timesheetsResource = useEmployeeTimesheets();
+  const queriesResource = useTimesheetQueries();
+  const employeeRows = employeesResource.data;
+  const holidayRows = holidaysResource.data;
+  const employeeTimesheets = timesheetsResource.data;
+  const employeeTimesheetQueries = queriesResource.data;
+  const refreshEmployees = employeesResource.refresh;
+  const refreshHolidays = holidaysResource.refresh;
+  const refreshEmployeeTimesheets = timesheetsResource.refresh;
+  const refreshEmployeeTimesheetQueries = queriesResource.refresh;
   const dashboardCards = useMemo(() => createDashboardCardStyles(colors), [colors]);
 
   const [refreshing, setRefreshing] = useState(false);
   const [busy, setBusy] = useState(true);
+  const [personalError, setPersonalError] = useState(null);
+  const [hasPersonalContent, setHasPersonalContent] = useState(false);
 
   // Personal data blocks
   const [myHolidays, setMyHolidays] = useState([]);
@@ -299,10 +328,58 @@ export default function MePage() {
         email: firebaseUser.email || "No email",
         userCode: "N/A",
       }
-    : { name: "Unknown User", email: "No email", userCode: "N/A" };
+      : { name: "Unknown User", email: "No email", userCode: "N/A" };
+  const dataCache = useDataCache();
 
-  const loadPersonal = useCallback(async () => {
-    setBusy(true);
+  const hydrateDashboardState = useCallback((payload) => {
+    const safePayload = payload || {};
+
+    setMyHolidays(Array.isArray(safePayload.myHolidays) ? safePayload.myHolidays : []);
+    setNextHoliday(safePayload.nextHoliday || null);
+    setPendingHolidayCount(safePayload.pendingHolidayCount || 0);
+    setHolidayAllowance(safePayload.holidayAllowance || 0);
+    setHolidayUsedDays(safePayload.holidayUsedDays || 0);
+    setHolidayRemaining(safePayload.holidayRemaining || 0);
+    setTimesheetStats(
+      safePayload.timesheetStats && typeof safePayload.timesheetStats === "object"
+        ? {
+            weekHours: safePayload.timesheetStats.weekHours || 0,
+            pending: safePayload.timesheetStats.pending || 0,
+            lastSubmitted: safePayload.timesheetStats.lastSubmitted || null,
+          }
+        : { weekHours: 0, pending: 0, lastSubmitted: null }
+    );
+    setLatestTimesheetQuery(safePayload.latestTimesheetQuery || null);
+  }, []);
+
+  const loadPersonal = useCallback(async (options = {}) => {
+    const forceRefresh = Boolean(options?.forceRefresh);
+    const cacheKey = employee?.userCode || employee?.employeeId || user?.uid || "";
+    const cacheRecordKey = cacheKey ? `me-dashboard:${cacheKey}` : "";
+    let cachedRecord = null;
+
+    if (cacheRecordKey && dataCache?.read) {
+      try {
+        cachedRecord = await dataCache.read(cacheRecordKey);
+        if (!forceRefresh && cachedRecord && !dataCache.isExpired(cachedRecord, ME_CACHE_TTL_MS)) {
+          hydrateDashboardState(cachedRecord.data || {});
+          setHasPersonalContent(true);
+          setPersonalError(null);
+          setBusy(false);
+          return;
+        }
+
+        if (cachedRecord?.data) {
+          hydrateDashboardState(cachedRecord.data || {});
+          setHasPersonalContent(true);
+        }
+      } catch (err) {
+        console.warn("Failed to read dashboard cache:", err);
+      }
+    }
+
+    setBusy(!cachedRecord?.data);
+    setPersonalError(null);
     try {
       const userCode = employee?.userCode || "";
       const empName = employee?.name || employee?.displayName || "";
@@ -323,34 +400,25 @@ export default function MePage() {
       // ============================================================
       // 1) Find employee record (same approach as HolidayPage)
       // ============================================================
-      let empRecord = null;
-      const employeeLookups = [];
-      if (userCode) {
-        employeeLookups.push(query(collection(db, "employees"), where("userCode", "==", userCode), limit(1)));
-      }
-      if (email) {
-        employeeLookups.push(query(collection(db, "employees"), where("email", "==", email), limit(1)));
-      }
-      if (empName) {
-        employeeLookups.push(query(collection(db, "employees"), where("name", "==", empName), limit(1)));
-      }
-
-      for (const employeeQuery of employeeLookups) {
-        const snap = await getDocs(employeeQuery);
-        if (!snap.empty) {
-          const docSnap = snap.docs[0];
-          empRecord = { id: docSnap.id, ...docSnap.data() };
-          break;
-        }
-      }
+      const empRecord = employeeRows.find((candidate) => {
+        const candidateCode = String(candidate.userCode || "").trim();
+        const candidateEmail = String(candidate.email || "").trim().toLowerCase();
+        const candidateName = String(candidate.name || candidate.displayName || "")
+          .trim()
+          .toLowerCase();
+        return (
+          (!!userCode && candidateCode === String(userCode).trim()) ||
+          (!!email && candidateEmail === String(email).trim().toLowerCase()) ||
+          (!!empName && candidateName === String(empName).trim().toLowerCase())
+        );
+      }) || null;
 
       // ============================================================
       // 2) Load my holidays (filter like HolidayPage: name OR code)
       // ============================================================
-      const holidaySnap = await getDocs(collection(db, "holidays"));
-      const mine = holidaySnap.docs
-        .map((d) => ({ id: d.id, ...d.data() }))
-        .filter((h) => employeeMatchesHoliday(h, empRecord, employee, user));
+      const mine = holidayRows.filter((holiday) =>
+        employeeMatchesHoliday(holiday, empRecord, employee, user)
+      );
 
       setMyHolidays(mine);
 
@@ -420,18 +488,13 @@ export default function MePage() {
           return as - bs;
         });
 
-      setNextHoliday(upcomingApproved[0] || null);
+      const nextHolidayValue = upcomingApproved[0] || null;
+      setNextHoliday(nextHolidayValue);
 
       // ============================================================
       // 6) Timesheet stats (unchanged)
       // ============================================================
-      let tsMine = [];
-      if (userCode) {
-        const tsSnap = await getDocs(
-          query(collection(db, "timesheets"), where("employeeCode", "==", userCode), limit(60))
-        );
-        tsMine = tsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
-      }
+      const tsMine = userCode ? employeeTimesheets : [];
 
       const mondayKey = mondayISO(new Date());
       const thisWeek = tsMine.find((t) => (t.weekStart || t.weekISO) === mondayKey);
@@ -457,10 +520,7 @@ export default function MePage() {
       // ============================================================
       let latestQuery = null;
       if (userCode) {
-        const qSnap = await getDocs(
-          query(collection(db, "timesheetQueries"), where("employeeCode", "==", userCode), limit(30))
-        );
-        const allQueries = qSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        const allQueries = employeeTimesheetQueries;
 
         const openUnapproved = allQueries.filter((qObj) => {
           const qStatus = safeStr(qObj.status || "open");
@@ -491,25 +551,83 @@ export default function MePage() {
         latestQuery = openUnapproved[0] || null;
       }
       setLatestTimesheetQuery(latestQuery);
+      setHasPersonalContent(true);
+
+      if (cacheRecordKey && dataCache?.write) {
+        await dataCache.write(
+          cacheRecordKey,
+          {
+            myHolidays: mine,
+            nextHoliday: nextHolidayValue,
+            pendingHolidayCount: pendingCount,
+            holidayAllowance: roundToHalf(totalAllowance),
+            holidayUsedDays: used,
+            holidayRemaining: remaining,
+            timesheetStats: {
+              weekHours,
+              pending,
+              lastSubmitted,
+            },
+            latestTimesheetQuery: latestQuery,
+          },
+          ME_CACHE_TTL_MS
+        );
+      }
+    } catch (err) {
+      setPersonalError(err);
+      if (cachedRecord?.data) {
+        hydrateDashboardState(cachedRecord.data || {});
+        setHasPersonalContent(true);
+      } else {
+        setHasPersonalContent(false);
+        setMyHolidays([]);
+        setNextHoliday(null);
+        setPendingHolidayCount(0);
+        setHolidayAllowance(0);
+        setHolidayUsedDays(0);
+        setHolidayRemaining(0);
+        setTimesheetStats({ weekHours: 0, pending: 0, lastSubmitted: null });
+        setLatestTimesheetQuery(null);
+      }
+      console.warn("Failed to load dashboard data:", err);
     } finally {
       setBusy(false);
     }
   }, [
+    dataCache,
     employee,
+    employeeRows,
+    employeeTimesheetQueries,
+    employeeTimesheets,
+    holidayRows,
     user,
     currentYear,
     isBankHoliday,
+    hydrateDashboardState,
   ]);
 
   useEffect(() => {
-    loadPersonal();
+    loadPersonal({ forceRefresh: true });
   }, [loadPersonal]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    await loadPersonal();
-    setRefreshing(false);
-  }, [loadPersonal]);
+    try {
+      await Promise.all([
+        refreshEmployees(),
+        refreshHolidays(),
+        refreshEmployeeTimesheets(),
+        refreshEmployeeTimesheetQueries(),
+      ]);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [
+    refreshEmployeeTimesheetQueries,
+    refreshEmployeeTimesheets,
+    refreshEmployees,
+    refreshHolidays,
+  ]);
 
   const noteTone = "#0F766E";
   const noteMarkedDates = useMemo(() => {
@@ -750,10 +868,16 @@ export default function MePage() {
   };
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
+    <SafeAreaView
+      edges={["top", "left", "right"]}
+      style={[styles.container, { backgroundColor: colors.background }]}
+    >
       <View style={{ flex: 1 }}>
         <ScrollView
-          contentContainerStyle={styles.scrollContent}
+          contentContainerStyle={[
+            styles.scrollContent,
+            { width: "100%", maxWidth: responsive.maxContentWidth, alignSelf: "center" },
+          ]}
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
@@ -762,6 +886,22 @@ export default function MePage() {
             />
           }
         >
+          <AsyncContentState
+            resources={[
+              employeesResource,
+              holidaysResource,
+              timesheetsResource,
+              queriesResource,
+              {
+                isInitialLoading: busy,
+                isRefreshing: refreshing,
+                error: personalError,
+              },
+            ]}
+            hasContent={hasPersonalContent}
+            onRetry={onRefresh}
+            loadingLabel="Loading your profile…"
+          >
           {/* My Profile */}
           <View
             style={[
@@ -782,6 +922,8 @@ export default function MePage() {
                   ]}
                   activeOpacity={0.85}
                   onPress={() => router.push("/settings")}
+                  accessibilityRole="button"
+                  accessibilityLabel="Open settings"
                 >
                   <Icon name="settings" size={13} color={profileTone} />
                 </TouchableOpacity>
@@ -796,6 +938,8 @@ export default function MePage() {
                   ]}
                   activeOpacity={0.85}
                   onPress={() => router.push("/edit-profile")}
+                  accessibilityRole="button"
+                  accessibilityLabel="Edit my profile"
                 >
                   <Icon name="user" size={13} color={profileTone} />
                 </TouchableOpacity>
@@ -870,6 +1014,9 @@ export default function MePage() {
                 ]}
                 activeOpacity={0.85}
                 onPress={toggleNoteHistory}
+                accessibilityRole="button"
+                accessibilityLabel={noteHistoryOpen ? "Hide sent note history" : "Show sent note history"}
+                accessibilityState={{ expanded: noteHistoryOpen }}
               >
                 <Icon name={noteHistoryOpen ? "chevron-up" : "clock"} size={13} color={noteTone} />
                 <Text style={[styles.noteHistoryButtonText, { color: noteTone }]}>
@@ -918,6 +1065,9 @@ export default function MePage() {
                         setActiveNoteDateField(null);
                         if (mode.key === "single") setNoteEndDate("");
                       }}
+                      accessibilityRole="radio"
+                      accessibilityLabel={`${mode.label} note date range`}
+                      accessibilityState={{ checked: active }}
                     >
                       <Icon
                         name={active ? "check-circle" : "circle"}
@@ -951,6 +1101,9 @@ export default function MePage() {
                   onPress={() =>
                     setActiveNoteDateField((field) => (field === "start" ? null : "start"))
                   }
+                  accessibilityRole="button"
+                  accessibilityLabel={`Select note start date, ${formatDateCompact(noteStartDate) || "not selected"}`}
+                  accessibilityState={{ expanded: activeNoteDateField === "start" }}
                 >
                   <Text style={[styles.inputLabel, { color: colors.textMuted }]}>Start</Text>
                   <View style={styles.dateSelectValueRow}>
@@ -974,6 +1127,9 @@ export default function MePage() {
                     onPress={() =>
                       setActiveNoteDateField((field) => (field === "end" ? null : "end"))
                     }
+                    accessibilityRole="button"
+                    accessibilityLabel={`Select note end date, ${formatDateCompact(noteEndDate || noteStartDate) || "not selected"}`}
+                    accessibilityState={{ expanded: activeNoteDateField === "end" }}
                   >
                     <Text style={[styles.inputLabel, { color: colors.textMuted }]}>End</Text>
                     <View style={styles.dateSelectValueRow}>
@@ -1032,6 +1188,8 @@ export default function MePage() {
                     color: colors.text,
                   },
                 ]}
+                accessibilityLabel="Availability note"
+                accessibilityHint="Enter a short note for the office"
               />
 
               <View style={styles.noteFooterRow}>
@@ -1039,6 +1197,9 @@ export default function MePage() {
                   style={styles.checkRow}
                   activeOpacity={0.85}
                   onPress={() => setNoteBlocksBookings((v) => !v)}
+                  accessibilityRole="checkbox"
+                  accessibilityLabel="Block bookings for these dates"
+                  accessibilityState={{ checked: noteBlocksBookings }}
                 >
                   <Icon
                     name={noteBlocksBookings ? "check-square" : "square"}
@@ -1063,6 +1224,9 @@ export default function MePage() {
                   onPress={submitNote}
                   activeOpacity={0.9}
                   disabled={savingNote}
+                  accessibilityRole="button"
+                  accessibilityLabel="Send availability note"
+                  accessibilityState={{ disabled: savingNote, busy: savingNote }}
                 >
                   {savingNote ? (
                     <ActivityIndicator size="small" color={noteTone} />
@@ -1087,16 +1251,14 @@ export default function MePage() {
                 ]}
               >
                 {noteHistoryLoading ? (
-                  <View style={styles.noteHistoryLoading}>
-                    <ActivityIndicator size="small" color={noteTone} />
-                    <Text style={[styles.noteHistoryMeta, { color: colors.textMuted }]}>
-                      Loading notes
-                    </Text>
-                  </View>
+                  <LoadingState label="Loading notes…" compact />
                 ) : sentNotes.length === 0 ? (
-                  <Text style={[styles.noteHistoryMeta, { color: colors.textMuted }]}>
-                    No sent notes yet
-                  </Text>
+                  <EmptyState
+                    icon="message-square"
+                    title="No sent notes"
+                    message="Notes sent to the office will appear here."
+                    compact
+                  />
                 ) : (
                   sentNotes.map((item) => (
                     <View
@@ -1131,6 +1293,9 @@ export default function MePage() {
                         activeOpacity={0.85}
                         onPress={() => deleteSentNote(item)}
                         disabled={deletingNoteKey === item.key}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Delete note for ${formatNoteHistoryRange(item)}`}
+                        accessibilityState={{ disabled: deletingNoteKey === item.key, busy: deletingNoteKey === item.key }}
                       >
                         {deletingNoteKey === item.key ? (
                           <ActivityIndicator size="small" color={colors.danger || "#dc2626"} />
@@ -1184,11 +1349,7 @@ export default function MePage() {
                 },
               ]}
             >
-              {busy ? (
-                <View style={styles.loadingWrap}>
-                  <ActivityIndicator size="small" color={colors.textMuted} />
-                </View>
-              ) : (
+              {(
                 <>
                   <View style={styles.statRow}>
                     <View style={[styles.statCard, styles.flatStatCard]}>
@@ -1219,6 +1380,9 @@ export default function MePage() {
                       ]}
                       activeOpacity={0.9}
                       onPress={() => router.push(`/(protected)/query/${queryCard.id}`)}
+                      accessibilityRole="button"
+                      accessibilityLabel="Open manager timesheet query"
+                      accessibilityHint="Review the queried week and respond"
                     >
                       <View style={styles.queryIcon}>
                         <Icon name="alert-circle" size={16} color="#f97316" />
@@ -1260,6 +1424,8 @@ export default function MePage() {
                       },
                     ]}
                     onPress={() => router.push("/timesheet")}
+                    accessibilityRole="button"
+                    accessibilityLabel="Open timesheets"
                   >
                     <Icon name="clock" size={14} color={timesheetTone} />
                     <Text style={[styles.sectionActionText, { color: timesheetTone }]}>
@@ -1310,12 +1476,13 @@ export default function MePage() {
                 },
               ]}
             >
-              {busy ? (
-                <View style={styles.loadingWrap}>
-                  <ActivityIndicator size="small" color={colors.textMuted} />
-                </View>
-              ) : myHolidays.length === 0 ? (
-                <Text style={[styles.statusText, { color: colors.textMuted }]}>No holiday records</Text>
+              {myHolidays.length === 0 ? (
+                <EmptyState
+                  icon="umbrella"
+                  title="No holiday records"
+                  message="Approved and pending holiday requests will appear here."
+                  compact
+                />
               ) : (
                 <>
                   <View style={styles.statRow}>
@@ -1360,6 +1527,8 @@ export default function MePage() {
                       },
                     ]}
                     onPress={() => router.push("/holidaypage")}
+                    accessibilityRole="button"
+                    accessibilityLabel="Manage holidays"
                   >
                     <Icon name="briefcase" size={14} color={holidayTone} />
                     <Text style={[styles.sectionActionText, { color: holidayTone }]}>
@@ -1372,6 +1541,7 @@ export default function MePage() {
           </View>
 
           <View style={{ height: 12 }} />
+          </AsyncContentState>
         </ScrollView>
       </View>
     </SafeAreaView>

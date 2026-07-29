@@ -12,7 +12,16 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
-import { useCachedServiceCollection } from "../../../lib/serviceCache";
+import {
+  getVehicleLastMot,
+  getVehicleLastService,
+  getVehicleManufacturer,
+  getVehicleName,
+  getVehicleNextMot,
+  getVehicleNextService,
+  getVehicleRegistration,
+} from "../../../lib/fleetSchema";
+import { useServiceCollection } from "../../../hooks/useServiceData";
 import { useTheme } from "../../../providers/ThemeProvider";
 
 const COLORS = {
@@ -60,7 +69,7 @@ export default function ServiceHistoryScreen() {
   const router = useRouter();
   const { colors } = useTheme();
 
-  const { rows: vehicles, loading } = useCachedServiceCollection("vehicles", {
+  const { rows: vehicles, loading } = useServiceCollection("vehicles", {
     label: "vehicles for service history",
     orderByField: "name",
   });
@@ -68,10 +77,10 @@ export default function ServiceHistoryScreen() {
   const processed = useMemo(() => {
     return vehicles
       .map((v) => {
-        const lastMOT = v.lastMOT || v.lastMot || v.lastMotDate;
-        const nextMOT = v.nextMOT || v.nextMot || v.nextMotDate;
-        const lastService = v.lastService || v.lastServiceDate;
-        const nextService = v.nextService || v.nextServiceDate;
+        const lastMOT = getVehicleLastMot(v);
+        const nextMOT = getVehicleNextMot(v);
+        const lastService = getVehicleLastService(v);
+        const nextService = getVehicleNextService(v);
 
         const recentMOT = wasRecently(lastMOT, 365); // within last year
         const recentService = wasRecently(lastService, 365);
@@ -119,8 +128,8 @@ export default function ServiceHistoryScreen() {
   }, [processed]);
 
   const handleOpenVehicleHistory = (vehicle) => {
-    const name = vehicle.name || vehicle.vehicleName || "";
-    const reg = vehicle.registration || vehicle.reg || "";
+    const name = getVehicleName(vehicle) || "";
+    const reg = getVehicleRegistration(vehicle) || "";
 
     router.push({
       pathname: "/service/service-history/[vehicleId]",
@@ -261,9 +270,9 @@ export default function ServiceHistoryScreen() {
             </View>
           ) : (
             processed.map((v) => {
-              const name = v.name || v.vehicleName || "Unnamed vehicle";
-              const reg = v.registration || v.reg || "";
-              const manufacturer = v.manufacturer || "";
+              const name = getVehicleName(v) || "Unnamed vehicle";
+              const reg = getVehicleRegistration(v);
+              const manufacturer = getVehicleManufacturer(v);
               const model = v.model || "";
 
               const lastMOTText = formatDateShort(v.lastMOT);
@@ -483,7 +492,7 @@ function HistoryRow({ label, value }) {
 const summaryStyles = StyleSheet.create({
   item: {
     flex: 1,
-    paddingRight: 12,
+    minWidth: 0,
     marginBottom: 4,
   },
   value: {
@@ -495,6 +504,7 @@ const summaryStyles = StyleSheet.create({
     fontSize: 12,
     color: COLORS.textMid,
     marginTop: 2,
+    flexShrink: 1,
   },
 });
 
@@ -551,6 +561,7 @@ const styles = StyleSheet.create({
   },
   summaryRow: {
     flexDirection: "row",
+    gap: 10,
     marginTop: 2,
   },
   vehicleCard: {

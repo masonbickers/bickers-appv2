@@ -24,6 +24,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { db } from "../../../../firebaseConfig";
+import { useServiceCacheActions } from "../../../../hooks/useServiceData";
 import { runOrQueueFirestoreMutations } from "../../../../lib/sync/firestoreQueue";
 import { useTheme } from "../../../../providers/ThemeProvider";
 
@@ -54,6 +55,7 @@ export default function VehiclePrepScreen() {
   const router = useRouter();
   const navigation = useNavigation();
   const { colors } = useTheme();
+  const { upsertServiceRow, patchServiceRow } = useServiceCacheActions();
   const params = useLocalSearchParams();
   const allowLeaveRef = useRef(false);
 
@@ -276,6 +278,10 @@ export default function VehiclePrepScreen() {
       }
 
       const { queued } = await runOrQueueFirestoreMutations(mutations);
+      await upsertServiceRow("vehiclePrepRecords", { ...record, id: prepRef.id });
+      if (vehicleId && vehicleId !== "vehicle" && mutations[1]?.mutation?.data) {
+        await patchServiceRow("vehicles", vehicleId, mutations[1].mutation.data);
+      }
 
       Alert.alert(
         queued ? "Saved offline" : markComplete ? "Vehicle prepped" : "Prep saved",

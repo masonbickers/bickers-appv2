@@ -1,9 +1,10 @@
 // app/(protected)/service/home.js
 import { useRouter } from "expo-router";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import {
   ActivityIndicator,
   Image,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -14,14 +15,19 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
 import PageHeaderCard from "../../../components/PageHeaderCard";
-import { auth } from "../../../firebaseConfig";
+import { useServiceCollection } from "../../../hooks/useServiceData";
 import { resolveWorkspaceAccess } from "../../../lib/access";
 import { createDashboardCardStyles } from "../../../lib/design/dashboard";
 import { designTokens as t } from "../../../lib/design/tokens";
 import {
-  readServiceCollectionCache,
-  subscribeServiceCollectionCache,
-} from "../../../lib/serviceCache";
+  getEquipmentNextInspection,
+  getVehicleNextMot,
+  getVehicleNextService,
+  isVehicleActiveForMaintenance,
+  isVehicleMotApplicable,
+  isVehicleServiceApplicable,
+} from "../../../lib/fleetSchema";
+import { countOpenMonitorItems } from "../../../lib/serviceAdvisories";
 import { useAuth } from "../../../providers/AuthProvider";
 import { useTheme } from "../../../providers/ThemeProvider";
 
@@ -192,18 +198,9 @@ function countOpenManualDefects(reports) {
   ).length;
 }
 
-function countMonitorItems(records) {
-  return safeArray(records).reduce((sum, record) => {
-    const items = safeArray(record?.monitorReport);
-    return sum + items.length;
-  }, 0);
-}
-
 function countDueEquipment(records) {
   return safeArray(records).filter((record) => {
-    const status = classifyStatus(
-      record?.nextInspection || record?.inspectionDueDate
-    );
+    const status = classifyStatus(getEquipmentNextInspection(record));
 
     return status.code === "overdue" || status.code === "due-soon";
   }).length;
@@ -340,19 +337,42 @@ function buildActivityItems({
 
 export default function ServiceHomeScreen() {
   const router = useRouter();
-  const { colors } = useTheme();
+  const { colors, colorScheme } = useTheme();
   const { employee } = useAuth();
 
-  const [vehicles, setVehicles] = useState([]);
-  const [vehicleChecks, setVehicleChecks] = useState([]);
-  const [vehicleIssues, setVehicleIssues] = useState([]);
-  const [serviceRecords, setServiceRecords] = useState([]);
-  const [defectReports, setDefectReports] = useState([]);
-  const [vehiclePrepRecords, setVehiclePrepRecords] = useState([]);
-  const [motPreChecks, setMotPreChecks] = useState([]);
-  const [equipmentInspections, setEquipmentInspections] = useState([]);
-  const [equipment, setEquipment] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const vehiclesResource = useServiceCollection("vehicles", { orderByField: "name" });
+  const checksResource = useServiceCollection("vehicleChecks");
+  const issuesResource = useServiceCollection("vehicleIssues");
+  const serviceRecordsResource = useServiceCollection("serviceRecords");
+  const defectsResource = useServiceCollection("defectReports");
+  const prepResource = useServiceCollection("vehiclePrepRecords");
+  const motResource = useServiceCollection("motPreChecks");
+  const inspectionsResource = useServiceCollection("equipmentInspections");
+  const equipmentResource = useServiceCollection("equipment", { orderByField: "name" });
+  const vehicles = vehiclesResource.data;
+  const vehicleChecks = checksResource.data;
+  const vehicleIssues = issuesResource.data;
+  const serviceRecords = serviceRecordsResource.data;
+  const defectReports = defectsResource.data;
+  const vehiclePrepRecords = prepResource.data;
+  const motPreChecks = motResource.data;
+  const equipmentInspections = inspectionsResource.data;
+  const equipment = equipmentResource.data;
+  const serviceResources = [
+    vehiclesResource,
+    checksResource,
+    issuesResource,
+    serviceRecordsResource,
+    defectsResource,
+    prepResource,
+    motResource,
+    inspectionsResource,
+    equipmentResource,
+  ];
+  const loading = serviceResources.some((resource) => resource.isInitialLoading);
+  const refreshing = serviceResources.some((resource) => resource.isRefreshing);
+  const refreshServiceHome = () =>
+    Promise.all(serviceResources.map((resource) => resource.refresh()));
 
   const workspaceAccess = useMemo(
     () => resolveWorkspaceAccess(employee),
@@ -371,122 +391,6 @@ export default function ServiceHomeScreen() {
     }
   };
 
-  useEffect(() => {
-    let unsubscribers = [];
-
-    const resetData = () => {
-      setVehicles([]);
-      setVehicleChecks([]);
-      setVehicleIssues([]);
-      setServiceRecords([]);
-      setDefectReports([]);
-      setVehiclePrepRecords([]);
-      setMotPreChecks([]);
-      setEquipmentInspections([]);
-      setEquipment([]);
-    };
-
-    const clearListeners = () => {
-      unsubscribers.forEach((unsub) => {
-        if (typeof unsub === "function") unsub();
-      });
-      unsubscribers = [];
-    };
-
-    const attachCollectionListener = async ({
-      collectionName,
-      setter,
-      label,
-      sortByName = false,
-    }) => {
-      const cached = await readServiceCollectionCache(collectionName);
-      if (cached.rows.length > 0) {
-        setter(cached.rows);
-      }
-
-      const unsubscribe = subscribeServiceCollectionCache({
-        collectionName,
-        orderByField: sortByName ? "name" : undefined,
-        label,
-        onRows: setter,
-        onError: (err) => {
-          if (err?.code === "permission-denied" && !auth.currentUser) return;
-
-          console.error(`Service Home ${label} listener error:`, err);
-        },
-      });
-
-      unsubscribers.push(unsubscribe);
-    };
-
-    const unsubscribeAuth = auth.onAuthStateChanged((user) => {
-      clearListeners();
-
-      if (!user) {
-        resetData();
-        setLoading(false);
-        return;
-      }
-
-      setLoading(true);
-
-      Promise.all([
-        attachCollectionListener({
-          collectionName: "vehicles",
-          setter: setVehicles,
-          label: "vehicles",
-          sortByName: true,
-        }),
-        attachCollectionListener({
-          collectionName: "vehicleChecks",
-          setter: setVehicleChecks,
-          label: "vehicleChecks",
-        }),
-        attachCollectionListener({
-          collectionName: "vehicleIssues",
-          setter: setVehicleIssues,
-          label: "vehicleIssues",
-        }),
-        attachCollectionListener({
-          collectionName: "serviceRecords",
-          setter: setServiceRecords,
-          label: "serviceRecords",
-        }),
-        attachCollectionListener({
-          collectionName: "defectReports",
-          setter: setDefectReports,
-          label: "defectReports",
-        }),
-        attachCollectionListener({
-          collectionName: "vehiclePrepRecords",
-          setter: setVehiclePrepRecords,
-          label: "vehiclePrepRecords",
-        }),
-        attachCollectionListener({
-          collectionName: "motPreChecks",
-          setter: setMotPreChecks,
-          label: "motPreChecks",
-        }),
-        attachCollectionListener({
-          collectionName: "equipmentInspections",
-          setter: setEquipmentInspections,
-          label: "equipmentInspections",
-        }),
-        attachCollectionListener({
-          collectionName: "equipment",
-          setter: setEquipment,
-          label: "equipment",
-          sortByName: true,
-        }),
-      ]).finally(() => setLoading(false));
-    });
-
-    return () => {
-      clearListeners();
-      unsubscribeAuth();
-    };
-  }, []);
-
   const openDefectCount = useMemo(
     () =>
       countOpenCheckDefects(vehicleChecks) +
@@ -496,7 +400,9 @@ export default function ServiceHomeScreen() {
   );
 
   const advisoryCount = useMemo(
-    () => countMonitorItems(serviceRecords) + countMonitorItems(equipmentInspections),
+    () =>
+      countOpenMonitorItems(serviceRecords) +
+      countOpenMonitorItems(equipmentInspections),
     [equipmentInspections, serviceRecords]
   );
 
@@ -522,13 +428,16 @@ export default function ServiceHomeScreen() {
 
   const processed = useMemo(() => {
     return safeArray(vehicles).map((v) => {
-      const motDateRaw =
-        v?.nextMOT || v?.nextMot || v?.nextMotDate || v?.motDueDate || v?.motExpiryDate;
-      const serviceDateRaw =
-        v?.nextService || v?.nextServiceDate || v?.serviceDueDate || v?.nextSvc;
+      const activeForMaintenance = isVehicleActiveForMaintenance(v);
+      const motDateRaw = getVehicleNextMot(v);
+      const serviceDateRaw = getVehicleNextService(v);
 
-      const motStatus = classifyStatus(motDateRaw);
-      const serviceStatus = classifyStatus(serviceDateRaw);
+      const motStatus = activeForMaintenance && isVehicleMotApplicable(v)
+        ? classifyStatus(motDateRaw)
+        : { label: "Inactive", code: "not-applicable" };
+      const serviceStatus = activeForMaintenance && isVehicleServiceApplicable(v)
+        ? classifyStatus(serviceDateRaw)
+        : { label: "Inactive", code: "not-applicable" };
       const defects = safeArray(v?.defects);
       const hasDefects = defects.length > 0;
 
@@ -536,6 +445,7 @@ export default function ServiceHomeScreen() {
         ...v,
         motStatus,
         serviceStatus,
+        activeForMaintenance,
         motDateRaw,
         serviceDateRaw,
         defects,
@@ -608,7 +518,10 @@ export default function ServiceHomeScreen() {
       edges={["left", "right"]}
       style={[
         styles.container,
-        { backgroundColor: colors.background || COLORS.background },
+        {
+          backgroundColor:
+            colorScheme === "light" ? "#FFFFFF" : colors.background || COLORS.background,
+        },
       ]}
     >
       <PageHeaderCard
@@ -682,13 +595,24 @@ export default function ServiceHomeScreen() {
           </Text>
         </View>
       ) : (
-        <ScrollView contentContainerStyle={styles.scrollContent}>
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={refreshServiceHome}
+              tintColor={colors.accent}
+              colors={[colors.accent]}
+            />
+          }
+        >
           {/* FLEET SUMMARY CARD */}
           <View
             style={[
               styles.infoCard,
               {
-                borderLeftColor: colors.primary || COLORS.primaryAction,
+                backgroundColor: colors.surfaceAlt || COLORS.card,
+                borderColor: colors.border || COLORS.border,
               },
             ]}
           >
@@ -869,6 +793,8 @@ export default function ServiceHomeScreen() {
               const reg = v?.reg || v?.registration || "";
               const manufacturer = v?.manufacturer || "";
               const model = v?.model || "";
+              const taxStatus = v.taxStatus || "Unknown";
+              const insuranceStatus = v.insuranceStatus || "Unknown";
               const worstCode = v?.worstCode;
 
               const motStatusWithDate = {
@@ -899,6 +825,7 @@ export default function ServiceHomeScreen() {
                     {
                       backgroundColor: colors.surfaceAlt || COLORS.card,
                       borderLeftColor: borderAccent,
+                      borderColor: colors.border || COLORS.border,
                     },
                   ]}
                   activeOpacity={0.85}
@@ -948,11 +875,22 @@ export default function ServiceHomeScreen() {
                       )}
                     </View>
 
-                    <Icon
-                      name="chevron-right"
-                      size={18}
-                      color={colors.textMuted || COLORS.textMid}
-                    />
+                    <View style={{ alignItems: "flex-end" }}>
+                      <Text
+                        style={[
+                          styles.cardHint,
+                          { color: colors.textMuted || COLORS.textLow },
+                        ]}
+                      >
+                        Tap to view & book work
+                      </Text>
+                      <Icon
+                        name="chevron-right"
+                        size={18}
+                        color={colors.textMuted || COLORS.textMid}
+                        style={{ marginTop: 2 }}
+                      />
+                    </View>
                   </View>
 
                   <View style={styles.statusRow}>
@@ -970,6 +908,65 @@ export default function ServiceHomeScreen() {
                         <Text style={styles.defectText}>
                           {v.defects.length} defect
                           {v.defects.length > 1 ? "s" : ""}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+
+                  <View style={styles.metaRow}>
+                    <View style={styles.metaItem}>
+                      <Text
+                        style={[
+                          styles.metaLabel,
+                          { color: colors.textMuted || COLORS.textLow },
+                        ]}
+                      >
+                        Tax
+                      </Text>
+                      <Text
+                        style={[
+                          styles.metaValue,
+                          { color: colors.textMuted || COLORS.textMid },
+                        ]}
+                      >
+                        {taxStatus}
+                      </Text>
+                    </View>
+                    <View style={styles.metaItem}>
+                      <Text
+                        style={[
+                          styles.metaLabel,
+                          { color: colors.textMuted || COLORS.textLow },
+                        ]}
+                      >
+                        Insurance
+                      </Text>
+                      <Text
+                        style={[
+                          styles.metaValue,
+                          { color: colors.textMuted || COLORS.textMid },
+                        ]}
+                      >
+                        {insuranceStatus}
+                      </Text>
+                    </View>
+                    {typeof v.mileage === "number" && (
+                      <View style={styles.metaItem}>
+                        <Text
+                          style={[
+                            styles.metaLabel,
+                            { color: colors.textMuted || COLORS.textLow },
+                          ]}
+                        >
+                          Odo
+                        </Text>
+                        <Text
+                          style={[
+                            styles.metaValue,
+                            { color: colors.textMuted || COLORS.textMid },
+                          ]}
+                        >
+                          {v.mileage.toLocaleString("en-GB")} mi
                         </Text>
                       </View>
                     )}
@@ -1012,7 +1009,15 @@ function QuickActionCard({
 
   return (
     <TouchableOpacity
-      style={[quickStyles.card, dashboardCards.quickActionCard]}
+      style={[
+        quickStyles.card,
+        dashboardCards.quickActionCard,
+        {
+          borderColor: "rgba(100,116,139,0.28)",
+          shadowOpacity: 0,
+          elevation: 0,
+        },
+      ]}
       onPress={onPress}
       activeOpacity={0.85}
     >
@@ -1044,8 +1049,8 @@ function QuickActionCard({
 }
 
 function StatusPill({ label, status }) {
-  const { colors } = useTheme();
   const code = status?.code;
+  if (code === "unknown") return null;
 
   let bg = "rgba(74, 74, 74, 0.7)";
   let fg = COLORS.textHigh;
@@ -1059,9 +1064,6 @@ function StatusPill({ label, status }) {
   } else if (code === "ok") {
     bg = "rgba(52,199,89,0.22)";
     fg = "#34C759";
-  } else if (code === "unknown") {
-    bg = "rgba(142,142,147,0.22)";
-    fg = colors.textMuted || COLORS.textMid;
   }
 
   return (
@@ -1078,6 +1080,7 @@ function StatusPill({ label, status }) {
 const summaryStyles = StyleSheet.create({
   item: {
     flex: 1,
+    minWidth: 0,
     paddingRight: 12,
   },
   value: {
@@ -1093,9 +1096,9 @@ const summaryStyles = StyleSheet.create({
 const quickStyles = StyleSheet.create({
   card: {
     flex: 1,
+    minWidth: 0,
     borderRadius: 10,
-    padding: 12,
-    marginHorizontal: 4,
+    padding: 14,
     borderWidth: 1,
   },
   iconWrap: {
@@ -1131,9 +1134,11 @@ const quickStyles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "700",
     marginBottom: 2,
+    flexShrink: 1,
   },
   subtitle: {
     fontSize: 12,
+    flexShrink: 1,
   },
 });
 
@@ -1193,14 +1198,14 @@ const styles = StyleSheet.create({
   scrollContent: {
     padding: t.spacing.md,
     paddingTop: 0,
+    paddingBottom: 110,
   },
   infoCard: {
     backgroundColor: COLORS.card,
-    padding: t.controls.cardPadding,
-    borderRadius: t.radius.sm,
+    padding: 14,
+    borderRadius: 10,
     marginBottom: t.spacing.sm,
-    borderLeftWidth: 4,
-    borderLeftColor: COLORS.primaryAction,
+    borderWidth: 1,
   },
   infoTextTitle: {
     color: COLORS.textHigh,
@@ -1210,6 +1215,7 @@ const styles = StyleSheet.create({
   },
   summaryRow: {
     flexDirection: "row",
+    gap: 10,
   },
   sectionDivider: {
     flexDirection: "row",
@@ -1219,13 +1225,14 @@ const styles = StyleSheet.create({
   },
   sectionTitle: {
     color: COLORS.textHigh,
-    fontSize: 16,
-    fontWeight: "700",
+    fontSize: 17,
+    fontWeight: "800",
     paddingRight: 10,
   },
   quickRow: {
     flexDirection: "row",
-    marginHorizontal: -4,
+    alignItems: "stretch",
+    gap: 10,
   },
   emptyState: {
     alignItems: "center",
@@ -1245,10 +1252,12 @@ const styles = StyleSheet.create({
   },
   vehicleCard: {
     backgroundColor: COLORS.card,
-    padding: t.controls.cardPadding,
     borderRadius: 10,
+    marginTop: 5,
+    padding: 14,
     marginBottom: 12,
-    borderLeftWidth: 4,
+    borderWidth: 1,
+    borderLeftWidth: 3,
     borderLeftColor: COLORS.border,
   },
   vehicleHeaderRow: {
@@ -1263,8 +1272,12 @@ const styles = StyleSheet.create({
   },
   vehicleReg: {
     marginTop: 2,
-    fontSize: 13,
+    fontSize: 12,
     color: COLORS.textMid,
+  },
+  cardHint: {
+    fontSize: 11,
+    color: COLORS.textLow,
   },
   statusRow: {
     flexDirection: "row",
@@ -1282,6 +1295,23 @@ const styles = StyleSheet.create({
   statusPillText: {
     fontSize: 11,
     fontWeight: "600",
+  },
+  metaRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    marginTop: 8,
+  },
+  metaItem: {
+    marginRight: 16,
+    marginBottom: 2,
+  },
+  metaLabel: {
+    fontSize: 11,
+    color: COLORS.textLow,
+  },
+  metaValue: {
+    fontSize: 12,
+    color: COLORS.textMid,
   },
   defectPill: {
     flexDirection: "row",

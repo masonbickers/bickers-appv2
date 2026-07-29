@@ -24,8 +24,10 @@ import { getDownloadURL, ref, uploadBytesResumable } from "firebase/storage";
 
 // ⛽ Firebase + Auth provider
 import { auth, db, storage } from "../../firebaseConfig";
+import { isBookingVisibleToEmployee } from "../../lib/bookingVisibility";
 import { formatDateDDMMYYYY } from "../../lib/dateFormat";
 import { useAuth } from "../../providers/AuthProvider"; // if file is app/vehicle-check.js use "./providers/AuthProvider"
+import { useDataCache } from "../../providers/DataCacheProvider";
 import { useTheme } from "../../providers/ThemeProvider"; // 🎨 theme
 
 const IMAGES_ONLY = ImagePicker.MediaTypeOptions.Images;
@@ -109,6 +111,7 @@ export default function VehicleCheckPage() {
   );
 
   const { employee, user, isAuthed, loading } = useAuth();
+  const { invalidate } = useDataCache();
   const { colors } = useTheme(); // 🎨
 
   const [loadingDoc, setLoadingDoc] = useState(true);
@@ -193,8 +196,10 @@ export default function VehicleCheckPage() {
       if (jobId) {
         let snap = await getDoc(doc(db, "bookings", jobId));
         let j = null;
+        let isEmployeeBooking = false;
         if (snap.exists()) {
           j = { id: snap.id, ...snap.data() };
+          isEmployeeBooking = true;
         } else {
           snap = await getDoc(doc(db, "maintenanceBookings", jobId));
           if (snap.exists()) {
@@ -202,6 +207,15 @@ export default function VehicleCheckPage() {
           }
         }
         if (j) {
+          if (isEmployeeBooking && !isBookingVisibleToEmployee(j, employee)) {
+            setJob(null);
+            Alert.alert(
+              "Booking unavailable",
+              "This booking is not currently published to your employee app."
+            );
+            router.back();
+            return;
+          }
           setJob(j);
           const vs = Array.isArray(j.vehicles) ? j.vehicles : [];
           setVehicles(vs);
@@ -246,6 +260,8 @@ export default function VehicleCheckPage() {
     vehicle,
     loading,
     isAuthed,
+    employee,
+    router,
     dateISO,
     timeStr,
     normalizeMaintenanceBooking,
@@ -372,6 +388,7 @@ export default function VehicleCheckPage() {
       await setDoc(doc(db, "vehicleChecks", checkDocId), payload, {
         merge: true,
       });
+      await invalidate("collection:vehicleChecks");
 
       if (finalize) {
         setHasExisting(true);
@@ -796,7 +813,7 @@ export default function VehicleCheckPage() {
 const Field = ({ label, children }) => {
   const { colors } = useTheme();
   return (
-    <View style={{ marginBottom: 10 }}>
+    <View style={styles.field}>
       <Text
         style={{
           color: colors.textMuted,
@@ -895,6 +912,12 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
     gap: 12,
     marginTop: 12,
+  },
+  field: {
+    flexGrow: 1,
+    flexBasis: 150,
+    minWidth: 0,
+    marginBottom: 10,
   },
   input: {
     color: "#fff",

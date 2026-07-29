@@ -15,18 +15,24 @@ The app now includes a production sync foundation:
 
 Set these in Expo `extra` or `EXPO_PUBLIC_*` env vars:
 
-- `EXPO_PUBLIC_API_URL`: HTTPS base URL for the deployed bridge API used by DVLA lookup and SMS verification. Do not use localhost for production builds.
+- `EXPO_PUBLIC_API_URL`: HTTPS base URL for the deployed bridge API used by DVLA lookup. Do not use localhost for production builds.
+- The same API is required for reliable login setup and app-version checks:
+  - `POST /auth/employee-setup-lookup`
+  - `POST /auth/sync-employee-auth`
+  - `GET /app-config`
 - `syncEnabled` / `EXPO_PUBLIC_SYNC_ENABLED`: enable background sync layer.
 - `syncIntervalMs` / `EXPO_PUBLIC_SYNC_INTERVAL_MS`: sync interval (default `120000`).
 - `syncTimeoutMs` / `EXPO_PUBLIC_SYNC_TIMEOUT_MS`: bridge request timeout (default `10000`).
 - `syncApiBaseUrl` / `EXPO_PUBLIC_SYNC_API_URL`: optional external bridge API base URL.
 - `appEnv` / `EXPO_PUBLIC_APP_ENV`: `development`, `staging`, or `production`.
 
-Set these on the deployed bridge server for SMS verification:
+Set these on the deployed API server:
 
-- `TWILIO_ACCOUNT_SID`: Twilio account SID.
-- `TWILIO_AUTH_TOKEN`: Twilio auth token.
-- `TWILIO_VERIFY_SERVICE_SID`: Twilio Verify service SID for SMS codes.
+- `FIREBASE_SERVICE_ACCOUNT_JSON`, or `FIREBASE_PROJECT_ID` + `FIREBASE_CLIENT_EMAIL` + `FIREBASE_PRIVATE_KEY`.
+- `DEFAULT_COMPANY_ID`: defaults to `bickers-action`.
+- `MIN_APP_VERSION`: defaults to `5.0.4`.
+- `MIN_ANDROID_SDK`: defaults to `24`.
+- `UPDATE_REQUIRED_MESSAGE`: optional override for the update-blocking message.
 
 ### Optional external software bridge
 

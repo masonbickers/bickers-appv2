@@ -16,6 +16,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { db } from "../../../../firebaseConfig";
+import { useServiceCacheActions, useServiceCollection } from "../../../../hooks/useServiceData";
 import { useTheme } from "../../../../providers/ThemeProvider";
 
 const COLORS = {
@@ -134,10 +135,39 @@ function formatDateLong(value) {
   });
 }
 
+function formatDateShort(value) {
+  const d = toDateMaybe(value);
+  if (!d) return "";
+  return d.toLocaleDateString("en-GB", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "2-digit",
+  });
+}
+
+function formatFieldValue(value) {
+  if (value === null || value === undefined || value === "") return "—";
+
+  if (typeof value === "object") {
+    const d = typeof value.toDate === "function" ? value.toDate() : null;
+    return d ? formatDateShort(d) : "—";
+  }
+
+  const text = String(value);
+  const looksLikeDate =
+    /^\d{4}-\d{1,2}-\d{1,2}(?:[T\s].*)?$/.test(text) ||
+    /^\d{4}\/\d{1,2}\/\d{1,2}$/.test(text);
+
+  if (looksLikeDate) return formatDateShort(text) || text;
+  return text || "—";
+}
+
 export default function ServiceRecordViewScreen() {
   const { id } = useLocalSearchParams();
   const router = useRouter();
   const { colors } = useTheme();
+  const { removeServiceRow } = useServiceCacheActions();
+  const recordsResource = useServiceCollection("serviceRecords");
 
   const [record, setRecord] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -145,27 +175,11 @@ export default function ServiceRecordViewScreen() {
 
   useEffect(() => {
     if (!id) return;
-
-    const load = async () => {
-      setLoading(true);
-      try {
-        const ref = doc(db, "serviceRecords", String(id));
-        const snap = await getDoc(ref);
-        if (snap.exists()) {
-          setRecord({ id: snap.id, ...snap.data() });
-        } else {
-          setRecord(null);
-        }
-      } catch (err) {
-        console.error("Failed to load service record:", err);
-        setRecord(null);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    load();
-  }, [id]);
+    setRecord(
+      recordsResource.data.find((row) => String(row.id) === String(id)) || null
+    );
+    setLoading(recordsResource.isInitialLoading);
+  }, [id, recordsResource.data, recordsResource.isInitialLoading]);
 
   const title = record?.serviceType || "Service record";
   const vehicleName = record?.vehicleName || "Vehicle";
@@ -270,6 +284,7 @@ export default function ServiceRecordViewScreen() {
               }
 
               await deleteDoc(doc(db, "serviceRecords", recordId));
+              await removeServiceRow("serviceRecords", recordId);
 
               Alert.alert("Deleted", "The service record has been deleted.", [
                 { text: "OK", onPress: () => router.back() },
@@ -302,10 +317,7 @@ export default function ServiceRecordViewScreen() {
         ]}
       >
         <TouchableOpacity
-          style={[
-            styles.backButton,
-            { borderColor: colors.border || COLORS.border },
-          ]}
+          style={styles.backButton}
           onPress={() => router.back()}
           activeOpacity={0.8}
         >
@@ -339,7 +351,13 @@ export default function ServiceRecordViewScreen() {
         </View>
         {record && (
           <TouchableOpacity
-            style={styles.editButton}
+            style={[
+              styles.editButton,
+              {
+                backgroundColor: colors.surfaceAlt || COLORS.chipBg,
+                borderColor: colors.border || COLORS.border,
+              },
+            ]}
             onPress={() =>
               router.push({
                 pathname: "/service/service-form/[id]",
@@ -351,8 +369,10 @@ export default function ServiceRecordViewScreen() {
             }
             activeOpacity={0.85}
           >
-            <Feather name="edit-3" size={15} color={COLORS.textHigh} />
-            <Text style={styles.editButtonText}>Edit</Text>
+            <Feather name="edit-3" size={15} color={colors.text || COLORS.textHigh} />
+            <Text style={[styles.editButtonText, { color: colors.text || COLORS.textHigh }]}>
+              Edit
+            </Text>
           </TouchableOpacity>
         )}
       </View>
@@ -397,27 +417,39 @@ export default function ServiceRecordViewScreen() {
           >
             <View className="summaryHeader" style={styles.summaryHeader}>
               <View style={{ flex: 1 }}>
-                <Text style={styles.mainTitle}>{title}</Text>
+                <Text style={[styles.mainTitle, { color: colors.text || COLORS.textHigh }]}>
+                  {title}
+                </Text>
                 {!!fullDate && (
-                  <Text style={styles.summaryMeta}>{fullDate}</Text>
+                  <Text style={[styles.summaryMeta, { color: colors.textMuted || COLORS.textMid }]}>
+                    {fullDate}
+                  </Text>
                 )}
               </View>
               {typeof record.odometer === "number" && (
-                <View style={styles.chip}>
+                <View
+                  style={[
+                    styles.chip,
+                    {
+                      backgroundColor: colors.surface || COLORS.chipBg,
+                      borderColor: colors.border || COLORS.border,
+                    },
+                  ]}
+                >
                   <Feather
                     name="activity"
                     size={12}
-                    color={COLORS.textMid}
-                    style={{ marginRight: 4 }}
+                    color={colors.textMuted || COLORS.textMid}
+                    style={{ marginRight: 6 }}
                   />
-                  <Text style={styles.chipText}>
+                  <Text style={[styles.chipText, { color: colors.textMuted || COLORS.textMid }]}>
                     {record.odometer.toLocaleString("en-GB")} mi
                   </Text>
                 </View>
               )}
             </View>
 
-            <View style={styles.divider} />
+            <View style={[styles.divider, { backgroundColor: colors.border || COLORS.border }]} />
 
             <Field
               label="Vehicle"
@@ -446,13 +478,15 @@ export default function ServiceRecordViewScreen() {
               },
             ]}
           >
-            <Text style={styles.sectionTitle}>Workshop notes</Text>
-            <Field
+            <Text style={[styles.sectionTitle, { color: colors.text || COLORS.textHigh }]}>
+              Workshop notes
+            </Text>
+            <NoteField
               label="Work carried out"
               value={record.workSummary || "—"}
             />
-            <Field label="Parts used" value={record.partsUsed || "—"} />
-            <Field
+            <NoteField label="Parts used" value={record.partsUsed || "—"} />
+            <NoteField
               label="Extra notes"
               value={record.extraNotes || "No additional notes."}
             />
@@ -461,16 +495,20 @@ export default function ServiceRecordViewScreen() {
           {/* TYRES & BRAKES FOOTPRINT */}
           <View
             style={[
-              styles.card,
+              hasWheelInspection ? styles.card : styles.emptyCard,
               {
-                backgroundColor: colors.surfaceAlt || COLORS.card,
+                backgroundColor: hasWheelInspection
+                  ? colors.surfaceAlt || COLORS.card
+                  : "transparent",
                 borderColor: colors.border || COLORS.border,
               },
             ]}
           >
-            <Text style={styles.sectionTitle}>Tyres & brakes footprint</Text>
+            <Text style={[styles.sectionTitle, { color: colors.text || COLORS.textHigh }]}>
+              Tyres & brakes footprint
+            </Text>
             {!hasWheelInspection ? (
-              <Text style={styles.checkSummaryText}>
+              <Text style={[styles.checkSummaryText, { color: colors.textMuted || COLORS.textMid }]}>
                 No wheel inspection data saved for this service.
               </Text>
             ) : (
@@ -478,12 +516,23 @@ export default function ServiceRecordViewScreen() {
                 {WHEEL_POSITIONS.map((wheel) => {
                   const item = wheelInspection[wheel.key] || {};
                   return (
-                    <View key={wheel.key} style={styles.wheelRecordCard}>
+                    <View
+                      key={wheel.key}
+                      style={[
+                        styles.wheelRecordCard,
+                        {
+                          backgroundColor: colors.surface || COLORS.card,
+                          borderColor: colors.border || COLORS.border,
+                        },
+                      ]}
+                    >
                       <View style={styles.wheelRecordHeader}>
                         <View style={styles.wheelRecordBadge}>
                           <Text style={styles.wheelRecordBadgeText}>{wheel.shortLabel}</Text>
                         </View>
-                        <Text style={styles.wheelRecordTitle}>{wheel.label}</Text>
+                        <Text style={[styles.wheelRecordTitle, { color: colors.text || COLORS.textHigh }]}>
+                          {wheel.label}
+                        </Text>
                       </View>
                       <WheelRecordMetric
                         label="Tread"
@@ -499,7 +548,17 @@ export default function ServiceRecordViewScreen() {
                         status={getBrakeWearStatus(item.brakeWear)}
                       />
                       {item.note ? (
-                        <Text style={styles.wheelRecordNote}>{item.note}</Text>
+                        <Text
+                          style={[
+                            styles.wheelRecordNote,
+                            {
+                              borderTopColor: colors.border || COLORS.border,
+                              color: colors.textMuted || COLORS.textMid,
+                            },
+                          ]}
+                        >
+                          {item.note}
+                        </Text>
                       ) : null}
                     </View>
                   );
@@ -519,15 +578,27 @@ export default function ServiceRecordViewScreen() {
                 },
               ]}
             >
-              <Text style={styles.sectionTitle}>Monitor report</Text>
+              <Text style={[styles.sectionTitle, { color: colors.text || COLORS.textHigh }]}>
+                Monitor report
+              </Text>
               {monitorReport.map((item) => (
-                <View key={item.key} style={styles.monitorRecordRow}>
+                <View
+                  key={item.key}
+                  style={[
+                    styles.monitorRecordRow,
+                    { borderBottomColor: colors.border || COLORS.border },
+                  ]}
+                >
                   <View style={styles.monitorRecordBadge}>
                     <Text style={styles.monitorRecordBadgeText}>M</Text>
                   </View>
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.monitorRecordTitle}>{item.title}</Text>
-                    <Text style={styles.monitorRecordDetails}>{item.details}</Text>
+                    <Text style={[styles.monitorRecordTitle, { color: colors.text || COLORS.textHigh }]}>
+                      {item.title}
+                    </Text>
+                    <Text style={[styles.monitorRecordDetails, { color: colors.textMuted || COLORS.textLow }]}>
+                      {item.details}
+                    </Text>
                   </View>
                 </View>
               ))}
@@ -545,12 +616,22 @@ export default function ServiceRecordViewScreen() {
                 },
               ]}
             >
-              <Text style={styles.sectionTitle}>Defect report actions</Text>
+              <Text style={[styles.sectionTitle, { color: colors.text || COLORS.textHigh }]}>
+                Defect report actions
+              </Text>
               {serviceDefectActionList.map((item) => (
-                <View key={item.key} style={styles.defectActionRecordRow}>
+                <View
+                  key={item.key}
+                  style={[
+                    styles.defectActionRecordRow,
+                    { borderBottomColor: colors.border || COLORS.border },
+                  ]}
+                >
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.defectActionRecordTitle}>{item.title}</Text>
-                    <Text style={styles.defectActionRecordMeta}>
+                    <Text style={[styles.defectActionRecordTitle, { color: colors.text || COLORS.textHigh }]}>
+                      {item.title}
+                    </Text>
+                    <Text style={[styles.defectActionRecordMeta, { color: colors.textMuted || COLORS.textLow }]}>
                       {item.value}
                       {item.unit} recorded
                       {item.defectReportId ? ` · Report ${item.defectReportId}` : ""}
@@ -559,6 +640,7 @@ export default function ServiceRecordViewScreen() {
                   <Text
                     style={[
                       styles.defectActionRecordBadge,
+                      { color: colors.textMuted || COLORS.textMid },
                       item.action === "not_repaired" && { color: COLORS.primaryAction },
                     ]}
                   >
@@ -572,21 +654,31 @@ export default function ServiceRecordViewScreen() {
           {/* FULL CHECKLIST DETAILS */}
           <View
             style={[
-              styles.card,
+              checklistItems.length > 0 ? styles.card : styles.emptyCard,
               {
-                backgroundColor: colors.surfaceAlt || COLORS.card,
+                backgroundColor: checklistItems.length > 0
+                  ? colors.surfaceAlt || COLORS.card
+                  : "transparent",
                 borderColor: colors.border || COLORS.border,
               },
             ]}
           >
-            <Text style={styles.sectionTitle}>Checklist details</Text>
+            <Text style={[styles.sectionTitle, { color: colors.text || COLORS.textHigh }]}>
+              Checklist details
+            </Text>
             {checklistItems.length === 0 ? (
-              <Text style={styles.checkSummaryText}>
+              <Text style={[styles.checkSummaryText, { color: colors.textMuted || COLORS.textMid }]}>
                 No checklist data saved for this service.
               </Text>
             ) : (
               checklistItems.map((item) => (
-                <View key={item.label} style={styles.checkRowWrapper}>
+                <View
+                  key={item.label}
+                  style={[
+                    styles.checkRowWrapper,
+                    { borderBottomColor: colors.border || COLORS.border },
+                  ]}
+                >
                   {/* Row: tick / N/A / label + status */}
                   <View style={styles.checkRowTop}>
                     {/* Left: icon + label */}
@@ -615,13 +707,17 @@ export default function ServiceRecordViewScreen() {
                           <View style={styles.checkIconEmpty} />
                         )}
                       </View>
-                      <Text style={styles.checkLabel}>{item.label}</Text>
+                      <Text style={[styles.checkLabel, { color: colors.textMuted || COLORS.textMid }]}>
+                        {item.label}
+                      </Text>
                     </View>
 
                     {/* Right: status */}
                     <View style={styles.checkRight}>
                       {item.na ? (
-                        <Text style={styles.checkRightText}>N/A</Text>
+                        <Text style={[styles.checkRightText, { color: colors.textMuted || COLORS.textLow }]}>
+                          N/A
+                        </Text>
                       ) : item.status ? (
                         <Text
                           style={[
@@ -632,14 +728,18 @@ export default function ServiceRecordViewScreen() {
                           {CHECK_STATUS_META[item.status].label}
                         </Text>
                       ) : (
-                        <Text style={styles.checkRightText}>No status</Text>
+                        <Text style={[styles.checkRightText, { color: colors.textMuted || COLORS.textLow }]}>
+                          No status
+                        </Text>
                       )}
                     </View>
                   </View>
 
                   {/* Note for this check */}
                   {item.note ? (
-                    <Text style={styles.checkNoteText}>{item.note}</Text>
+                    <Text style={[styles.checkNoteText, { color: colors.textMuted || COLORS.textMid }]}>
+                      {item.note}
+                    </Text>
                   ) : null}
 
                   {/* Photos for this check */}
@@ -679,7 +779,9 @@ export default function ServiceRecordViewScreen() {
                 },
               ]}
             >
-              <Text style={styles.sectionTitle}>Photos</Text>
+              <Text style={[styles.sectionTitle, { color: colors.text || COLORS.textHigh }]}>
+                Photos
+              </Text>
               <ScrollView
                 horizontal
                 showsHorizontalScrollIndicator={false}
@@ -697,6 +799,7 @@ export default function ServiceRecordViewScreen() {
           <TouchableOpacity
             style={[
               styles.deleteButton,
+              { borderColor: COLORS.primaryAction },
               deleting && styles.deleteButtonDisabled,
             ]}
             onPress={handleDeleteRecord}
@@ -706,14 +809,14 @@ export default function ServiceRecordViewScreen() {
             {deleting ? (
               <ActivityIndicator
                 size="small"
-                color={COLORS.textHigh}
+                color={COLORS.primaryAction}
                 style={{ marginRight: 8 }}
               />
             ) : (
               <Feather
                 name="trash-2"
                 size={17}
-                color={COLORS.textHigh}
+                color={COLORS.primaryAction}
                 style={{ marginRight: 8 }}
               />
             )}
@@ -732,27 +835,51 @@ export default function ServiceRecordViewScreen() {
 /* SMALL REUSABLE FIELD */
 
 function Field({ label, value }) {
+  const { colors } = useTheme();
+
   return (
     <View style={styles.fieldRow}>
-      <Text style={styles.fieldLabel}>{label}</Text>
-      <Text style={styles.fieldValue}>{value || "—"}</Text>
+      <Text style={[styles.fieldLabel, { color: colors.textMuted || COLORS.textLow }]}>
+        {label}
+      </Text>
+      <Text style={[styles.fieldValue, { color: colors.text || COLORS.textMid }]}>
+        {formatFieldValue(value)}
+      </Text>
+    </View>
+  );
+}
+
+function NoteField({ label, value }) {
+  const { colors } = useTheme();
+
+  return (
+    <View style={styles.noteField}>
+      <Text style={[styles.noteLabel, { color: colors.textMuted || COLORS.textLow }]}>
+        {label}
+      </Text>
+      <Text style={[styles.noteValue, { color: colors.text || COLORS.textMid }]}>
+        {formatFieldValue(value)}
+      </Text>
     </View>
   );
 }
 
 function WheelRecordMetric({ label, value, suffix, status }) {
+  const { colors } = useTheme();
   const displayValue = String(value || "").trim();
   const statusMeta = CHECK_STATUS_META[status] || null;
 
   return (
     <View style={styles.wheelRecordMetric}>
       <View style={styles.wheelRecordMetricLabelRow}>
-        <Text style={styles.wheelRecordMetricLabel}>{label}</Text>
+        <Text style={[styles.wheelRecordMetricLabel, { color: colors.textMuted || COLORS.textLow }]}>
+          {label}
+        </Text>
         {statusMeta ? (
           <View style={[styles.wheelRecordStatusDot, { backgroundColor: statusMeta.color }]} />
         ) : null}
       </View>
-      <Text style={styles.wheelRecordMetricValue}>
+      <Text style={[styles.wheelRecordMetricValue, { color: colors.text || COLORS.textMid }]}>
         {displayValue ? `${displayValue} ${suffix}` : "—"}
       </Text>
     </View>
@@ -775,36 +902,28 @@ const styles = StyleSheet.create({
     borderBottomColor: COLORS.border,
   },
   backButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    alignItems: "center",
-    justifyContent: "center",
-    marginRight: 10,
+    paddingRight: 10,
   },
   editButton: {
     flexDirection: "row",
     alignItems: "center",
     borderRadius: 999,
-    backgroundColor: COLORS.primaryAction,
+    borderWidth: 1,
     paddingHorizontal: 10,
     paddingVertical: 7,
     marginLeft: 8,
   },
   editButtonText: {
-    color: COLORS.textHigh,
     fontSize: 12,
     fontWeight: "700",
     marginLeft: 5,
   },
   title: {
-    fontSize: 18,
+    fontSize: 22,
     fontWeight: "800",
   },
   subtitle: {
-    fontSize: 12,
+    fontSize: 13,
     marginTop: 2,
     color: COLORS.textMid,
   },
@@ -830,6 +949,13 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.border,
   },
+  emptyCard: {
+    borderRadius: 10,
+    padding: 14,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderStyle: "dashed",
+  },
   summaryHeader: {
     flexDirection: "row",
     alignItems: "center",
@@ -847,15 +973,15 @@ const styles = StyleSheet.create({
   chip: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: COLORS.chipBg,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
+    borderWidth: 1,
+    paddingHorizontal: 9,
+    paddingVertical: 5,
     borderRadius: 999,
+    marginLeft: 10,
   },
   chipText: {
     fontSize: 11,
-    color: COLORS.textMid,
-    fontWeight: "600",
+    fontWeight: "700",
   },
   divider: {
     height: 1,
@@ -884,6 +1010,20 @@ const styles = StyleSheet.create({
     textAlign: "right",
     flex: 1,
     marginLeft: 10,
+  },
+  noteField: {
+    paddingTop: 8,
+  },
+  noteLabel: {
+    fontSize: 12,
+    color: COLORS.textLow,
+    marginBottom: 3,
+  },
+  noteValue: {
+    fontSize: 13,
+    color: COLORS.textMid,
+    lineHeight: 18,
+    textAlign: "left",
   },
   checkSummaryText: {
     fontSize: 12,
@@ -1116,15 +1256,16 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     borderRadius: 10,
-    backgroundColor: COLORS.primaryAction,
+    backgroundColor: "transparent",
+    borderWidth: 1,
     paddingHorizontal: 14,
-    marginTop: 2,
+    marginTop: 10,
   },
   deleteButtonDisabled: {
     opacity: 0.7,
   },
   deleteButtonText: {
-    color: COLORS.textHigh,
+    color: COLORS.primaryAction,
     fontSize: 14,
     fontWeight: "800",
   },

@@ -14,9 +14,12 @@ import {
 import DropDownPicker from 'react-native-dropdown-picker';
 import Icon from 'react-native-vector-icons/Feather';
 import { db } from '../../firebaseConfig';
+import { useDataCache } from '../../providers/DataCacheProvider';
 import { useTheme } from '../../providers/ThemeProvider';
 
 const LUNCH_DEDUCTION_MINUTES = 30;
+const ON_SET_BASIC_DAY_MINUTES = 10 * 60;
+const PAID_WAIT_BEFORE_PRECALL_MINUTES = 60;
 
 const daysOfWeek = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 
@@ -57,6 +60,28 @@ function durationMinutes(startValue, endValue) {
   return end >= start ? end - start : end + 24 * 60 - start;
 }
 
+function absoluteMinutesFrom(anchorValue, value) {
+  const anchor = timeToMinutes(anchorValue);
+  const mins = timeToMinutes(value);
+  if (anchor == null || mins == null) return null;
+  return mins >= anchor ? mins : mins + 24 * 60;
+}
+
+function splitAfterBasicDay(anchorValue, startValue, endValue) {
+  const start = absoluteMinutesFrom(anchorValue, startValue);
+  const end = absoluteMinutesFrom(anchorValue, endValue);
+  if (start == null || end == null || end <= start) {
+    return { basicMinutes: 0, overtimeMinutes: 0 };
+  }
+
+  const anchor = timeToMinutes(anchorValue);
+  const basicEnd = anchor + ON_SET_BASIC_DAY_MINUTES;
+  const basicMinutes = Math.max(0, Math.min(end, basicEnd) - start);
+  const overtimeMinutes = Math.max(0, end - Math.max(start, basicEnd));
+
+  return { basicMinutes, overtimeMinutes };
+}
+
 function formatHoursMins(totalMinutes) {
   const mins = Math.max(0, Math.round(totalMinutes || 0));
   const hours = Math.floor(mins / 60);
@@ -84,28 +109,87 @@ function computeDaySummary(entry) {
   const safeEntry = entry || {};
   const type = String(safeEntry.type || 'Yard');
   const times = safeEntry.times || {};
+  const hasOnSetSignals =
+    !!times.callTime ||
+    !!times.wrapTime ||
+    !!times.arriveBack ||
+    !!times.leaveTime ||
+    !!times.arriveOnSet ||
+    !!times.preCall;
+  const hasJobAllocation =
+    safeEntry.hasJob === true ||
+    safeEntry.hasJob === 'true' ||
+    Boolean(safeEntry.bookingId) ||
+    Boolean(safeEntry.jobId) ||
+    Boolean(safeEntry.jobNumber) ||
+    Boolean(safeEntry.turnaroundJob) ||
+    (Array.isArray(safeEntry.jobs) && safeEntry.jobs.length > 0) ||
+    Array.isArray(safeEntry.workshopJobs) && safeEntry.workshopJobs.length > 0;
+  const isOnSetDay = type === 'On Set' || (hasJobAllocation && hasOnSetSignals);
 
   let start = null;
   let end = null;
+  const resolvedType = isOnSetDay ? 'On Set' : 'Yard';
 
-  if (type === 'Yard') {
+  if (!isOnSetDay) {
     start = times.startTime || null;
     end = times.endTime || null;
-  } else {
-    start = times.preCall || times.callTime || times.leaveTime || times.arriveOnSet || null;
-    end = times.wrapTime || times.arriveBack || null;
+    const grossMinutes = durationMinutes(start, end);
+    const yardMinutes = grossMinutes;
 
-    if (!start || !end) {
-      start = times.callTime || times.leaveTime || times.arriveOnSet || times.preCall || null;
-      end = times.arriveBack || times.wrapTime || null;
-    }
+    return {
+      start,
+      end,
+      grossMinutes,
+      lunchDeductionMinutes: 0,
+      netMinutes: grossMinutes,
+      basicMinutes: 0,
+      overtimeMinutes: 0,
+      travelMinutes: 0,
+      unpaidMinutes: 0,
+      paidWaitMinutes: 0,
+      yardMinutes,
+      resolvedType,
+      hasHours: grossMinutes > 0,
+      breakdownLines: [yardMinutes > 0 ? `Yard ${formatHoursMins(yardMinutes)}` : null].filter(Boolean),
+    };
   }
 
-  const grossMinutes = durationMinutes(start, end);
+  start = times.callTime || times.preCall || times.leaveTime || times.arriveOnSet || null;
+  end = times.arriveBack || times.wrapTime || null;
+
+  const callToWrap = splitAfterBasicDay(times.callTime, times.callTime, times.wrapTime);
+  const returnFromWrap = splitAfterBasicDay(times.callTime, times.wrapTime, times.arriveBack);
+  const preCallOvertimeMinutes = durationMinutes(times.preCall, times.callTime);
+  const outboundTravelMinutes = durationMinutes(times.leaveTime, times.arriveOnSet);
+  const leaveToReturnMinutes = durationMinutes(times.leaveTime, times.arriveBack);
+  const shouldPayTravel = leaveToReturnMinutes > ON_SET_BASIC_DAY_MINUTES;
+  const travelMinutes = shouldPayTravel ? outboundTravelMinutes : 0;
+  const gapBeforePreCallMinutes = durationMinutes(times.arriveOnSet, times.preCall);
+  const hasGapBeforePreCall = timeToMinutes(times.arriveOnSet) != null && timeToMinutes(times.preCall) != null;
+  const paidWaitMinutes = hasGapBeforePreCall
+    ? Math.min(gapBeforePreCallMinutes, PAID_WAIT_BEFORE_PRECALL_MINUTES)
+    : 0;
+  const unpaidMinutes = hasGapBeforePreCall
+    ? Math.max(0, gapBeforePreCallMinutes - PAID_WAIT_BEFORE_PRECALL_MINUTES)
+    : 0;
+  const basicMinutes = callToWrap.basicMinutes + returnFromWrap.basicMinutes + paidWaitMinutes;
+  const overtimeMinutes =
+    preCallOvertimeMinutes + callToWrap.overtimeMinutes + returnFromWrap.overtimeMinutes;
+  const grossMinutes = basicMinutes + overtimeMinutes + travelMinutes;
   const lunchDeductionMinutes =
-    type === 'On Set' && safeEntry.lunch && grossMinutes > 0
+    resolvedType === 'On Set' && safeEntry.lunch && grossMinutes > 0
       ? LUNCH_DEDUCTION_MINUTES
       : 0;
+  const hasSetInputs = Object.values(times).some(Boolean);
+  const breakdownLines = hasSetInputs
+    ? [
+        `Basic ${formatHoursMins(basicMinutes)}`,
+        `OT ${formatHoursMins(overtimeMinutes)}`,
+        `Travel ${formatHoursMins(travelMinutes)}`,
+        unpaidMinutes > 0 ? `Unpaid gap ${formatHoursMins(unpaidMinutes)}` : null,
+      ].filter(Boolean)
+    : [];
 
   return {
     start,
@@ -113,11 +197,20 @@ function computeDaySummary(entry) {
     grossMinutes,
     lunchDeductionMinutes,
     netMinutes: Math.max(0, grossMinutes - lunchDeductionMinutes),
+    basicMinutes,
+    overtimeMinutes,
+    travelMinutes,
+    unpaidMinutes,
+    paidWaitMinutes,
+    yardMinutes: 0,
+    resolvedType,
     hasHours: grossMinutes > 0,
+    breakdownLines,
   };
 }
 
 export default function TimesheetPage() {
+  const { invalidate } = useDataCache();
   const { colors } = useTheme();
   const [weekData, setWeekData] = useState(
     daysOfWeek.reduce((acc, day) => {
@@ -199,6 +292,11 @@ export default function TimesheetPage() {
       acc.totalMinutes += summary.netMinutes;
       acc.totalGrossMinutes += summary.grossMinutes;
       acc.totalLunchDeductionMinutes += summary.lunchDeductionMinutes;
+      acc.totalBasicMinutes += summary.basicMinutes;
+      acc.totalOvertimeMinutes += summary.overtimeMinutes;
+      acc.totalTravelMinutes += summary.travelMinutes;
+      acc.totalUnpaidMinutes += summary.unpaidMinutes;
+      acc.totalYardMinutes += summary.yardMinutes;
       if (summary.hasHours) acc.filledDays += 1;
       if (summary.lunchDeductionMinutes > 0) acc.lunchDays += 1;
       return acc;
@@ -208,6 +306,11 @@ export default function TimesheetPage() {
       totalMinutes: 0,
       totalGrossMinutes: 0,
       totalLunchDeductionMinutes: 0,
+      totalBasicMinutes: 0,
+      totalOvertimeMinutes: 0,
+      totalTravelMinutes: 0,
+      totalUnpaidMinutes: 0,
+      totalYardMinutes: 0,
       filledDays: 0,
       lunchDays: 0,
     }
@@ -223,11 +326,21 @@ export default function TimesheetPage() {
           totalMinutes: weeklySummary.totalMinutes,
           totalGrossMinutes: weeklySummary.totalGrossMinutes,
           totalLunchDeductionMinutes: weeklySummary.totalLunchDeductionMinutes,
+          totalBasicMinutes: weeklySummary.totalBasicMinutes,
+          totalOvertimeMinutes: weeklySummary.totalOvertimeMinutes,
+          totalTravelMinutes: weeklySummary.totalTravelMinutes,
+          totalUnpaidMinutes: weeklySummary.totalUnpaidMinutes,
+          totalYardMinutes: weeklySummary.totalYardMinutes,
           filledDays: weeklySummary.filledDays,
           lunchDays: weeklySummary.lunchDays,
         },
         submittedAt: new Date().toISOString(),
       });
+      await Promise.all([
+        invalidate('timesheets:'),
+        invalidate('timesheet-overview:'),
+        invalidate('me-dashboard:'),
+      ]);
       setSubmittedMessage('✅ Timesheet submitted for approval!');
       setShowPreview(false);
       // Optionally reset form:
@@ -321,6 +434,12 @@ export default function TimesheetPage() {
             Gross {formatHoursMins(weeklySummary.totalGrossMinutes)} minus lunch deductions{' '}
             {formatHoursMins(weeklySummary.totalLunchDeductionMinutes)}
           </Text>
+          <Text style={[styles.summaryMetaText, { color: colors.textMuted }]}>
+            Yard {formatHoursMins(weeklySummary.totalYardMinutes)} · Basic{' '}
+            {formatHoursMins(weeklySummary.totalBasicMinutes)} · OT{' '}
+            {formatHoursMins(weeklySummary.totalOvertimeMinutes)} · Travel{' '}
+            {formatHoursMins(weeklySummary.totalTravelMinutes)}
+          </Text>
           <View style={styles.summaryGrid}>
             {daysOfWeek.map((day) => {
               const daySummary = weeklySummary.byDay[day];
@@ -342,6 +461,11 @@ export default function TimesheetPage() {
                     {daySummary.lunchDeductionMinutes > 0 ? (
                       <Text style={[styles.summaryDaySubLabel, { color: colors.textMuted }]}>
                         Includes 30m lunch deduction
+                      </Text>
+                    ) : null}
+                    {daySummary.breakdownLines.length > 0 ? (
+                      <Text style={[styles.summaryDaySubLabel, { color: colors.textMuted }]}>
+                        {daySummary.breakdownLines.join(' · ')}
                       </Text>
                     ) : null}
                   </View>
@@ -486,16 +610,45 @@ export default function TimesheetPage() {
                 
 
                 <View style={styles.switchRow}>
-                  <Text style={[styles.label, { color: colors.textMuted }]}>Lunch:</Text>
-                  <Switch
-                    value={!weekData[day].lunch}
-                    onValueChange={(value) => handleToggle(day, 'lunch', !value)}
-                    trackColor={{
-                      false: withAlpha(colors.border, 0.9),
-                      true: withAlpha(colors.accent, 0.52),
-                    }}
-                    thumbColor={!weekData[day].lunch ? colors.accent : colors.surface}
-                  />
+                  <View style={styles.lunchToggleRow}>
+                    <Text
+                      style={[
+                        styles.lunchChoiceText,
+                        styles.lunchChoiceLeft,
+                        {
+                          color: weekData[day].lunch
+                            ? colors.textMuted
+                            : colors.text,
+                        },
+                        !weekData[day].lunch && styles.lunchChoiceActive,
+                      ]}
+                    >
+                      No Lunch
+                    </Text>
+                    <Switch
+                      value={weekData[day].lunch}
+                      onValueChange={(value) => handleToggle(day, 'lunch', value)}
+                      trackColor={{
+                        false: withAlpha(colors.border, 0.9),
+                        true: withAlpha(colors.accent, 0.52),
+                      }}
+                      thumbColor={weekData[day].lunch ? colors.accent : colors.surface}
+                    />
+                    <Text
+                      style={[
+                        styles.lunchChoiceText,
+                        styles.lunchChoiceRight,
+                        {
+                          color: weekData[day].lunch
+                            ? colors.text
+                            : colors.textMuted,
+                        },
+                        weekData[day].lunch && styles.lunchChoiceActive,
+                      ]}
+                    >
+                      Lunch Break
+                    </Text>
+                  </View>
                 </View>
                 <View style={styles.switchRow}>
                   <Text style={[styles.label, { color: colors.textMuted }]}>Overnight:</Text>
@@ -590,6 +743,12 @@ export default function TimesheetPage() {
       Gross {formatHoursMins(weeklySummary.totalGrossMinutes)} minus lunch deductions{' '}
       {formatHoursMins(weeklySummary.totalLunchDeductionMinutes)}
     </Text>
+    <Text style={[styles.previewSummaryText, { color: colors.textMuted }]}>
+      Yard {formatHoursMins(weeklySummary.totalYardMinutes)} · Basic{' '}
+      {formatHoursMins(weeklySummary.totalBasicMinutes)} · OT{' '}
+      {formatHoursMins(weeklySummary.totalOvertimeMinutes)} · Travel{' '}
+      {formatHoursMins(weeklySummary.totalTravelMinutes)}
+    </Text>
   </View>
   <ScrollView>
     {daysOfWeek.map((day) => (
@@ -601,7 +760,9 @@ export default function TimesheetPage() {
         ]}
       >
         <Text style={[styles.previewDay, { color: colors.text }]}>{day}</Text>
-        <Text style={[styles.previewText, { color: colors.textMuted }]}>Type: {weekData[day].type}</Text>
+        <Text style={[styles.previewText, { color: colors.textMuted }]}>
+          Type: {weeklySummary.byDay[day].resolvedType}
+        </Text>
         {Object.entries(weekData[day].times).map(([field, value]) => (
           <Text key={field} style={[styles.previewText, { color: colors.textMuted }]}>
             {labelForField(field)}: {value || '—'}
@@ -610,13 +771,18 @@ export default function TimesheetPage() {
         <Text style={[styles.previewText, { color: colors.textMuted }]}>
           Worked: {formatHoursMins(weeklySummary.byDay[day].netMinutes)}
         </Text>
+        {weeklySummary.byDay[day].breakdownLines.length > 0 ? (
+          <Text style={[styles.previewText, { color: colors.textMuted }]}>
+            Breakdown: {weeklySummary.byDay[day].breakdownLines.join(' · ')}
+          </Text>
+        ) : null}
         {weeklySummary.byDay[day].lunchDeductionMinutes > 0 ? (
           <Text style={[styles.previewText, { color: colors.textMuted }]}>
             Lunch deduction: {formatHoursMins(weeklySummary.byDay[day].lunchDeductionMinutes)}
           </Text>
         ) : null}
         <Text style={[styles.previewText, { color: colors.textMuted }]}>Night Supervisor: {weekData[day].nightSupervisor ? 'Yes' : 'No'}</Text>
-        <Text style={[styles.previewText, { color: colors.textMuted }]}>Lunch: {!weekData[day].lunch ? 'Yes' : 'No'}</Text>
+        <Text style={[styles.previewText, { color: colors.textMuted }]}>Lunch break: {weekData[day].lunch ? 'Taken' : 'Not taken'}</Text>
         <Text style={[styles.previewText, { color: colors.textMuted }]}>Overnight: {weekData[day].overnight ? 'Yes' : 'No'}</Text>
         {day === 'Saturday' && (
           <Text style={[styles.previewText, { color: colors.textMuted }]}>Saturday Supervisor: {weekData[day].saturdaySupervisor ? 'Yes' : 'No'}</Text>
@@ -746,6 +912,28 @@ const styles = StyleSheet.create({
     marginTop: 10,
     paddingTop: 8,
     borderTopWidth: 1,
+  },
+  lunchToggleRow: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+  },
+  lunchChoiceText: {
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  lunchChoiceLeft: {
+    flex: 1,
+    textAlign: 'right',
+  },
+  lunchChoiceRight: {
+    flex: 1,
+    textAlign: 'left',
+  },
+  lunchChoiceActive: {
+    fontWeight: '900',
   },
   notesInput: {
     borderRadius: 10,

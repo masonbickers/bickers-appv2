@@ -2,6 +2,7 @@ import { useRouter } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   ScrollView,
   StyleSheet,
   Text,
@@ -11,8 +12,15 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
+import { doc, serverTimestamp, updateDoc } from "firebase/firestore";
 
-import { useCachedServiceCollection } from "../../../lib/serviceCache";
+import { db } from "../../../firebaseConfig";
+import {
+  isOpenAdvisoryItem,
+  resolveMonitorReportItem,
+} from "../../../lib/serviceAdvisories";
+import { useServiceCacheActions, useServiceCollection } from "../../../hooks/useServiceData";
+import { runOrQueueFirestoreMutations } from "../../../lib/sync/firestoreQueue";
 import { useTheme } from "../../../providers/ThemeProvider";
 
 const COLORS = {
@@ -107,35 +115,53 @@ function buildAdvisories({ serviceRecords, equipmentInspections }) {
   const serviceAdvisories = serviceRecords.flatMap((record) => {
     const report = Array.isArray(record?.monitorReport) ? record.monitorReport : [];
     const date = getRecordDate(record);
-    return report.map((item, index) => ({
-      id: `service-${record.id}-${item?.key || index}`,
-      sourceType: "Service",
-      icon: "tool",
-      sourceId: record.id,
-      title: item?.title || "Service advisory",
-      details: item?.details || item?.note || "Amber service item recorded.",
-      asset: getVehicleText(record) || "Unknown vehicle",
-      notedDate: date,
-      days: daysSince(date),
-      route: record.id ? `/service/service-record/${record.id}` : null,
-    }));
+    return report.flatMap((item, index) =>
+      isOpenAdvisoryItem(item)
+        ? [
+            {
+              id: `service-${record.id}-${item?.key || index}`,
+              sourceType: "Service",
+              icon: "tool",
+              sourceCollection: "serviceRecords",
+              sourceId: record.id,
+              itemKey: item?.key || "",
+              itemIndex: index,
+              title: item?.title || "Service advisory",
+              details: item?.details || item?.note || "Amber service item recorded.",
+              asset: getVehicleText(record) || "Unknown vehicle",
+              notedDate: date,
+              days: daysSince(date),
+              route: record.id ? `/service/service-record/${record.id}` : null,
+            },
+          ]
+        : []
+    );
   });
 
   const inspectionAdvisories = equipmentInspections.flatMap((record) => {
     const report = Array.isArray(record?.monitorReport) ? record.monitorReport : [];
     const date = getRecordDate(record);
-    return report.map((item, index) => ({
-      id: `inspection-${record.id}-${item?.key || index}`,
-      sourceType: "Inspection",
-      icon: "clipboard",
-      sourceId: record.id,
-      title: item?.title || "Equipment advisory",
-      details: item?.details || item?.note || "Amber inspection item recorded.",
-      asset: getEquipmentText(record) || "Unknown equipment",
-      notedDate: date,
-      days: daysSince(date),
-      route: record.id ? `/service/inspections/inspection-form/${record.id}` : null,
-    }));
+    return report.flatMap((item, index) =>
+      isOpenAdvisoryItem(item)
+        ? [
+            {
+              id: `inspection-${record.id}-${item?.key || index}`,
+              sourceType: "Inspection",
+              icon: "clipboard",
+              sourceCollection: "equipmentInspections",
+              sourceId: record.id,
+              itemKey: item?.key || "",
+              itemIndex: index,
+              title: item?.title || "Equipment advisory",
+              details: item?.details || item?.note || "Amber inspection item recorded.",
+              asset: getEquipmentText(record) || "Unknown equipment",
+              notedDate: date,
+              days: daysSince(date),
+              route: record.id ? `/service/inspections/inspection-form/${record.id}` : null,
+            },
+          ]
+        : []
+    );
   });
 
   return [...serviceAdvisories, ...inspectionAdvisories].sort(
@@ -174,16 +200,19 @@ function groupAdvisoriesByAsset(items) {
 }
 
 function useCollectionRows(collectionName, label) {
-  const { rows } = useCachedServiceCollection(collectionName, { label });
+  const { rows } = useServiceCollection(collectionName);
   return rows;
 }
 
 export default function AdvisoriesScreen() {
   const router = useRouter();
   const { colors } = useTheme();
+  const { patchServiceRow } = useServiceCacheActions();
   const [loading, setLoading] = useState(true);
   const [searchText, setSearchText] = useState("");
   const [sourceFilter, setSourceFilter] = useState("all");
+  const [resolvingId, setResolvingId] = useState(null);
+  const [locallyResolvedIds, setLocallyResolvedIds] = useState(new Set());
 
   const serviceRecords = useCollectionRows("serviceRecords", "service advisories");
   const equipmentInspections = useCollectionRows("equipmentInspections", "inspection advisories");
@@ -197,10 +226,14 @@ export default function AdvisoriesScreen() {
     () => buildAdvisories({ serviceRecords, equipmentInspections }),
     [equipmentInspections, serviceRecords]
   );
+  const visibleAdvisories = useMemo(
+    () => advisories.filter((item) => !locallyResolvedIds.has(item.id)),
+    [advisories, locallyResolvedIds]
+  );
 
   const filtered = useMemo(() => {
     const queryText = normaliseKey(searchText);
-    return advisories.filter((item) => {
+    return visibleAdvisories.filter((item) => {
       if (sourceFilter !== "all" && normaliseKey(item.sourceType) !== sourceFilter) {
         return false;
       }
@@ -210,9 +243,91 @@ export default function AdvisoriesScreen() {
         .join(" ")
         .includes(queryText);
     });
-  }, [advisories, searchText, sourceFilter]);
+  }, [searchText, sourceFilter, visibleAdvisories]);
 
   const groupedAdvisories = useMemo(() => groupAdvisoriesByAsset(filtered), [filtered]);
+
+  const markAdvisoryFixed = async (item) => {
+    if (!item?.sourceCollection || !item?.sourceId) return;
+
+    setResolvingId(item.id);
+    try {
+      const sourceRows =
+        item.sourceCollection === "serviceRecords"
+          ? serviceRecords
+          : equipmentInspections;
+      const sourceRecord = sourceRows.find(
+        (record) => String(record.id) === String(item.sourceId)
+      );
+      const { nextItems, changed } = resolveMonitorReportItem(
+        sourceRecord?.monitorReport,
+        {
+          itemKey: item.itemKey,
+          itemIndex: item.itemIndex,
+          nowISO: new Date().toISOString(),
+        }
+      );
+
+      if (!changed) {
+        Alert.alert("Not found", "This advisory could not be found on the source record.");
+        return;
+      }
+
+      const updateData = {
+        monitorReport: nextItems,
+        updatedAt: serverTimestamp(),
+      };
+      const { queued } = await runOrQueueFirestoreMutations([
+        {
+          run: () =>
+            updateDoc(doc(db, item.sourceCollection, String(item.sourceId)), updateData),
+          mutation: {
+            operation: "update",
+            docPath: `${item.sourceCollection}/${item.sourceId}`,
+            data: updateData,
+            entityType:
+              item.sourceCollection === "serviceRecords"
+                ? "serviceRecord"
+                : "equipmentInspection",
+            entityId: String(item.sourceId),
+          },
+        },
+      ]);
+      await patchServiceRow(item.sourceCollection, item.sourceId, updateData);
+
+      setLocallyResolvedIds((prev) => {
+        const next = new Set(prev);
+        next.add(item.id);
+        return next;
+      });
+
+      Alert.alert(
+        queued ? "Saved offline" : "Marked fixed",
+        queued
+          ? "This advisory will be closed when the app syncs."
+          : "This advisory has been removed from the open advisory list."
+      );
+    } catch (err) {
+      console.error("Failed to mark advisory fixed:", err);
+      Alert.alert("Error", "Could not mark this advisory fixed.");
+    } finally {
+      setResolvingId(null);
+    }
+  };
+
+  const confirmMarkAdvisoryFixed = (item) => {
+    Alert.alert(
+      "Mark advisory fixed?",
+      "This will close the amber monitor item and remove it from open advisory counts.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Mark fixed",
+          onPress: () => markAdvisoryFixed(item),
+        },
+      ]
+    );
+  };
 
   return (
     <SafeAreaView
@@ -251,15 +366,15 @@ export default function AdvisoriesScreen() {
               },
             ]}
           >
-            <SummaryItem label="Total" value={advisories.length} colors={colors} />
+            <SummaryItem label="Total" value={visibleAdvisories.length} colors={colors} />
             <SummaryItem
               label="Service"
-              value={advisories.filter((item) => item.sourceType === "Service").length}
+              value={visibleAdvisories.filter((item) => item.sourceType === "Service").length}
               colors={colors}
             />
             <SummaryItem
               label="Inspection"
-              value={advisories.filter((item) => item.sourceType === "Inspection").length}
+              value={visibleAdvisories.filter((item) => item.sourceType === "Inspection").length}
               colors={colors}
             />
           </View>
@@ -382,16 +497,12 @@ export default function AdvisoriesScreen() {
                 </View>
 
                 {group.items.map((item, index) => (
-                  <TouchableOpacity
+                  <View
                     key={item.id}
                     style={[
                       styles.advisoryItemRow,
                       index > 0 && styles.advisoryItemDivider,
                     ]}
-                    activeOpacity={item.route ? 0.85 : 1}
-                    onPress={() => {
-                      if (item.route) router.push(item.route);
-                    }}
                   >
                     <View style={styles.iconWrap}>
                       <Icon name={item.icon} size={18} color={COLORS.textHigh} />
@@ -415,8 +526,44 @@ export default function AdvisoriesScreen() {
                       <Text style={[styles.metaText, { color: colors.textMuted || COLORS.textLow }]}>
                         {item.sourceType} · Noted {formatDate(item.notedDate)}
                       </Text>
+                      <View style={styles.actionRow}>
+                        {!!item.route && (
+                          <TouchableOpacity
+                            style={[
+                              styles.actionButton,
+                              { borderColor: colors.border || COLORS.border },
+                            ]}
+                            activeOpacity={0.85}
+                            onPress={() => router.push(item.route)}
+                          >
+                            <Icon
+                              name="file-text"
+                              size={13}
+                              color={colors.text || COLORS.textHigh}
+                            />
+                            <Text style={[styles.actionText, { color: colors.text || COLORS.textHigh }]}>
+                              Open record
+                            </Text>
+                          </TouchableOpacity>
+                        )}
+                        <TouchableOpacity
+                          style={[
+                            styles.actionButton,
+                            styles.resolveButton,
+                            { borderColor: colors.success || "#157347" },
+                          ]}
+                          activeOpacity={0.85}
+                          disabled={resolvingId === item.id}
+                          onPress={() => confirmMarkAdvisoryFixed(item)}
+                        >
+                          <Icon name="check-circle" size={13} color={colors.success || "#157347"} />
+                          <Text style={[styles.actionText, { color: colors.success || "#157347" }]}>
+                            {resolvingId === item.id ? "Saving..." : "Mark fixed"}
+                          </Text>
+                        </TouchableOpacity>
+                      </View>
                     </View>
-                  </TouchableOpacity>
+                  </View>
                 ))}
               </View>
             ))
@@ -626,5 +773,27 @@ const styles = StyleSheet.create({
   metaText: {
     marginTop: 6,
     fontSize: 12,
+  },
+  actionRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 10,
+  },
+  actionButton: {
+    minHeight: 32,
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+  },
+  resolveButton: {
+    backgroundColor: "rgba(21,115,71,0.08)",
+  },
+  actionText: {
+    fontSize: 12,
+    fontWeight: "800",
   },
 });

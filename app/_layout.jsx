@@ -1,9 +1,11 @@
 // app/_layout.jsx
 import { Slot, usePathname, useRouter, useSegments } from "expo-router";
+import * as Application from "expo-application";
+import Constants from "expo-constants";
 import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
 import React, { useEffect, useRef, useState } from "react";
-import { Keyboard, KeyboardAvoidingView, Platform, View } from "react-native";
+import { Keyboard, KeyboardAvoidingView, Platform, Text, View } from "react-native";
 import {
   SafeAreaProvider,
   initialWindowMetrics,
@@ -14,6 +16,7 @@ import ServiceFooter from "../components/app/service-footer"; // 👈 NEW
 
 import { doc, setDoc } from "firebase/firestore";
 import { db } from "../firebaseConfig";
+import { getRemoteAppConfig } from "../lib/authApi";
 import { resolveWorkspaceAccess } from "../lib/access";
 import {
   addNotificationListeners,
@@ -22,11 +25,13 @@ import {
   registerForPushNotificationsAsync,
 } from "../lib/notifications";
 import { AuthProvider, useAuth } from "../providers/AuthProvider";
+import { DataCacheProvider } from "../providers/DataCacheProvider";
+import { NotificationPreferencesProvider } from "../providers/NotificationPreferencesProvider";
 
 // 👇 Theme imports
 import { ThemeProvider, useTheme } from "../providers/ThemeProvider";
 
-const FOOTER_HEIGHT = 64;
+const FOOTER_BAR_HEIGHT = 64;
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
 /* -------------------- tiny helpers -------------------- */
@@ -43,6 +48,27 @@ function toISODate(val) {
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const dd = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${dd}`;
+}
+function compareVersions(a = "0.0.0", b = "0.0.0") {
+  const left = String(a).split(".").map((part) => Number(part) || 0);
+  const right = String(b).split(".").map((part) => Number(part) || 0);
+  const length = Math.max(left.length, right.length);
+
+  for (let i = 0; i < length; i += 1) {
+    const diff = (left[i] || 0) - (right[i] || 0);
+    if (diff !== 0) return diff;
+  }
+
+  return 0;
+}
+function getCurrentAppVersion() {
+  return (
+    Application.nativeApplicationVersion ||
+    Constants.expoConfig?.version ||
+    Constants.manifest2?.extra?.expoClient?.version ||
+    Constants.manifest?.version ||
+    "0.0.0"
+  );
 }
 function firstISOFromNotifData(data) {
   const d = data || {};
@@ -130,6 +156,8 @@ function ShellInner() {
   const workspaceAccess = resolveWorkspaceAccess(employee);
   const isServiceOnlyUser = workspaceAccess.service && !workspaceAccess.user;
   const lastNotificationNavSig = useRef("");
+  const lastPushRegistrationRef = useRef("");
+  const [updateRequired, setUpdateRequired] = useState(null);
 
   // 👇 any route starting with "/service" uses the Service footer
   // e.g. /service, /service/pages/..., /service/whatever
@@ -139,6 +167,8 @@ function ShellInner() {
       ? Math.max(insets.top, 44)
       : insets.top
     : 0;
+  const shellBackground =
+    isServiceRoute && colorScheme === "light" ? "#FFFFFF" : colors.background;
   const [keyboardVisible, setKeyboardVisible] = useState(false);
   const showFooter = !hideFooter && !keyboardVisible;
 
@@ -154,6 +184,47 @@ function ShellInner() {
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    const checkAppCompatibility = async () => {
+      try {
+        const config = await getRemoteAppConfig();
+        if (cancelled) return;
+
+        const minVersion = String(config?.minAppVersion || "").trim();
+        const currentVersion = getCurrentAppVersion();
+        const androidSdk =
+          Platform.OS === "android" ? Number(Platform.Version || 0) : null;
+        const minAndroidSdk = Number(config?.minAndroidSdk || 0);
+        const versionBlocked =
+          !!minVersion && compareVersions(currentVersion, minVersion) < 0;
+        const androidBlocked =
+          Platform.OS === "android" &&
+          minAndroidSdk > 0 &&
+          androidSdk > 0 &&
+          androidSdk < minAndroidSdk;
+
+        if (versionBlocked || androidBlocked) {
+          setUpdateRequired({
+            message:
+              config?.updateMessage ||
+              "Please update Bickers to continue signing in.",
+            detail: androidBlocked
+              ? "This Android version is no longer supported."
+              : `Installed version ${currentVersion} is no longer supported.`,
+          });
+        }
+      } catch {}
+    };
+
+    checkAppCompatibility();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Hide splash when ready
   useEffect(() => {
     if (!loading) SplashScreen.hideAsync().catch(() => {});
@@ -161,6 +232,7 @@ function ShellInner() {
 
   // Auth gate
   useEffect(() => {
+    if (updateRequired) return;
     if (loading) return;
 
     // Not logged in and not in (auth) group -> kick to login
@@ -178,7 +250,7 @@ function ShellInner() {
         router.replace("/(protected)/screens/homescreen");
       }
     }
-  }, [loading, isAuthed, inAuthGroup, isServiceOnlyUser, router]);
+  }, [loading, isAuthed, inAuthGroup, isServiceOnlyUser, router, updateRequired]);
 
 
   // Push registration + tap handling
@@ -188,50 +260,94 @@ function ShellInner() {
       return;
     }
 
-    let dispose;
+    const dispose = addNotificationListeners({
+      onReceive: () => {},
+      onResponse: (resp) => {
+        const data = resp?.notification?.request?.content?.data ?? {};
+        if (data && typeof data.bookingId === "string" && data.bookingId) {
+          const iso = firstISOFromNotifData(data) || toISODate(new Date());
+          const sig = `job:${data.bookingId}:${iso}`;
+          if (lastNotificationNavSig.current === sig) return;
+          lastNotificationNavSig.current = sig;
+          router.push({
+            pathname: "/(protected)/screens/schedule",
+            params: { date: iso },
+          });
+          return;
+        }
+        if (data && typeof data.holidayId === "string" && data.holidayId) {
+          const sig = `holiday:${data.holidayId}`;
+          if (lastNotificationNavSig.current === sig) return;
+          lastNotificationNavSig.current = sig;
+          router.push("/holidaypage");
+          return;
+        }
+        if (data && typeof data.deepLink === "string" && data.deepLink) {
+          router.push(String(data.deepLink));
+        }
+      },
+    });
+    let cancelled = false;
     (async () => {
       if (isAuthed && user?.uid) {
         try {
           const token = await registerForPushNotificationsAsync();
-          if (token) {
+          if (cancelled) return;
+          const registrationSignature = `${user.uid}:${token || ""}`;
+          if (token && lastPushRegistrationRef.current !== registrationSignature) {
             await setDoc(
               doc(db, "users", String(user.uid)),
               { expoPushToken: token },
               { merge: true }
             );
+            lastPushRegistrationRef.current = registrationSignature;
           }
         } catch {}
       }
-      dispose = addNotificationListeners({
-        onReceive: () => {},
-        onResponse: (resp) => {
-          const data = resp?.notification?.request?.content?.data ?? {};
-          if (data && typeof data.bookingId === "string" && data.bookingId) {
-            const iso = firstISOFromNotifData(data) || toISODate(new Date());
-            const sig = `job:${data.bookingId}:${iso}`;
-            if (lastNotificationNavSig.current === sig) return;
-            lastNotificationNavSig.current = sig;
-            router.push({
-              pathname: "/(protected)/screens/schedule",
-              params: { date: iso },
-            });
-            return;
-          }
-          if (data && typeof data.holidayId === "string" && data.holidayId) {
-            const sig = `holiday:${data.holidayId}`;
-            if (lastNotificationNavSig.current === sig) return;
-            lastNotificationNavSig.current = sig;
-            router.push("/holidaypage");
-            return;
-          }
-          if (data && typeof data.deepLink === "string" && data.deepLink) {
-            router.push(String(data.deepLink));
-          }
-        },
-      });
     })();
-    return () => dispose?.();
+    return () => {
+      cancelled = true;
+      dispose?.();
+    };
   }, [isAuthed, user?.uid, router]);
+
+  if (updateRequired) {
+    SplashScreen.hideAsync().catch(() => {});
+    return (
+      <View
+        style={{
+          flex: 1,
+          justifyContent: "center",
+          padding: 28,
+          backgroundColor: colors.background,
+        }}
+      >
+        <Text
+          style={{
+            color: colors.text,
+            fontSize: 22,
+            fontWeight: "700",
+            marginBottom: 10,
+          }}
+        >
+          Update required
+        </Text>
+        <Text style={{ color: colors.text, fontSize: 16, lineHeight: 22 }}>
+          {updateRequired.message}
+        </Text>
+        <Text
+          style={{
+            color: colors.textMuted,
+            fontSize: 14,
+            lineHeight: 20,
+            marginTop: 10,
+          }}
+        >
+          {updateRequired.detail}
+        </Text>
+      </View>
+    );
+  }
 
   // ─────────────────────────────────────────────
   // LAYOUT
@@ -241,15 +357,14 @@ function ShellInner() {
     <View
       style={{
         flex: 1,
-        backgroundColor: colors.background,
+        backgroundColor: shellBackground,
         paddingTop: rootTopInset,
-        // 👇 only reserve space for the footer itself; bottom inset handled in footer wrapper
-        paddingBottom: showFooter ? FOOTER_HEIGHT : 0,
+        paddingBottom: showFooter ? FOOTER_BAR_HEIGHT + insets.bottom : 0,
       }}
     >
       <StatusBar
         style={colorScheme === "dark" ? "light" : "dark"}
-        backgroundColor={colors.background}
+        backgroundColor={shellBackground}
       />
 
       <KeyboardAvoidingView
@@ -290,7 +405,11 @@ export default function RootLayout() {
     <SafeAreaProvider initialMetrics={initialWindowMetrics}>
       <AuthProvider>
         <ThemeProvider>
-          <ShellInner />
+          <DataCacheProvider>
+            <NotificationPreferencesProvider>
+              <ShellInner />
+            </NotificationPreferencesProvider>
+          </DataCacheProvider>
         </ThemeProvider>
       </AuthProvider>
     </SafeAreaProvider>
