@@ -5,7 +5,7 @@ import Ionicons from "react-native-vector-icons/Ionicons";
 
 import { resolveWorkspaceAccess } from "../../lib/access";
 import { useAuth } from "../../providers/AuthProvider";
-// ✅ Use ThemeProvider hook instead of custom useColorScheme
+// Use the shared application theme.
 import { useTheme } from "../../providers/ThemeProvider";
 
 const FOOTER_BAR_HEIGHT = 64;
