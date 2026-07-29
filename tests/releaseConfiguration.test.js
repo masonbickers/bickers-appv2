@@ -58,3 +58,14 @@ test("production builds use remote auto-increment and production variables", () 
     "production"
   );
 });
+
+test("internal candidates are production-equivalent and directly installable", () => {
+  assert.equal(easConfig.build.internal.distribution, "internal");
+  assert.equal(easConfig.build.internal.environment, "production");
+  assert.equal(easConfig.build.internal.autoIncrement, true);
+  assert.equal(
+    easConfig.build.internal.env.EXPO_PUBLIC_APP_ENV,
+    "production"
+  );
+  assert.equal(easConfig.build.internal.android.buildType, "apk");
+});

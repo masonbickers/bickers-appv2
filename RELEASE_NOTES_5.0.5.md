@@ -39,6 +39,9 @@
 - Signed-build installation, upgrade testing, full physical-device smoke
   testing, authenticated production configuration, and the mixed-version
   backend test are still required before release.
+- Crash, API, notification, login, and synchronisation monitoring must be
+  connected to confirmed dashboards before production rollout; this repository
+  currently contains console error logging but no crash/error telemetry SDK.
 
 ## Support focus during rollout
 

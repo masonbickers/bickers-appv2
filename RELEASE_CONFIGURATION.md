@@ -18,6 +18,9 @@ remote values are authoritative.
 
 - Preview builds use the EAS `preview` environment and set
   `EXPO_PUBLIC_APP_ENV=staging`.
+- Release-candidate builds use the EAS `internal` profile with production
+  environment variables. Android produces a directly installable APK; iOS uses
+  internal/ad hoc distribution.
 - Store builds use the EAS `production` environment and set
   `EXPO_PUBLIC_APP_ENV=production`.
 - `EXPO_PUBLIC_API_URL` is required in the EAS production environment. It must

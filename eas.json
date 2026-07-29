@@ -20,6 +20,22 @@
         "buildType": "app-bundle"
       }
     },
+    "internal": {
+      "distribution": "internal",
+      "channel": "candidate",
+      "environment": "production",
+      "autoIncrement": true,
+      "env": {
+        "EXPO_PUBLIC_APP_ENV": "production"
+      },
+      "ios": {
+        "image": "latest",
+        "resourceClass": "m-medium"
+      },
+      "android": {
+        "buildType": "apk"
+      }
+    },
     "production": {
       "distribution": "store",
       "channel": "production",
