@@ -36,6 +36,7 @@ yarn-error.*
 .env
 .env.*
 .env*.local
+google-services.json
 
 # OS / editors
 .DS_Store
