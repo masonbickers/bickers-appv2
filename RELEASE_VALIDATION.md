@@ -6,7 +6,7 @@ Validation date: 2026-07-29
 
 - TypeScript: pass, zero errors.
 - ESLint: pass, zero errors.
-- Unit tests: pass, 51 of 51.
+- Unit tests: pass, 55 of 55.
 - iOS JavaScript production bundle: generated successfully.
 - Android JavaScript production bundle: generated successfully.
 - Server JavaScript syntax: pass.
@@ -14,6 +14,10 @@ Validation date: 2026-07-29
 - Server startup: pass.
 - `GET /app-config`: HTTP 200 with minimum app version `5.0.4` and Android
   SDK `24`.
+- Legacy SMS start/check routes: retained and their validation responses
+  verified locally.
+- Backend compatibility contracts: legacy and new routes, additive auth merge
+  writes, minimum-version default, and core Storage paths covered by tests.
 - Firebase Storage rules: compiled successfully in the local Storage emulator
   using Java 21.
 - iOS Firebase plist: valid and matches bundle `com.bickers.booking`.
