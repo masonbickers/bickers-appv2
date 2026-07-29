@@ -17,6 +17,7 @@ import ServiceFooter from "../components/app/service-footer"; // 👈 NEW
 import { doc, setDoc } from "firebase/firestore";
 import { db } from "../firebaseConfig";
 import { getRemoteAppConfig } from "../lib/authApi";
+import { isAppUpdateRequired } from "../lib/appVersion";
 import { resolveWorkspaceAccess } from "../lib/access";
 import {
   addNotificationListeners,
@@ -48,18 +49,6 @@ function toISODate(val) {
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const dd = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${dd}`;
-}
-function compareVersions(a = "0.0.0", b = "0.0.0") {
-  const left = String(a).split(".").map((part) => Number(part) || 0);
-  const right = String(b).split(".").map((part) => Number(part) || 0);
-  const length = Math.max(left.length, right.length);
-
-  for (let i = 0; i < length; i += 1) {
-    const diff = (left[i] || 0) - (right[i] || 0);
-    if (diff !== 0) return diff;
-  }
-
-  return 0;
 }
 function getCurrentAppVersion() {
   return (
@@ -197,8 +186,7 @@ function ShellInner() {
         const androidSdk =
           Platform.OS === "android" ? Number(Platform.Version || 0) : null;
         const minAndroidSdk = Number(config?.minAndroidSdk || 0);
-        const versionBlocked =
-          !!minVersion && compareVersions(currentVersion, minVersion) < 0;
+        const versionBlocked = isAppUpdateRequired(currentVersion, minVersion);
         const androidBlocked =
           Platform.OS === "android" &&
           minAndroidSdk > 0 &&
