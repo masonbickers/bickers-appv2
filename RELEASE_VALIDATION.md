@@ -1,12 +1,18 @@
 # Bickers 5.0.5 automated release validation
 
-Validation date: 2026-07-29
+Validation date: 2026-07-30
 
 ## Passing checks
 
 - TypeScript: pass, zero errors.
 - ESLint: pass, zero errors.
 - Unit tests: pass, 56 of 56.
+- Expo dependency validation: pass.
+- Expo Doctor: pass, 19 of 19 checks.
+- Expo SDK: installed `55.0.28`.
+- React Native: installed `0.83.10`.
+- Direct SDK 54 `@expo/cli`: removed.
+- Package manifest/lock consistency: pass.
 - iOS JavaScript production bundle: generated successfully.
 - Android JavaScript production bundle: generated successfully.
 - Server JavaScript syntax: pass.
@@ -28,30 +34,19 @@ Validation date: 2026-07-29
 
 ## Failing or incomplete checks
 
-### Expo dependency compatibility
-
-Expo Doctor passed 18 of 19 checks. It requires the current Expo SDK 55 patch
-set, including Expo `55.0.28`, React Native `0.83.10`, and matching patch
-versions for 16 Expo modules.
-
-The repository also declares a standalone SDK 54 `@expo/cli` development
-dependency. It conflicts with the SDK 55 CLI bundled by Expo and must be removed
-before installing the required patch set.
-
-Required remediation:
-
-1. Remove `@expo/cli` from `devDependencies`.
-2. Run `npx expo install --fix`.
-3. Commit the resulting `package.json` and lockfile together.
-4. Rerun `npx expo-doctor`.
-
 ### Dependency advisories
 
-`npm audit --omit=dev` reports 23 production-tree advisories: 1 low,
-13 moderate, 7 high, and 2 critical. Apply non-breaking fixes only after the
-Expo patch alignment, then review the remaining transitive Expo/React Native
-advisories individually. Do not use `npm audit fix --force`, because its
-suggested resolution includes a breaking downgrade to Expo 46.
+The dependency security review is complete and recorded in
+`DEPENDENCY_SECURITY_REVIEW.md`.
+
+- Mobile: 28 affected packages, comprising 18 high and 10 moderate findings;
+  no critical findings.
+- Server after safe non-forced updates: 8 moderate findings; no high or critical
+  findings.
+- Remaining npm proposals require incompatible Expo/React Native changes or a
+  breaking Firebase Admin downgrade, so they were not applied.
+- Production release requires explicit residual-risk acceptance or compatible
+  upstream patches.
 
 ### Android Firebase descriptor
 
@@ -74,6 +69,6 @@ requires renewal. The following remote values therefore remain unverified:
 
 ## Gate status
 
-**Failed.** Automated checks are not all green until dependency alignment,
-advisory review, Android Firebase configuration, and authenticated production
-environment verification are completed.
+**Failed overall.** Dependency compatibility and advisory review are complete,
+but Android Firebase configuration, authenticated production environment
+verification, signed builds, and device testing remain outstanding.
