@@ -62,7 +62,7 @@ test("mixed-version rollout retains the legacy server API", () => {
   }
 });
 
-test("5.0.5 server API is additive and keeps 5.0.4 as the default minimum", () => {
+test("mixed-version server API keeps 5.0.4 as the pre-cutover default minimum", () => {
   assert.match(serverSource, /app\.get\("\/app-config"/);
   assert.match(serverSource, /app\.post\("\/auth\/employee-setup-lookup"/);
   assert.match(serverSource, /app\.post\("\/auth\/sync-employee-auth"/);
@@ -72,6 +72,20 @@ test("5.0.5 server API is additive and keeps 5.0.4 as the default minimum", () =
   assert.match(
     serverSource,
     /process\.env\.MIN_APP_VERSION \|\| "5\.0\.4"/
+  );
+  assert.match(serverSource, /legacyEmployeeSetupEnabled/);
+});
+
+test("legacy employee setup is controlled by the explicit rollout mode", () => {
+  assert.match(serverSource, /LEGACY_EMPLOYEE_SETUP_MODE/);
+  assert.match(serverSource, /LEGACY_EMPLOYEE_SETUP_ENABLED/);
+  assert.match(
+    serverSource,
+    /employee-setup-lookup[\s\S]{0,220}!LEGACY_EMPLOYEE_SETUP_ENABLED[\s\S]{0,220}status\(410\)/
+  );
+  assert.match(
+    serverSource,
+    /sync-employee-auth[\s\S]*approvedIdToken = bearerToken\(req\)[\s\S]*!LEGACY_EMPLOYEE_SETUP_ENABLED/
   );
 });
 
@@ -99,10 +113,6 @@ test("Firebase writes used by auth migration remain merge operations", () => {
 });
 
 test("mobile login requires an admin-approved Firebase password account", () => {
-  const syncRoute = serverSource.slice(
-    serverSource.indexOf('app.post("/auth/sync-employee-auth"'),
-    serverSource.indexOf('app.get("/dvla/vehicle"')
-  );
   assert.match(authProviderSource, /user\.isAnonymous !== true/);
   assert.match(authProviderSource, /mobileAccessStatus === "active"/);
   assert.doesNotMatch(authApiSource, /\/auth\/employee-setup-lookup/);
@@ -112,14 +122,19 @@ test("mobile login requires an admin-approved Firebase password account", () => 
   assert.match(loginSource, /signInWithEmailAndPassword/);
   assert.doesNotMatch(loginSource, /createUserWithEmailAndPassword|signInWithCustomToken/);
   assert.doesNotMatch(loginSource, /Employee code/);
-  assert.doesNotMatch(serverSource, /createCustomToken/);
-  assert.match(serverSource, /employee-setup-lookup[\s\S]{0,180}status\(410\)/);
   assert.match(serverSource, /verifyIdToken\(idToken, true\)/);
+  assert.match(serverSource, /sign_in_provider !== "password"/);
   assert.match(serverSource, /findEmployeeForApprovedUid\(decoded\.uid\)/);
   assert.match(serverSource, /mobileAccessStatus: "active"/);
-  assert.match(syncRoute, /const idToken = bearerToken\(req\)/);
-  assert.doesNotMatch(syncRoute, /req\.body|findEmployeeForUser/);
   assert.doesNotMatch(authApiSource, /body:\s*JSON\.stringify\(\{\s*idToken/);
+});
+
+test("mobile-only data routes reject revoked, invited, and obsolete sessions", () => {
+  assert.match(serverSource, /verifyIdToken\(idToken, true\)/);
+  assert.match(serverSource, /userData\.mobileAccessStatus !== "active"/);
+  assert.match(serverSource, /decodedUser\.mobileAccessStatus !== "active"/);
+  assert.match(serverSource, /employee\?\.mobileAccess\?\.status !== "active"/);
+  assert.match(serverSource, /isAnonymous && !LEGACY_EMPLOYEE_SETUP_ENABLED/);
 });
 
 test("work email input follows the keyboard caps state without rewriting letters", () => {

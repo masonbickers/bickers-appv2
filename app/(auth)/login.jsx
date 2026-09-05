@@ -104,6 +104,7 @@ export default function LoginPage() {
 
     setLoading(true);
     try {
+      await AsyncStorage.multiRemove(SESSION_KEYS);
       const credential = await signInWithEmailAndPassword(auth, email, password);
       const idToken = await credential.user.getIdToken(true);
       const synced = await syncEmployeeAuth({ idToken });
