@@ -16,8 +16,7 @@ The app now includes a production sync foundation:
 Set these in Expo `extra` or `EXPO_PUBLIC_*` env vars:
 
 - `EXPO_PUBLIC_API_URL`: HTTPS base URL for the deployed bridge API used by DVLA lookup. Do not use localhost for production builds.
-- The same API is required for reliable login setup and app-version checks:
-  - `POST /auth/employee-setup-lookup`
+- The same API is required for approved employee login and app-version checks:
   - `POST /auth/sync-employee-auth`
   - `GET /app-config`
 - `syncEnabled` / `EXPO_PUBLIC_SYNC_ENABLED`: enable background sync layer.
@@ -33,6 +32,10 @@ Set these on the deployed API server:
 - `MIN_APP_VERSION`: defaults to `5.0.4`.
 - `MIN_ANDROID_SDK`: defaults to `24`.
 - `UPDATE_REQUIRED_MESSAGE`: optional override for the update-blocking message.
+- `LEGACY_EMPLOYEE_SETUP_MODE`: required in production. Use `enabled` while
+  store build 5.0.9 remains supported, then switch to `disabled` at the
+  coordinated 5.0.10 cutover. Missing or invalid production values stop the
+  server rather than silently reopening legacy employee-code setup.
 
 ### Optional external software bridge
 

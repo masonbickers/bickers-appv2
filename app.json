@@ -2,7 +2,7 @@
   "expo": {
     "name": "Bickers",
     "slug": "bickers-app",
-    "version": "5.0.5",
+    "version": "5.0.10",
     "orientation": "default",
     "icon": "./assets/images/icon.png",
     "scheme": "bickersapp",

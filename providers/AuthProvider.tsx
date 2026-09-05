@@ -1,7 +1,7 @@
 // providers/AuthProvider.tsx
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import type { User } from "firebase/auth";
-import { onAuthStateChanged, signInAnonymously } from "firebase/auth";
+import { onAuthStateChanged } from "firebase/auth";
 import {
   collection,
   doc,
@@ -35,6 +35,7 @@ type EmployeeSession = {
   companyId?: string;
   uid?: string;
   isEnabled?: boolean;
+  mobileAccessStatus?: string;
   displayName?: string;
   email?: string;
   employeeId?: string;
@@ -243,12 +244,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const userProfile = await loadUserProfile(firebaseUser);
       const storedEmployeeId = String(m.employeeId || "").trim();
       const profileEmployeeId = String(userProfile?.employeeId || "").trim();
-      const employeeProfile =
-        !storedEmployeeId && profileEmployeeId
-          ? await loadEmployeeProfile(profileEmployeeId)
-          : !storedEmployeeId
-          ? await findEmployeeForPersistedUser(firebaseUser, userProfile)
-          : null;
+      const authoritativeEmployeeId = profileEmployeeId || storedEmployeeId;
+      const employeeProfile = authoritativeEmployeeId
+        ? await loadEmployeeProfile(authoritativeEmployeeId)
+        : await findEmployeeForPersistedUser(firebaseUser, userProfile);
       const employeeSource = employeeProfile || {};
       const profileAccess =
         userProfile?.appAccess && typeof userProfile.appAccess === "object"
@@ -273,7 +272,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           DEFAULT_COMPANY_ID
       ).trim();
       const employeeId =
-        storedEmployeeId || profileEmployeeId || String(employeeSource?.id || "").trim();
+        profileEmployeeId || String(employeeSource?.id || "").trim() || storedEmployeeId;
 
       if (employeeId) {
         const yardStart =
@@ -336,6 +335,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             employeeSource?.isEnabled !== false &&
             employeeSource?.disabled !== true &&
             employeeSource?.active !== false,
+          mobileAccessStatus:
+            userProfile?.mobileAccessStatus === "active" &&
+            employeeSource?.mobileAccess?.status === "active"
+              ? "active"
+              : String(
+                  userProfile?.mobileAccessStatus ||
+                    employeeSource?.mobileAccess?.status ||
+                    ""
+                ),
           displayName:
             m.displayName ||
             employeeSource?.name ||
@@ -383,36 +391,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     loadSession(user);
   }, [authReady, loadSession, user]);
 
-  useEffect(() => {
-    if (!authReady || user) return;
-
-    let cancelled = false;
-
-    const restoreAnonymousAuthForStoredSession = async () => {
-      const employeeId = await AsyncStorage.getItem("employeeId");
-      if (cancelled || !employeeId) return;
-      await signInAnonymously(auth).catch(() => {});
-    };
-
-    restoreAnonymousAuthForStoredSession();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [authReady, user]);
-
   const reloadSession = async () => {
     setSessionReady(false);
-    await loadSession(user || auth.currentUser);
+    // Auth updates auth.currentUser synchronously while the listener can still
+    // expose the previous user for one render. Never restore a stale session.
+    await loadSession(auth.currentUser);
   };
 
-  // Code/email login uses anonymous Firebase Auth plus the validated employee session.
+  // Firebase sign-in is only the first step. Protected routes remain closed
+  // until the server has activated the approved employee identity.
   const isAuthed = useMemo(() => {
-    const firebaseUserOK = !!user;
+    const firebaseUserOK = !!user && user.isAnonymous !== true;
     const employeeOK = !!employee?.employeeId;
     const tenantOK = !!employee?.companyId;
     const enabledOK = employee?.isEnabled !== false;
-    return firebaseUserOK && employeeOK && tenantOK && enabledOK;
+    const mobileAccessOK = employee?.mobileAccessStatus === "active";
+    return firebaseUserOK && employeeOK && tenantOK && enabledOK && mobileAccessOK;
   }, [user, employee]);
 
   const loading = !(authReady && sessionReady);

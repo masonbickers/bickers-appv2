@@ -15,7 +15,7 @@ const easConfig = JSON.parse(
 );
 
 test("release candidate uses a new app runtime", () => {
-  assert.equal(appConfig.version, "5.0.5");
+  assert.equal(appConfig.version, "5.0.10");
   assert.deepEqual(appConfig.runtimeVersion, { policy: "appVersion" });
 });
 
