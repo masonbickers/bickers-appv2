@@ -997,7 +997,6 @@ async function syncApprovedEmployeeAuth(idToken) {
       employeeId: employee.id,
       authUid: decoded.uid,
       uid: decoded.uid,
-      role: sessionData.role,
       companyId: sessionData.companyId,
       isEnabled: userData.isEnabled !== false,
       mobileAccessStatus: "active",
