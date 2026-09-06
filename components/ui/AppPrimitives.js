@@ -848,16 +848,16 @@ export function Banner({
 
 export function StateView({
   state = "empty",
-  title,
-  message,
-  icon,
-  action,
-  actionLabel,
-  onAction,
+  title = "",
+  message = "",
+  icon = null,
+  action = null,
+  actionLabel = "",
+  onAction = /** @type {(() => void) | null} */ (null),
   actionLoading = false,
-  tone,
+  tone = null,
   compact = false,
-  style,
+  style = null,
 }) {
   const { colors } = useTheme();
   const defaults = {
