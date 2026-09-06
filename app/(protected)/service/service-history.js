@@ -1,15 +1,15 @@
+import { AppText as Text, AppPressable as TouchableOpacity } from "../../../components/ui/AppPrimitives";
+import {
+  servicePalette as COLORS } from "../../../lib/design/semantics";
 // app/(protected)/service-history.jsx
 import { useRouter } from "expo-router";
 import { useMemo } from "react";
 import {
   ActivityIndicator,
-  ScrollView,
   StyleSheet,
-  Text,
-  TouchableOpacity,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+
 import Icon from "react-native-vector-icons/Feather";
 
 import {
@@ -23,17 +23,9 @@ import {
 } from "../../../lib/fleetSchema";
 import { useServiceCollection } from "../../../hooks/useServiceData";
 import { useTheme } from "../../../providers/ThemeProvider";
-
-const COLORS = {
-  background: "#0D0D0D",
-  card: "#1A1A1A",
-  border: "#333333",
-  textHigh: "#FFFFFF",
-  textMid: "#E0E0E0",
-  textLow: "#888888",
-  primaryAction: "#ED1C25",
-  inputBg: "#2a2a2a",
-};
+import { staticColors } from "../../../lib/design/staticColors";
+import { designTokens as t } from "../../../lib/design/tokens";
+import PageShell from "../../../components/layout/PageShell";
 
 function toDateMaybe(value) {
   if (!value) return null;
@@ -142,46 +134,14 @@ export default function ServiceHistoryScreen() {
   };
 
   return (
-    <SafeAreaView
-      edges={["left", "right"]}
-      style={[
-        styles.container,
-        { backgroundColor: colors.background || COLORS.background },
-      ]}
-    >
+    <PageShell header={{
+      variant: "compact",
+      title: "Service History",
+      subtitle: "Last MOT and service dates for each vehicle in the fleet.",
+      onBack: router.back,
+    }}>
       {/* HEADER */}
-      <View
-        style={[
-          styles.header,
-          { borderBottomColor: colors.border || COLORS.border },
-        ]}
-      >
-        <TouchableOpacity onPress={router.back} style={styles.backButton}>
-          <Icon
-            name="chevron-left"
-            size={22}
-            color={colors.text || COLORS.textHigh}
-          />
-        </TouchableOpacity>
-        <View style={{ flex: 1 }}>
-          <Text
-            style={[
-              styles.pageTitle,
-              { color: colors.text || COLORS.textHigh },
-            ]}
-          >
-            Service History
-          </Text>
-          <Text
-            style={[
-              styles.pageSubtitle,
-              { color: colors.textMuted || COLORS.textMid },
-            ]}
-          >
-            Last MOT and service dates for each vehicle in the fleet.
-          </Text>
-        </View>
-      </View>
+      
 
       {loading ? (
         <View style={styles.loadingContainer}>
@@ -199,7 +159,7 @@ export default function ServiceHistoryScreen() {
           </Text>
         </View>
       ) : (
-        <ScrollView contentContainerStyle={styles.scrollContent}>
+        <>
           {/* SUMMARY CARD */}
           <View
             style={[
@@ -407,7 +367,7 @@ export default function ServiceHistoryScreen() {
                     style={[
                       styles.viewHistoryButton,
                       {
-                        backgroundColor: colors.surface || "#1F2933",
+                        backgroundColor: colors.surface || staticColors.hex_1f2933_8in7ju,
                       },
                     ]}
                     activeOpacity={0.85}
@@ -433,9 +393,9 @@ export default function ServiceHistoryScreen() {
           )}
 
           <View style={{ height: 40 }} />
-        </ScrollView>
+        </>
       )}
-    </SafeAreaView>
+    </PageShell>
   );
 }
 
@@ -493,17 +453,17 @@ const summaryStyles = StyleSheet.create({
   item: {
     flex: 1,
     minWidth: 0,
-    marginBottom: 4,
+    marginBottom: t.spacing.xxs,
   },
   value: {
-    fontSize: 16,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "700",
     color: COLORS.textHigh,
   },
   label: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textMid,
-    marginTop: 2,
+    marginTop: t.spacing.none,
     flexShrink: 1,
   },
 });
@@ -516,21 +476,21 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingHorizontal: t.spacing.md,
+    paddingVertical: t.spacing.sm,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
   },
   backButton: {
-    paddingRight: 10,
+    paddingRight: t.spacing.xs,
   },
   pageTitle: {
-    fontSize: 20,
+    fontSize: t.typography.titleSmall.fontSize,
     fontWeight: "800",
   },
   pageSubtitle: {
-    marginTop: 2,
-    fontSize: 12,
+    marginTop: t.spacing.none,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textMid,
   },
   loadingContainer: {
@@ -539,125 +499,125 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   loadingText: {
-    marginTop: 8,
+    marginTop: t.spacing.xs,
     color: COLORS.textMid,
   },
   scrollContent: {
-    padding: 16,
+    padding: t.spacing.md,
   },
   summaryCard: {
     backgroundColor: COLORS.card,
-    borderRadius: 10,
-    padding: 14,
-    marginBottom: 16,
+    borderRadius: t.radius.md,
+    padding: t.spacing.sm,
+    marginBottom: t.spacing.md,
     borderWidth: 1,
     borderColor: COLORS.border,
   },
   summaryTitle: {
-    fontSize: 16,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "700",
     color: COLORS.textHigh,
-    marginBottom: 8,
+    marginBottom: t.spacing.xs,
   },
   summaryRow: {
     flexDirection: "row",
-    gap: 10,
-    marginTop: 2,
+    gap: t.spacing.xs,
+    marginTop: t.spacing.none,
   },
   vehicleCard: {
     backgroundColor: COLORS.card,
-    borderRadius: 10,
-    padding: 14,
-    marginBottom: 12,
+    borderRadius: t.radius.md,
+    padding: t.spacing.sm,
+    marginBottom: t.spacing.sm,
     borderWidth: 1,
     borderColor: COLORS.border,
     borderLeftWidth: 4,
   },
   vehicleHeaderRow: {
     flexDirection: "row",
-    marginBottom: 6,
+    marginBottom: t.spacing.xxs,
   },
   vehicleTitle: {
-    fontSize: 16,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "700",
     color: COLORS.textHigh,
   },
   vehicleReg: {
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
     color: COLORS.textMid,
-    marginTop: 2,
+    marginTop: t.spacing.none,
   },
   vehicleSub: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textLow,
-    marginTop: 2,
+    marginTop: t.spacing.none,
   },
   historyBlock: {
-    marginTop: 8,
+    marginTop: t.spacing.xs,
   },
   blockTitle: {
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
     fontWeight: "700",
     color: COLORS.textMid,
-    marginBottom: 4,
+    marginBottom: t.spacing.xxs,
   },
   historyRow: {
     flexDirection: "row",
     justifyContent: "space-between",
-    paddingVertical: 2,
+    paddingVertical: t.spacing.none,
   },
   historyLabel: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textLow,
   },
   historyValue: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textHigh,
   },
   notesBlock: {
-    marginTop: 10,
+    marginTop: t.spacing.xs,
   },
   notesLabel: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textLow,
-    marginBottom: 2,
+    marginBottom: t.spacing.none,
   },
   notesText: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textMid,
   },
   emptyState: {
     alignItems: "center",
     justifyContent: "center",
-    marginTop: 30,
-    paddingHorizontal: 24,
+    marginTop: t.spacing["2xl"],
+    paddingHorizontal: t.spacing.xl,
   },
   emptyTitle: {
-    marginTop: 10,
-    fontSize: 16,
+    marginTop: t.spacing.xs,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "700",
     color: COLORS.textHigh,
   },
   emptySubtitle: {
-    marginTop: 6,
-    fontSize: 13,
+    marginTop: t.spacing.xxs,
+    fontSize: t.typography.bodySmall.fontSize,
     textAlign: "center",
     color: COLORS.textMid,
   },
   viewHistoryButton: {
-    marginTop: 10,
+    marginTop: t.spacing.xs,
     flexDirection: "row",
     alignItems: "center",
     alignSelf: "flex-end",
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    borderRadius: 999,
-    backgroundColor: "#1F2933",
+    paddingVertical: t.spacing.xxs,
+    paddingHorizontal: t.spacing.xs,
+    borderRadius: t.radius.pill,
+    backgroundColor: staticColors.hex_1f2933_8in7ju,
   },
   viewHistoryText: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textHigh,
     fontWeight: "600",
-    marginRight: 4,
+    marginRight: t.spacing.xxs,
   },
 });

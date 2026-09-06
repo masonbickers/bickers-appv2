@@ -2,130 +2,320 @@ rules_version = '2';
 
 service firebase.storage {
   match /b/{bucket}/o {
-    function signedIn() {
+    function isSignedIn() {
       return request.auth != null;
     }
 
-    function isOwner(uid) {
-      return signedIn() && request.auth.uid == uid;
+    function userDoc() {
+      return firestore.get(/databases/(default)/documents/users/$(request.auth.uid));
     }
 
-    function hasUpload() {
-      return request.resource != null;
+    function userData() {
+      return userDoc().data;
     }
 
-    function isImage() {
-      return hasUpload()
-        && request.resource.contentType.matches('image/(jpeg|jpg|png|heic|heif|webp)');
+    function hasAcceptedWorkingTermsVersion(version) {
+      return firestore.exists(/databases/(default)/documents/workingTermsAcceptances/$(request.auth.uid)/versions/$(version))
+        && firestore.get(/databases/(default)/documents/workingTermsAcceptances/$(request.auth.uid)/versions/$(version)).data.accepted == true
+        && firestore.get(/databases/(default)/documents/workingTermsAcceptances/$(request.auth.uid)/versions/$(version)).data.documentVersion == version
+        && firestore.get(/databases/(default)/documents/workingTermsAcceptances/$(request.auth.uid)/versions/$(version)).data.userId == request.auth.uid;
     }
 
-    function isPdf() {
-      return hasUpload()
-        && request.resource.contentType == 'application/pdf';
-    }
-
-    function isVehicleFile() {
-      return hasUpload()
-        && request.resource.contentType.matches(
-          '((application/pdf)|(image/(jpeg|jpg|png|heic|heif|webp)))'
+    function hasAcceptedCurrentWorkingTerms() {
+      return isSignedIn()
+        && (
+          hasAcceptedWorkingTermsVersion("1.1")
+          || hasAcceptedWorkingTermsVersion("1.0")
         );
     }
 
-    function isDocumentFile() {
-      return hasUpload()
-        && request.resource.contentType.matches(
-          '((application/pdf)|(image/(jpeg|jpg|png|heic|heif|webp))|(application/msword)|(application/vnd.openxmlformats-officedocument.wordprocessingml.document)|(application/vnd.ms-excel)|(application/vnd.openxmlformats-officedocument.spreadsheetml.sheet))'
+    function isNotDisabled() {
+      return isSignedIn();
+    }
+
+    function roleValue() {
+      return userData() != null && userData().keys().hasAny(["role"])
+        ? userData().role
+        : "";
+    }
+
+    function isPlatformAdmin() {
+      return isNotDisabled()
+        && hasAcceptedCurrentWorkingTerms()
+        && roleValue() in [
+          "platformAdmin",
+          "platformadmin",
+          "platform admin",
+          "Platform Admin",
+          "superAdmin",
+          "superadmin",
+          "super admin",
+          "Super Admin"
+        ];
+    }
+
+    function isAdmin() {
+      return isPlatformAdmin()
+        || (
+          isNotDisabled()
+          && hasAcceptedCurrentWorkingTerms()
+          && roleValue() in [
+            "admin",
+            "Admin",
+            "companyAdmin",
+            "companyadmin",
+            "company admin",
+            "Company Admin"
+          ]
         );
     }
 
-    /* Insurance docs: app lists and downloads from insurance/ */
-    match /insurance/{allPaths=**} {
-      allow list, read: if signedIn();
+    function canUseSoftware() {
+      return isNotDisabled() && hasAcceptedCurrentWorkingTerms();
     }
 
-    /* Spec sheets: app lists and downloads from "spec sheets/" */
-    match /{folder}/{allPaths=**} {
-      allow list, read: if signedIn() && folder == "spec sheets";
+    function canAccessCompany(companyId) {
+      return canUseSoftware() && companyId != "";
     }
 
-    /*
-     * Vehicle checks: app writes vehicle-checks/{uid}/{checkDocId}/{filename}.
-     * The older 5-segment rule with dateISO would not match current uploads.
-     */
+    function hasUserAccess() {
+      return canUseSoftware();
+    }
+
+    function hasServiceAccess() {
+      return canUseSoftware();
+    }
+
+    function isSafeFileSize(maxBytes) {
+      return request.resource.size != null && request.resource.size <= maxBytes;
+    }
+
+    function isSafeMimeType(allowed) {
+      return request.resource.contentType != null
+        && request.resource.contentType.matches(allowed);
+    }
+
+    match /profilePhotos/{uid}/{allPaths=**} {
+      allow read: if canUseSoftware();
+      allow write: if canUseSoftware()
+        && (request.auth.uid == uid || isAdmin())
+        && isSafeFileSize(10 * 1024 * 1024)
+        && isSafeMimeType('image/.*');
+    }
+
+    match /companies/{companyId}/profilePhotos/{uid}/{allPaths=**} {
+      allow read: if canAccessCompany(companyId);
+      allow write: if canAccessCompany(companyId)
+        && (request.auth.uid == uid || isAdmin())
+        && isSafeFileSize(10 * 1024 * 1024)
+        && isSafeMimeType('image/.*');
+    }
+
+    match /companies/{companyId}/booking_pdfs/{allPaths=**} {
+      allow read: if canAccessCompany(companyId) && hasUserAccess();
+      allow write: if canAccessCompany(companyId)
+        && hasUserAccess()
+        && isSafeFileSize(25 * 1024 * 1024)
+        && isSafeMimeType('application/pdf');
+    }
+
+    match /companies/{companyId}/quotes/{allPaths=**} {
+      allow read: if canAccessCompany(companyId) && hasUserAccess();
+      allow write: if canAccessCompany(companyId)
+        && hasUserAccess()
+        && isSafeFileSize(25 * 1024 * 1024)
+        && isSafeMimeType('application/pdf|application/vnd\\.openxmlformats-officedocument\\.spreadsheetml\\.sheet|application/vnd\\.ms-excel|text/csv|image/.*|application/octet-stream');
+    }
+
+    match /companies/{companyId}/job_attachments/{jobId}/{allPaths=**} {
+      allow read: if canAccessCompany(companyId) && hasUserAccess();
+      allow write: if canAccessCompany(companyId)
+        && hasUserAccess()
+        && isSafeFileSize(25 * 1024 * 1024)
+        && isSafeMimeType('application/pdf|image/.*|application/octet-stream');
+    }
+
+    /* Monthly company-card receipts are private to their submitter and admins. */
+    match /companies/{companyId}/receipts/{uid}/{receiptId}/{filename} {
+      allow read: if canAccessCompany(companyId)
+        && (request.auth.uid == uid || isAdmin());
+      allow write: if canAccessCompany(companyId)
+        && request.auth.uid == uid
+        && isSafeFileSize(15 * 1024 * 1024)
+        && isSafeMimeType('application/pdf|image/.*');
+    }
+
+    match /companies/{companyId}/maintenance-quotes/{allPaths=**} {
+      allow read: if canAccessCompany(companyId) && hasServiceAccess();
+      allow write: if canAccessCompany(companyId)
+        && hasServiceAccess()
+        && isSafeFileSize(25 * 1024 * 1024)
+        && isSafeMimeType('application/pdf|image/.*|application/octet-stream');
+    }
+
+    match /companies/{companyId}/vehicles/{vehicleId}/{field}/{allPaths=**} {
+      allow read: if canAccessCompany(companyId) && hasServiceAccess();
+      allow write: if canAccessCompany(companyId)
+        && hasServiceAccess()
+        && isSafeFileSize(25 * 1024 * 1024)
+        && isSafeMimeType('application/pdf|image/.*|application/octet-stream');
+    }
+
+    match /companies/{companyId}/hr/contracts/{employeeRef}/{allPaths=**} {
+      allow read: if canAccessCompany(companyId) && isAdmin();
+      allow write: if canAccessCompany(companyId)
+        && isAdmin()
+        && isSafeFileSize(25 * 1024 * 1024);
+    }
+
+    match /recce-photos/{uid}/{bookingId}/{allPaths=**} {
+      allow read: if hasUserAccess();
+      allow write: if hasUserAccess()
+        && request.auth.uid == uid
+        && isSafeFileSize(20 * 1024 * 1024)
+        && isSafeMimeType('image/.*');
+    }
+
+    /* Vehicle checks created by the employee app. */
     match /vehicle-checks/{uid}/{checkId}/{filename} {
-      allow write: if isOwner(uid) && isImage();
-      allow read: if signedIn();
-      allow list: if isOwner(uid);
+      allow read: if hasUserAccess();
+      allow write: if hasUserAccess()
+        && request.auth.uid == uid
+        && isSafeFileSize(20 * 1024 * 1024)
+        && isSafeMimeType('image/.*');
     }
 
-    /* Recce photos from the home screen */
-    match /recce-photos/{uid}/{bookingId}/{dateISO}/{filename} {
-      allow write: if isOwner(uid) && isImage();
-      allow read, list: if isOwner(uid);
-    }
-
-    /* Recce photos from the dedicated recce form */
+    /* Photos uploaded by the dedicated recce form. */
     match /recces/{jobId}/{dateISO}/{uid}/{filename} {
-      allow write: if isOwner(uid) && isImage();
-      allow read, list: if isOwner(uid);
+      allow read: if hasUserAccess();
+      allow write: if hasUserAccess()
+        && request.auth.uid == uid
+        && isSafeFileSize(20 * 1024 * 1024)
+        && isSafeMimeType('image/.*');
     }
 
-    /* Demo uploader */
     match /uploads/photos/{uid}/{yyyy}/{mm}/{filename} {
-      allow write: if isOwner(uid) && isImage();
-      allow read, list: if isOwner(uid);
+      allow read: if hasUserAccess();
+      allow write: if hasUserAccess()
+        && request.auth.uid == uid
+        && isSafeFileSize(20 * 1024 * 1024)
+        && isSafeMimeType('image/.*');
     }
 
-    /* Service and minor service photos */
+    /* Expense receipts are private to their owner; admins can review them. */
+    match /expenses/{uid}/{allPaths=**} {
+      allow read: if hasUserAccess()
+        && (request.auth.uid == uid || isAdmin());
+      allow write: if hasUserAccess()
+        && request.auth.uid == uid
+        && isSafeFileSize(10 * 1024 * 1024)
+        && isSafeMimeType('image/.*');
+    }
+
+    /* Service, defect, and inspection evidence used by the mobile app. */
     match /serviceRecords/{recordId}/{allPaths=**} {
-      allow read, list: if signedIn();
-      allow write: if signedIn() && isImage();
+      allow read: if hasServiceAccess();
+      allow write: if hasServiceAccess()
+        && isSafeFileSize(20 * 1024 * 1024)
+        && isSafeMimeType('image/.*');
     }
 
-    /* Defect report photos */
     match /defectReports/{reportId}/{allPaths=**} {
-      allow read, list: if signedIn();
-      allow write: if signedIn() && isImage();
+      allow read: if hasServiceAccess();
+      allow write: if hasServiceAccess()
+        && isSafeFileSize(20 * 1024 * 1024)
+        && isSafeMimeType('image/.*');
     }
 
-    /* Equipment inspection photos */
     match /equipmentInspections/{inspectionId}/{allPaths=**} {
-      allow read, list: if signedIn();
-      allow write: if signedIn() && isImage();
+      allow read: if hasServiceAccess();
+      allow write: if hasServiceAccess()
+        && isSafeFileSize(20 * 1024 * 1024)
+        && isSafeMimeType('image/.*');
     }
 
-    /* Quotes */
-    match /quotes/{allPaths=**} {
-      allow list, read, write: if signedIn();
+    match /profilePictures/{allPaths=**} {
+      allow read: if hasUserAccess();
+      allow write: if hasUserAccess()
+        && isSafeFileSize(10 * 1024 * 1024)
+        && isSafeMimeType('image/.*');
     }
 
-    /* Booking PDFs (legacy/optional) */
+    match /insurance/{allPaths=**} {
+      allow read: if hasUserAccess();
+    }
+
+    match /{folder}/{allPaths=**} {
+      allow read: if hasUserAccess() && folder == "spec sheets";
+    }
+
     match /booking_pdfs/{allPaths=**} {
-      allow list, read, write: if signedIn();
+      allow read: if hasUserAccess();
+      allow write: if hasUserAccess()
+        && isSafeFileSize(25 * 1024 * 1024)
+        && isSafeMimeType('application/pdf');
     }
 
-    /* Job attachments */
-    match /job_attachments/{bookingId}/{rest=**} {
-      allow read, list: if signedIn();
-      allow write: if signedIn() && isPdf();
+    match /quotes/{allPaths=**} {
+      allow read: if hasUserAccess();
+      allow write: if hasUserAccess()
+        && isSafeFileSize(25 * 1024 * 1024)
+        && isSafeMimeType('application/pdf|application/vnd\\.openxmlformats-officedocument\\.spreadsheetml\\.sheet|application/vnd\\.ms-excel|text/csv|image/.*|application/octet-stream');
     }
 
-    /* Profile pictures */
-    match /profilePictures/{path=**} {
-      allow read: if signedIn();
-      allow write: if signedIn() && isImage();
+    match /job_attachments/{jobId}/{allPaths=**} {
+      allow read: if hasUserAccess();
+      allow write: if hasUserAccess()
+        && isSafeFileSize(25 * 1024 * 1024)
+        && isSafeMimeType('application/pdf|image/.*|application/octet-stream');
     }
 
-    /* Vehicle files */
-    match /vehicles/{vehicleId}/{field}/{filename} {
-      allow read, list: if signedIn();
-      allow write: if signedIn() && isVehicleFile();
+    match /maintenance-quotes/{allPaths=**} {
+      allow read: if hasServiceAccess();
+      allow write: if hasServiceAccess()
+        && isSafeFileSize(25 * 1024 * 1024)
+        && isSafeMimeType('application/pdf|image/.*|application/octet-stream');
     }
 
-    /* H&S certificates / check evidence */
-    match /h-and-s/certificates/{allPaths=**} {
-      allow read, list: if signedIn();
-      allow write: if signedIn() && isDocumentFile();
+    match /vehicles/{vehicleId}/{field}/{allPaths=**} {
+      allow read: if hasServiceAccess();
+      allow write: if hasServiceAccess()
+        && isSafeFileSize(25 * 1024 * 1024)
+        && isSafeMimeType('application/pdf|image/.*|application/octet-stream');
+    }
+
+    match /hr/contracts/{employeeRef}/{allPaths=**} {
+      allow read: if isAdmin();
+      allow write: if isAdmin()
+        && isSafeFileSize(25 * 1024 * 1024);
+    }
+
+    match /h-and-s/training-policy/{employeeRef}/{itemId}/{allPaths=**} {
+      allow read: if hasUserAccess();
+      allow write: if hasUserAccess()
+        && isSafeFileSize(25 * 1024 * 1024);
+    }
+
+    match /h-and-s/certificates/{checkId}/{allPaths=**} {
+      allow read: if hasUserAccess();
+      allow write: if hasUserAccess()
+        && isSafeFileSize(25 * 1024 * 1024)
+        && isSafeMimeType('application/pdf|image/.*|application/octet-stream');
+    }
+
+    match /images/{allPaths=**} {
+      allow read: if isAdmin();
+      allow write: if isAdmin()
+        && isSafeFileSize(10 * 1024 * 1024)
+        && isSafeMimeType('image/.*');
+    }
+
+    match /debug/{allPaths=**} {
+      allow read, write: if isAdmin();
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
     }
   }
 }

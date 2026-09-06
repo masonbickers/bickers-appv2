@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { ASYNC_STATES, resolveAsyncState } from "../lib/asyncState.js";
+import {
+  ASYNC_STATES,
+  resolveAsyncState,
+  shouldBlockInitialRender,
+} from "../lib/asyncState.js";
 
 test("shows initial loading only when there is no usable content", () => {
   const resources = [{ isInitialLoading: true, isRefreshing: false, error: null }];
@@ -53,5 +57,22 @@ test("successful empty and populated results are ready", () => {
   assert.equal(
     resolveAsyncState([{ data: [{ id: "1" }], error: null }], { hasContent: true }),
     ASYNC_STATES.READY
+  );
+});
+
+test("multi-resource pages unblock as soon as one resource resolves", () => {
+  assert.equal(
+    shouldBlockInitialRender([
+      { isInitialLoading: true },
+      { isInitialLoading: true },
+    ]),
+    true
+  );
+  assert.equal(
+    shouldBlockInitialRender([
+      { isInitialLoading: true },
+      { isInitialLoading: false, data: [] },
+    ]),
+    false
   );
 });

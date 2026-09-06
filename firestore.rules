@@ -1,0 +1,996 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function hasLegacyMobileAccess() {
+      return activeUserDocExists() && hasUserAccess();
+    }
+
+    function userDocExists() {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function isNotDisabled() {
+      return activeUserDocExists();
+    }
+
+    function activeUserDocExists() {
+      return userDocExists()
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isEnabled == true
+        && (
+          !get(/databases/$(database)/documents/users/$(request.auth.uid)).data.keys().hasAny(["active"])
+          || get(/databases/$(database)/documents/users/$(request.auth.uid)).data.active != false
+        )
+        && (!get(/databases/$(database)/documents/users/$(request.auth.uid)).data.keys().hasAny(["disabled"])
+          || get(/databases/$(database)/documents/users/$(request.auth.uid)).data.disabled != true)
+        && (!get(/databases/$(database)/documents/users/$(request.auth.uid)).data.keys().hasAny(["appDisabled"])
+          || get(/databases/$(database)/documents/users/$(request.auth.uid)).data.appDisabled != true)
+        && (!get(/databases/$(database)/documents/users/$(request.auth.uid)).data.keys().hasAny(["archived"])
+          || get(/databases/$(database)/documents/users/$(request.auth.uid)).data.archived != true)
+        && (!get(/databases/$(database)/documents/users/$(request.auth.uid)).data.keys().hasAny(["isArchived"])
+          || get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isArchived != true);
+    }
+
+    function currentUserCompanyId() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId;
+    }
+
+    function hasAcceptedWorkingTermsVersion(version) {
+      return exists(/databases/$(database)/documents/workingTermsAcceptances/$(request.auth.uid)/versions/$(version))
+        && get(/databases/$(database)/documents/workingTermsAcceptances/$(request.auth.uid)/versions/$(version)).data.accepted == true
+        && get(/databases/$(database)/documents/workingTermsAcceptances/$(request.auth.uid)/versions/$(version)).data.documentVersion == version
+        && get(/databases/$(database)/documents/workingTermsAcceptances/$(request.auth.uid)/versions/$(version)).data.userId == request.auth.uid
+        && get(/databases/$(database)/documents/workingTermsAcceptances/$(request.auth.uid)/versions/$(version)).data.companyId == currentUserCompanyId();
+    }
+
+    function hasAcceptedCurrentWorkingTerms() {
+      return activeUserDocExists()
+        && (
+          hasAcceptedWorkingTermsVersion("1.1")
+          || hasAcceptedWorkingTermsVersion("1.0")
+        );
+    }
+
+    function existingDocBelongsToCurrentCompany() {
+      // Single-company compatibility: legacy Bickers records do not all carry
+      // companyId yet, so authenticated active users must be able to read them.
+      return hasAcceptedCurrentWorkingTerms();
+    }
+
+    function incomingDocBelongsToCurrentCompany() {
+      // Client writers stamp bickers-action, but legacy update payloads remain
+      // valid while the single-company data set is being normalised.
+      return hasAcceptedCurrentWorkingTerms();
+    }
+
+    // TEMPORARY EMERGENCY READ FALLBACK - REMOVE AFTER TENANT QUERY MIGRATION
+    function canEmergencyReadBickersBusinessData() {
+      return canReadTenantBusinessDoc();
+    }
+
+    function canReadTenantBusinessDoc() {
+      return hasAcceptedCurrentWorkingTerms();
+    }
+
+    function currentUserAppAccessEnabled(workspace) {
+      return userDocExists()
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.keys().hasAny(["appAccess"])
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.appAccess is map
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.appAccess.keys().hasAny([workspace])
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.appAccess[workspace] == true;
+    }
+
+    function currentUserDefaultWorkspaceIs(workspace) {
+      return userDocExists()
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.keys().hasAny(["defaultWorkspace"])
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.defaultWorkspace == workspace;
+    }
+
+    function currentUserRoleIn(roles) {
+      return userDocExists()
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.keys().hasAny(["role"])
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in roles;
+    }
+
+    function isPlatformAdmin() {
+      return activeUserDocExists()
+        && hasAcceptedCurrentWorkingTerms()
+        && currentUserRoleIn([
+          "platformAdmin",
+          "platformadmin",
+          "platform admin",
+          "Platform Admin",
+          "superAdmin",
+          "superadmin",
+          "super admin",
+          "Super Admin"
+        ]);
+    }
+
+    function isAdmin() {
+      return isPlatformAdmin()
+        || (
+          activeUserDocExists()
+          && hasAcceptedCurrentWorkingTerms()
+          && currentUserRoleIn([
+            "admin",
+            "Admin",
+            "companyAdmin",
+            "companyadmin",
+            "company admin",
+            "Company Admin"
+          ])
+        );
+    }
+
+    function receiptAccountEnabled() {
+      return userDocExists()
+        && hasAcceptedCurrentWorkingTerms()
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isEnabled == true;
+    }
+
+    function receiptCompanyAllowed(data) {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in [
+          "platformAdmin", "platformadmin", "platform admin", "Platform Admin",
+          "superAdmin", "superadmin", "super admin", "Super Admin"
+        ]
+        || (
+          data.keys().hasAny(["companyId"])
+          && data.companyId == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId
+        );
+    }
+
+    function isFinanceReviewer() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in [
+          "platformAdmin", "platformadmin", "platform admin", "Platform Admin",
+          "superAdmin", "superadmin", "super admin", "Super Admin",
+          "admin", "Admin", "companyAdmin", "companyadmin", "company admin", "Company Admin",
+          "finance", "Finance", "financeManager", "finance manager", "Finance Manager"
+        ]
+        || (
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.keys().hasAny(["financeAccess"])
+          && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.financeAccess == true
+        );
+    }
+
+    function receiptGroupAfter(groupId) {
+      return getAfter(/databases/$(database)/documents/receiptGroups/$(groupId));
+    }
+
+    function existingReceiptGroup(groupId) {
+      return get(/databases/$(database)/documents/receiptGroups/$(groupId));
+    }
+
+    function receiptIdentityUnchanged() {
+      return request.resource.data.submitterUid == resource.data.submitterUid
+        && request.resource.data.companyId == resource.data.companyId
+        && request.resource.data.groupId == resource.data.groupId
+        && request.resource.data.monthKey == resource.data.monthKey;
+    }
+
+    function receiptOwnerDraftUpdateAllowed() {
+      return resource.data.submitterUid == request.auth.uid
+        && receiptIdentityUnchanged()
+        && existingReceiptGroup(resource.data.groupId).data.status == "draft"
+        && request.resource.data.status == "pending"
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          "purpose", "valuePence", "suggestedVatPence",
+          "fileName", "fileType", "fileSize", "storagePath", "updatedAt"
+        ]);
+    }
+
+    function canManageTenantData() {
+      return activeUserDocExists() && (hasUserAccess() || hasServiceAccess());
+    }
+
+    function canUseSoftware() {
+      return hasAcceptedCurrentWorkingTerms() && (hasUserAccess() || hasServiceAccess());
+    }
+
+    function canReadUserTenantDoc() {
+      return hasUserAccess() && canReadTenantBusinessDoc();
+    }
+
+    function canCreateUserTenantDoc() {
+      return hasUserAccess() && incomingDocBelongsToCurrentCompany();
+    }
+
+    function canUpdateUserTenantDoc() {
+      return hasUserAccess()
+        && existingDocBelongsToCurrentCompany()
+        && incomingDocBelongsToCurrentCompany();
+    }
+
+    function canDeleteUserTenantDoc() {
+      return hasUserAccess() && existingDocBelongsToCurrentCompany();
+    }
+
+    function canReadServiceTenantDoc() {
+      return hasServiceAccess() && canReadTenantBusinessDoc();
+    }
+
+    function canCreateServiceTenantDoc() {
+      return hasServiceAccess() && incomingDocBelongsToCurrentCompany();
+    }
+
+    function canUpdateServiceTenantDoc() {
+      return hasServiceAccess()
+        && existingDocBelongsToCurrentCompany()
+        && incomingDocBelongsToCurrentCompany();
+    }
+
+    function canDeleteServiceTenantDoc() {
+      return hasServiceAccess() && existingDocBelongsToCurrentCompany();
+    }
+
+    function canReadAnyWorkspaceTenantDoc() {
+      return canUseSoftware() && canReadTenantBusinessDoc();
+    }
+
+    function canReadStrictTenantDoc() {
+      return canUseSoftware()
+        && (
+          isPlatformAdmin()
+          || !resource.data.keys().hasAny(["companyId"])
+          || resource.data.companyId == currentUserCompanyId()
+        );
+    }
+
+    function canCreateAnyWorkspaceTenantDoc() {
+      return canUseSoftware() && incomingDocBelongsToCurrentCompany();
+    }
+
+    function canUpdateAnyWorkspaceTenantDoc() {
+      return canUseSoftware()
+        && existingDocBelongsToCurrentCompany()
+        && incomingDocBelongsToCurrentCompany();
+    }
+
+    function canDeleteAnyWorkspaceTenantDoc() {
+      return canUseSoftware() && existingDocBelongsToCurrentCompany();
+    }
+
+    function legacyPmiHistoryWriteAllowed() {
+      return !(
+        resource.data.keys().hasAny(["futurePmiHistoryCleanupLocked"])
+        && resource.data.futurePmiHistoryCleanupLocked == true
+      ) || !request.resource.data.diff(resource.data).affectedKeys()
+        .hasAny(["eightWeekInspectionHistory"]);
+    }
+
+    function legalMaintenanceCompletionFieldsUnchanged() {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+        "lastMOT", "lastMot", "lastMotDate", "motHistory",
+        "lastService", "serviceHistory",
+        "lastPMI", "lastPmi", "pmiHistory", "eightWeekInspectionHistory",
+        "lastBrakeTest", "brakeTestHistory",
+        "lastTacho", "tachoInspectionHistory",
+        "lastTachoDownload", "tachoDownloadHistory",
+        "lastTailLift", "tailLiftHistory",
+        "lastLoler", "lolerHistory",
+        "pendingReturnInspection"
+      ]);
+    }
+
+    function validUserVehiclePrepRecord() {
+      return request.resource.data.keys().hasOnly([
+          "companyId", "bookingId", "vehicleId", "vehicleName", "registration",
+          "prepDate", "checks", "equipmentChecks", "notes", "completed",
+          "completedAt", "completedByUid", "completedByEmployeeId",
+          "completedByName", "completedByCode",
+          "createdAt", "updatedAt"
+        ])
+        && request.resource.data.companyId == currentUserCompanyId()
+        && request.resource.data.bookingId is string
+        && request.resource.data.bookingId.size() > 0
+        && request.resource.data.vehicleId is string
+        && request.resource.data.vehicleId.size() > 0
+        && request.resource.data.completed is bool
+        && (
+          request.resource.data.completed == false
+          || request.resource.data.completedByUid == request.auth.uid
+        );
+    }
+
+    function userVehiclePrepIdentityUnchanged() {
+      return request.resource.data.companyId == resource.data.companyId
+        && request.resource.data.bookingId == resource.data.bookingId
+        && request.resource.data.vehicleId == resource.data.vehicleId;
+    }
+
+    function contactFinanceValue(data, key) {
+      return data.keys().hasAny(["financeProfile"])
+        && data.financeProfile is map
+        && data.financeProfile.keys().hasAny([key])
+        ? data.financeProfile[key]
+        : null;
+    }
+
+    function incomingContactHasNoSageMapping() {
+      return contactFinanceValue(request.resource.data, "sageCustomerId") in [null, ""]
+        && contactFinanceValue(request.resource.data, "sageCustomerMappingStatus") in [null, "", "unmapped"]
+        && contactFinanceValue(request.resource.data, "sageCustomerMappedAt") == null
+        && contactFinanceValue(request.resource.data, "sageCustomerMappedBy") in [null, ""];
+    }
+
+    function contactSageMappingUnchanged() {
+      return contactFinanceValue(request.resource.data, "sageCustomerId")
+          == contactFinanceValue(resource.data, "sageCustomerId")
+        && contactFinanceValue(request.resource.data, "sageCustomerMappingStatus")
+          == contactFinanceValue(resource.data, "sageCustomerMappingStatus")
+        && contactFinanceValue(request.resource.data, "sageCustomerMappedAt")
+          == contactFinanceValue(resource.data, "sageCustomerMappedAt")
+        && contactFinanceValue(request.resource.data, "sageCustomerMappedBy")
+          == contactFinanceValue(resource.data, "sageCustomerMappedBy");
+    }
+
+    function canUseCalendar() {
+      return canUseSoftware();
+    }
+
+    function currentUserIsService() {
+      return userDocExists()
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.keys().hasAny(["isService"])
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isService == true;
+    }
+
+    function hasUserAccess() {
+      return activeUserDocExists()
+        && hasAcceptedCurrentWorkingTerms()
+        && (
+          currentUserAppAccessEnabled("user")
+          || currentUserRoleIn(["admin", "Admin", "companyAdmin", "companyadmin", "company admin", "Company Admin", "platformAdmin", "platformadmin", "platform admin", "Platform Admin", "superAdmin", "superadmin", "super admin", "Super Admin"])
+        );
+    }
+
+    function hasServiceAccess() {
+      return activeUserDocExists()
+        && hasAcceptedCurrentWorkingTerms()
+        && (
+          currentUserAppAccessEnabled("service")
+          || currentUserRoleIn(["admin", "Admin", "companyAdmin", "companyadmin", "company admin", "Company Admin", "platformAdmin", "platformadmin", "platform admin", "Platform Admin", "superAdmin", "superadmin", "super admin", "Super Admin"])
+        );
+    }
+
+    function isOwnUserDoc(uid) {
+      return activeUserDocExists() && request.auth.uid == uid;
+    }
+
+    function isOwnEmployeeDoc() {
+      return isSignedIn()
+        && (
+          resource.data.uid == request.auth.uid
+          || resource.data.authUid == request.auth.uid
+          || resource.id == request.auth.uid
+          || (
+            userDocExists()
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.employeeId == resource.id
+          )
+        );
+    }
+
+    function isOwnEmployeeDocAfterWrite() {
+      return isSignedIn()
+        && (
+          request.resource.data.uid == request.auth.uid
+          || request.resource.data.authUid == request.auth.uid
+          || resource.id == request.auth.uid
+          || (
+            userDocExists()
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.employeeId == resource.id
+          )
+        );
+    }
+
+    function keepsOwnEmployeeIdentity() {
+      return request.resource.data.uid == resource.data.uid
+        && request.resource.data.authUid == resource.data.authUid
+        && request.resource.data.email == resource.data.email;
+    }
+
+    function ownEmployeeProfileFieldsChanged() {
+      return request.resource.data.diff(resource.data).changedKeys().hasOnly([
+        "phone",
+        "mobile",
+        "avatarUrl",
+        "photoURL",
+        "updatedAt"
+      ]);
+    }
+
+    function matchesAuthEmail(email) {
+      return isSignedIn()
+        && email is string
+        && request.auth.token.email is string
+        && email == request.auth.token.email;
+    }
+
+    function isHolidayOwner() {
+      return isSignedIn()
+        && (
+          resource.data.requestedByUid == request.auth.uid
+          || matchesAuthEmail(resource.data.requestedByEmail)
+        );
+    }
+
+    function isHolidayOwnerOnCreate() {
+      return isSignedIn()
+        && (
+          request.resource.data.requestedByUid == request.auth.uid
+          || matchesAuthEmail(request.resource.data.requestedByEmail)
+        );
+    }
+
+    function keepsHolidayOwnerIdentity() {
+      return request.resource.data.requestedByUid == resource.data.requestedByUid
+        && request.resource.data.requestedByEmail == resource.data.requestedByEmail;
+    }
+
+    function isShiftChangeOwner() {
+      return isSignedIn()
+        && (
+          resource.data.requestedByUid == request.auth.uid
+          || matchesAuthEmail(resource.data.requestedByEmail)
+        );
+    }
+
+    function isShiftChangeOwnerOnCreate() {
+      return isSignedIn()
+        && (
+          request.resource.data.requestedByUid == request.auth.uid
+          || matchesAuthEmail(request.resource.data.requestedByEmail)
+        );
+    }
+
+    function keepsShiftChangeOwnerIdentity() {
+      return request.resource.data.requestedByUid == resource.data.requestedByUid
+        && request.resource.data.requestedByEmail == resource.data.requestedByEmail;
+    }
+
+    function shiftChangeOwnerCancelOnly() {
+      return request.resource.data.diff(resource.data).changedKeys().hasOnly([
+        "status",
+        "updatedAt"
+      ]);
+    }
+
+    function isApprovedHolidayRecord() {
+      return resource.data.approved == true
+        || resource.data.status == "approved"
+        || resource.data.approvalStatus == "approved"
+        || resource.data.state == "approved"
+        || resource.data.leaveStatus == "approved"
+        || resource.data.holidayStatus == "approved";
+    }
+
+    function isApprovedHolidayAfterWrite() {
+      return request.resource.data.approved == true
+        || request.resource.data.status == "approved"
+        || request.resource.data.approvalStatus == "approved"
+        || request.resource.data.state == "approved"
+        || request.resource.data.leaveStatus == "approved"
+        || request.resource.data.holidayStatus == "approved";
+    }
+
+    function hasBookingAuditFieldsOnCreate() {
+      return isSignedIn()
+        && request.resource.data.createdByUid == request.auth.uid
+        && request.resource.data.lastEditedByUid == request.auth.uid;
+    }
+
+    function keepsBookingAuditIdentity() {
+      return request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.createdAt == resource.data.createdAt
+        && (
+          resource.data.createdByUid == null
+          || request.resource.data.createdByUid == resource.data.createdByUid
+        );
+    }
+
+    function keepsTimesheetIdentity() {
+      return request.resource.data.employeeCode == resource.data.employeeCode
+        && request.resource.data.employeeName == resource.data.employeeName
+        && request.resource.data.weekStart == resource.data.weekStart;
+    }
+
+    function keepsTimesheetQueryIdentity() {
+      return request.resource.data.timesheetId == resource.data.timesheetId
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.createdByRole == resource.data.createdByRole;
+    }
+
+    function timesheetQueryInCurrentCompany(queryId) {
+      return exists(/databases/$(database)/documents/timesheetQueries/$(queryId));
+    }
+
+    function userOnlyFieldsChanged() {
+      return request.resource.data.diff(resource.data).changedKeys().hasOnly([
+        "name",
+        "phone",
+        "updatedAt",
+        "phoneVerified",
+        "phoneVerifiedAt",
+        "mfaPhoneNumber"
+      ]);
+    }
+
+    match /users/{uid} {
+      allow read: if isOwnUserDoc(uid) || isAdmin();
+      allow create: if isAdmin();
+      allow update: if isAdmin() || (isOwnUserDoc(uid) && userOnlyFieldsChanged());
+      allow delete: if isAdmin();
+    }
+
+    match /workingTermsAcceptances/{uid}/versions/{versionId} {
+      allow read: if isSignedIn() && (request.auth.uid == uid || isAdmin());
+      allow create: if activeUserDocExists()
+        && request.auth.uid == uid
+        && versionId in ["1.0", "1.1"]
+        && request.resource.data.keys().hasOnly([
+          "accepted",
+          "acceptedAt",
+          "companyId",
+          "documentEffectiveDate",
+          "documentTitle",
+          "documentVersion",
+          "employeeId",
+          "email",
+          "fullName",
+          "signatureSvgPath",
+          "signedFromAppVersion",
+          "signedFromPlatform",
+          "userId"
+        ])
+        && request.resource.data.accepted == true
+        && request.resource.data.acceptedAt == request.time
+        && request.resource.data.companyId == currentUserCompanyId()
+        && (
+          (versionId == "1.1" && request.resource.data.documentEffectiveDate == "19/08/2026")
+          || (versionId == "1.0" && request.resource.data.documentEffectiveDate == "23/06/2026")
+        )
+        && request.resource.data.documentTitle == "Bickers Action Working Terms"
+        && request.resource.data.documentVersion == versionId
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.fullName is string
+        && request.resource.data.fullName.size() >= 2
+        && request.resource.data.fullName.size() <= 160
+        && request.resource.data.signatureSvgPath is string
+        && request.resource.data.signatureSvgPath.size() >= 20
+        && request.resource.data.signatureSvgPath.size() <= 12000
+        && request.resource.data.signedFromAppVersion is string
+        && request.resource.data.signedFromPlatform in ["android", "ios", "web"];
+      allow update, delete: if false;
+    }
+
+    match /employeeNotifications/{notificationId} {
+      allow read: if isSignedIn()
+        && hasAcceptedCurrentWorkingTerms()
+        && resource.data.keys().hasAny(["employeeId"])
+        && exists(/databases/$(database)/documents/employees/$(resource.data.employeeId))
+        && (
+          resource.data.uid == request.auth.uid
+          || get(/databases/$(database)/documents/employees/$(resource.data.employeeId)).data.userId
+            == request.auth.uid
+          || (
+            activeUserDocExists()
+            && resource.data.employeeId
+              == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.employeeId
+          )
+        );
+      allow write: if false;
+    }
+
+    match /mfaSecrets/{uid} {
+      allow read, write: if false;
+    }
+
+    match /adminAuditLogs/{logId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    // Sage 50 connector credentials and machine metadata are server-only.
+    // Administrators use protected API routes which return a redacted view.
+    match /sage50Connectors/{connectorId} {
+      allow read, write: if false;
+    }
+
+    // Export payloads, leases and connector results are accessible only through
+    // authenticated server routes. Browser clients receive redacted status.
+    match /sage50ExportJobs/{jobId} {
+      allow read, write: if false;
+    }
+
+    // Read-only Sage customer lookup payloads and leases are server-only.
+    match /sage50CustomerLookupJobs/{lookupJobId} {
+      allow read, write: if false;
+    }
+
+    // Served only through authenticated APIs so audience-specific finance
+    // redaction happens before a briefing reaches the browser.
+    match /aiBusinessRules/{docId} {
+      allow read, write: if false;
+    }
+
+    match /aiStatisticsBriefings/{docId} {
+      allow read, write: if false;
+    }
+
+    match /aiInsightFeedback/{docId} {
+      allow read, write: if false;
+    }
+
+    match /loginSecurityLogs/{logId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    match /passkeyCredentials/{credentialId} {
+      allow read, write: if false;
+    }
+
+    match /passkeyChallenges/{challengeId} {
+      allow read, write: if false;
+    }
+
+    match /setupCodeRateLimits/{docId} {
+      allow read, write: if false;
+    }
+
+    match /employees/{employeeId} {
+      allow read: if canReadAnyWorkspaceTenantDoc();
+      allow create: if isAdmin() && incomingDocBelongsToCurrentCompany();
+      allow update: if (
+        isAdmin()
+        && existingDocBelongsToCurrentCompany()
+        && incomingDocBelongsToCurrentCompany()
+      ) || (
+        hasUserAccess()
+        && isOwnEmployeeDoc()
+        && isOwnEmployeeDocAfterWrite()
+        && keepsOwnEmployeeIdentity()
+        && ownEmployeeProfileFieldsChanged()
+      );
+      allow delete: if isAdmin() && existingDocBelongsToCurrentCompany();
+    }
+
+    match /bookings/{bookingId} {
+      allow read: if canReadAnyWorkspaceTenantDoc();
+      allow create: if canCreateAnyWorkspaceTenantDoc();
+      allow update: if canUpdateAnyWorkspaceTenantDoc();
+      allow delete: if canDeleteServiceTenantDoc();
+    }
+
+    match /notes/{noteId} {
+      allow read: if canReadAnyWorkspaceTenantDoc();
+      allow create: if canCreateAnyWorkspaceTenantDoc();
+      allow update: if canUpdateAnyWorkspaceTenantDoc();
+      allow delete: if canDeleteAnyWorkspaceTenantDoc();
+    }
+
+    match /contacts/{contactId} {
+      allow read: if canReadUserTenantDoc();
+      allow create: if canCreateUserTenantDoc() && incomingContactHasNoSageMapping();
+      allow update: if canUpdateUserTenantDoc() && contactSageMappingUnchanged();
+      allow delete: if canDeleteUserTenantDoc();
+    }
+
+    match /deletedBookings/{docId} {
+      allow read: if canReadAnyWorkspaceTenantDoc();
+      allow create: if canCreateAnyWorkspaceTenantDoc();
+      allow update: if canUpdateAnyWorkspaceTenantDoc();
+      allow delete: if canDeleteAnyWorkspaceTenantDoc();
+    }
+
+    match /appState/{docId} {
+      allow read, write: if hasUserAccess();
+    }
+
+    match /notes/{noteId} {
+      allow read: if canReadAnyWorkspaceTenantDoc();
+      allow create: if canCreateAnyWorkspaceTenantDoc();
+      allow update: if canUpdateAnyWorkspaceTenantDoc();
+      allow delete: if canDeleteAnyWorkspaceTenantDoc();
+    }
+
+    match /recces/{docId} {
+      allow read: if canReadAnyWorkspaceTenantDoc();
+      allow create: if canCreateAnyWorkspaceTenantDoc();
+      allow update: if canUpdateAnyWorkspaceTenantDoc();
+      allow delete: if canDeleteAnyWorkspaceTenantDoc();
+    }
+
+    match /holidays/{holidayId} {
+      allow read: if canReadAnyWorkspaceTenantDoc();
+      allow create: if canCreateAnyWorkspaceTenantDoc();
+      allow update: if canUpdateAnyWorkspaceTenantDoc();
+      allow delete: if canDeleteAnyWorkspaceTenantDoc();
+    }
+
+    match /shiftChangeRequests/{requestId} {
+      allow read: if canReadUserTenantDoc();
+      allow create: if canCreateUserTenantDoc();
+      allow update: if canUpdateUserTenantDoc();
+      allow delete: if canDeleteUserTenantDoc();
+    }
+
+    match /hr/{docId} {
+      allow read: if canReadUserTenantDoc();
+      allow create: if canCreateUserTenantDoc();
+      allow update: if canUpdateUserTenantDoc();
+      allow delete: if canDeleteUserTenantDoc();
+    }
+
+    match /timesheets/{timesheetId} {
+      allow read: if canReadUserTenantDoc();
+      allow create: if canCreateUserTenantDoc();
+      allow update: if canUpdateUserTenantDoc();
+      allow delete: if canDeleteUserTenantDoc();
+    }
+
+    // Employees can manage only their own submitted expense claims. Finance
+    // status changes remain server-owned so a client cannot approve its claim.
+    match /expenses/{expenseId} {
+      allow read: if hasUserAccess()
+        && (resource.data.ownerUid == request.auth.uid || isFinanceReviewer());
+      allow create: if hasUserAccess()
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.status == "submitted"
+        && request.resource.data.type is string
+        && request.resource.data.amount is number
+        && request.resource.data.amount > 0
+        && request.resource.data.paymentMethod in ["personal", "company_card"];
+      allow update: if hasUserAccess()
+        && resource.data.ownerUid == request.auth.uid
+        && request.resource.data.ownerUid == resource.data.ownerUid
+        && resource.data.status == "submitted"
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          "employeeId", "employeeCode", "employeeName",
+          "type", "otherType", "paymentMethod", "amount",
+          "jobId", "jobNumber", "jobLabel", "note", "receiptUrl", "updatedAt"
+        ])
+        && request.resource.data.type is string
+        && request.resource.data.amount is number
+        && request.resource.data.amount > 0
+        && request.resource.data.paymentMethod in ["personal", "company_card"];
+      allow delete: if hasUserAccess()
+        && resource.data.ownerUid == request.auth.uid
+        && resource.data.status == "submitted";
+    }
+
+    // Staff can submit and view only their own receipts. Explicit finance
+    // reviewers can access the company queue without exposing it to other staff.
+    match /receiptGroups/{groupId} {
+      allow read: if receiptAccountEnabled()
+        && receiptCompanyAllowed(resource.data)
+        && (isFinanceReviewer() || resource.data.submitterUid == request.auth.uid);
+      allow create: if receiptAccountEnabled()
+        && receiptCompanyAllowed(request.resource.data)
+        && request.resource.data.submitterUid == request.auth.uid
+        && request.resource.data.status == "draft"
+        && request.resource.data.declaredNoReceipts == false;
+      // Lifecycle transitions are validated and audited by protected server routes.
+      allow update, delete: if false;
+    }
+
+    match /receipts/{receiptId} {
+      allow read: if receiptAccountEnabled()
+        && receiptCompanyAllowed(resource.data)
+        && (isFinanceReviewer()
+          || resource.data.submitterUid == request.auth.uid);
+      allow create: if receiptAccountEnabled()
+        && receiptCompanyAllowed(request.resource.data)
+        && request.resource.data.submitterUid == request.auth.uid
+        && request.resource.data.status == "pending"
+        && request.resource.data.keys().hasAll(["purpose", "valuePence", "monthKey", "groupId", "suggestedVatPence"])
+        && request.resource.data.purpose is string
+        && request.resource.data.purpose.size() > 0
+        && request.resource.data.valuePence is int
+        && request.resource.data.valuePence > 0
+        && request.resource.data.suggestedVatPence is int
+        && receiptGroupAfter(request.resource.data.groupId).data.submitterUid == request.auth.uid
+        && receiptGroupAfter(request.resource.data.groupId).data.companyId == request.resource.data.companyId
+        && receiptGroupAfter(request.resource.data.groupId).data.monthKey == request.resource.data.monthKey
+        && receiptGroupAfter(request.resource.data.groupId).data.status == "draft";
+      allow update: if receiptAccountEnabled()
+        && receiptCompanyAllowed(resource.data)
+        && receiptCompanyAllowed(request.resource.data)
+        && receiptOwnerDraftUpdateAllowed();
+      allow delete: if receiptAccountEnabled()
+        && receiptCompanyAllowed(resource.data)
+        && resource.data.submitterUid == request.auth.uid
+        && existingReceiptGroup(resource.data.groupId).data.status == "draft";
+    }
+
+    match /timesheetQueries/{queryId} {
+      allow read: if canReadUserTenantDoc();
+      allow create: if canCreateUserTenantDoc();
+      allow update: if canUpdateUserTenantDoc();
+      allow delete: if canDeleteUserTenantDoc();
+    }
+
+    match /timesheetQueries/{queryId}/messages/{messageId} {
+      allow read, write: if canUseSoftware();
+    }
+
+    match /sickLeave/{docId} {
+      allow read: if canReadUserTenantDoc();
+      allow create: if canCreateUserTenantDoc();
+      allow update: if canUpdateUserTenantDoc();
+      allow delete: if canDeleteUserTenantDoc();
+    }
+
+    match /uCraneFreelancers/{docId} {
+      allow read: if canReadUserTenantDoc();
+      allow create: if canCreateUserTenantDoc();
+      allow update: if canUpdateUserTenantDoc();
+      allow delete: if canDeleteUserTenantDoc();
+    }
+
+    match /lorries/{docId} {
+      allow read: if canReadServiceTenantDoc();
+      allow create: if canCreateServiceTenantDoc();
+      allow update: if canUpdateServiceTenantDoc();
+      allow delete: if canDeleteServiceTenantDoc();
+    }
+
+    match /invoiceQueue/{docId} {
+      allow read: if canReadUserTenantDoc();
+      // Authoritative invoice creation and lifecycle writes are server-only.
+      // The protected service-account route bypasses client Firestore rules.
+      allow create, update, delete: if false;
+    }
+
+    match /vehicles/{vehicleId} {
+      allow read: if canReadAnyWorkspaceTenantDoc();
+      allow create: if canCreateAnyWorkspaceTenantDoc();
+      allow update: if canUpdateAnyWorkspaceTenantDoc()
+        && legacyPmiHistoryWriteAllowed()
+        && legalMaintenanceCompletionFieldsUnchanged();
+      allow delete: if canDeleteAnyWorkspaceTenantDoc();
+    }
+
+    match /equipment/{equipmentId} {
+      allow read: if canReadAnyWorkspaceTenantDoc();
+      allow create: if canCreateServiceTenantDoc();
+      allow update: if canUpdateServiceTenantDoc();
+      allow delete: if canDeleteServiceTenantDoc();
+    }
+
+    match /maintenance/{docId} {
+      allow read: if canReadServiceTenantDoc();
+      allow create: if canCreateServiceTenantDoc();
+      allow update: if canUpdateServiceTenantDoc();
+      allow delete: if canDeleteServiceTenantDoc();
+    }
+
+    match /maintenanceJobs/{jobId} {
+      allow read: if canReadAnyWorkspaceTenantDoc();
+      allow create: if canCreateAnyWorkspaceTenantDoc();
+      allow update: if canUpdateAnyWorkspaceTenantDoc();
+      allow delete: if canDeleteAnyWorkspaceTenantDoc();
+    }
+
+    match /maintenanceBookings/{bookingId} {
+      allow read: if canReadStrictTenantDoc();
+      // Legal maintenance state transitions are executed only by the authenticated
+      // server mutation service. Admin SDK/REST service-account writes bypass rules;
+      // browser clients cannot manufacture completed, cancelled or archived records.
+      allow create, update, delete: if false;
+    }
+
+    match /maintenanceReconciliationJobs/{jobId} {
+      allow read: if hasServiceAccess() && canReadStrictTenantDoc();
+      allow create, update, delete: if false;
+    }
+
+    match /vehicleChecks/{docId} {
+      allow read: if canReadAnyWorkspaceTenantDoc();
+      allow create: if canCreateServiceTenantDoc();
+      allow update: if canUpdateServiceTenantDoc();
+      allow delete: if canDeleteServiceTenantDoc();
+    }
+
+    match /defects/{docId} {
+      allow read: if canReadServiceTenantDoc();
+      allow create: if canCreateServiceTenantDoc();
+      allow update: if canUpdateServiceTenantDoc();
+      allow delete: if canDeleteServiceTenantDoc();
+    }
+
+    match /workBookings/{docId} {
+      allow read: if canReadServiceTenantDoc();
+      allow create: if canCreateServiceTenantDoc();
+      allow update: if canUpdateServiceTenantDoc();
+      allow delete: if canDeleteServiceTenantDoc();
+    }
+
+    match /serviceRecords/{docId} {
+      allow read: if canReadServiceTenantDoc();
+      allow create: if canCreateServiceTenantDoc();
+      allow update: if canUpdateServiceTenantDoc();
+      allow delete: if canDeleteServiceTenantDoc();
+    }
+
+    match /defectReports/{docId} {
+      allow read: if canReadServiceTenantDoc();
+      allow create: if canCreateServiceTenantDoc();
+      allow update: if canUpdateServiceTenantDoc();
+      allow delete: if canDeleteServiceTenantDoc();
+    }
+
+    match /motPreChecks/{docId} {
+      allow read: if canReadServiceTenantDoc();
+      allow create: if canCreateServiceTenantDoc();
+      allow update: if canUpdateServiceTenantDoc();
+      allow delete: if canDeleteServiceTenantDoc();
+    }
+
+    match /vehiclePrepRecords/{docId} {
+      allow read: if canReadAnyWorkspaceTenantDoc();
+      allow create: if canCreateServiceTenantDoc()
+        || (canCreateUserTenantDoc() && validUserVehiclePrepRecord());
+      allow update: if canUpdateServiceTenantDoc()
+        || (canUpdateUserTenantDoc()
+          && validUserVehiclePrepRecord()
+          && userVehiclePrepIdentityUnchanged());
+      allow delete: if canDeleteServiceTenantDoc();
+    }
+
+    match /vehicleIssues/{docId} {
+      allow read: if canReadServiceTenantDoc();
+      allow create: if canCreateServiceTenantDoc();
+      allow update: if canUpdateServiceTenantDoc();
+      allow delete: if canDeleteServiceTenantDoc();
+    }
+
+    match /vehicleUsageNotes/{docId} {
+      allow read: if canReadServiceTenantDoc();
+      allow create: if canCreateServiceTenantDoc();
+      allow update: if canUpdateServiceTenantDoc();
+      allow delete: if canDeleteServiceTenantDoc();
+    }
+
+    match /hsRegister/{docId} {
+      allow read: if canReadUserTenantDoc();
+      allow create: if canCreateUserTenantDoc();
+      allow update: if canUpdateUserTenantDoc();
+      allow delete: if canDeleteUserTenantDoc();
+    }
+
+    match /hsCheckRecords/{docId} {
+      allow read: if canReadUserTenantDoc();
+      allow create: if canCreateUserTenantDoc();
+      allow update: if canUpdateUserTenantDoc();
+      allow delete: if canDeleteUserTenantDoc();
+    }
+
+    match /ppeIssueRecords/{docId} {
+      allow read: if canReadUserTenantDoc();
+      allow create: if canCreateUserTenantDoc();
+      allow update: if canUpdateUserTenantDoc();
+      allow delete: if canDeleteUserTenantDoc();
+    }
+
+    match /employeeTrainingRecords/{docId} {
+      allow read: if canReadUserTenantDoc();
+      allow create: if canCreateUserTenantDoc();
+      allow update: if canUpdateUserTenantDoc();
+      allow delete: if canDeleteUserTenantDoc();
+    }
+
+    match /settings/{docId} {
+      allow read: if isAdmin() || (docId == "maintenanceProviders" && canUseSoftware());
+      allow write: if isAdmin();
+    }
+
+    match /{document=**} {
+      allow read: if isPlatformAdmin();
+      allow write: if false;
+    }
+  }
+}

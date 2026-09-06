@@ -1,16 +1,17 @@
+import { AppText as Text, AppPressable as TouchableOpacity, FormField } from "../../../components/ui/AppPrimitives";
+import {
+  servicePalette as COLORS } from "../../../lib/design/semantics";
 import { useRouter } from "expo-router";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect,
+  useMemo,
+  useState } from "react";
 import {
   ActivityIndicator,
   Alert,
-  ScrollView,
   StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+
 import Icon from "react-native-vector-icons/Feather";
 import { doc, serverTimestamp, updateDoc } from "firebase/firestore";
 
@@ -22,18 +23,9 @@ import {
 import { useServiceCacheActions, useServiceCollection } from "../../../hooks/useServiceData";
 import { runOrQueueFirestoreMutations } from "../../../lib/sync/firestoreQueue";
 import { useTheme } from "../../../providers/ThemeProvider";
-
-const COLORS = {
-  background: "#0D0D0D",
-  card: "#1A1A1A",
-  border: "#333333",
-  textHigh: "#FFFFFF",
-  textMid: "#E0E0E0",
-  textLow: "#888888",
-  primaryAction: "#ED1C25",
-  amber: "#F59E0B",
-  inputBg: "#111114",
-};
+import { staticColors } from "../../../lib/design/staticColors";
+import { designTokens as t } from "../../../lib/design/tokens";
+import PageShell from "../../../components/layout/PageShell";
 
 function normaliseKey(value) {
   return String(value || "")
@@ -330,23 +322,13 @@ export default function AdvisoriesScreen() {
   };
 
   return (
-    <SafeAreaView
-      edges={["left", "right"]}
-      style={[styles.container, { backgroundColor: colors.background || COLORS.background }]}
-    >
-      <View style={[styles.header, { borderBottomColor: colors.border || COLORS.border }]}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-          <Icon name="chevron-left" size={22} color={colors.text || COLORS.textHigh} />
-        </TouchableOpacity>
-        <View style={{ flex: 1 }}>
-          <Text style={[styles.pageTitle, { color: colors.text || COLORS.textHigh }]}>
-            Advisories
-          </Text>
-          <Text style={[styles.pageSubtitle, { color: colors.textMuted || COLORS.textMid }]}>
-            Amber service and equipment inspection items being monitored.
-          </Text>
-        </View>
-      </View>
+    <PageShell header={{
+      variant: "compact",
+      title: "Advisories",
+      subtitle: "Amber service and equipment inspection items being monitored.",
+      onBack: router.back,
+    }}>
+      
 
       {loading ? (
         <View style={styles.loadingContainer}>
@@ -356,7 +338,7 @@ export default function AdvisoriesScreen() {
           </Text>
         </View>
       ) : (
-        <ScrollView contentContainerStyle={styles.scrollContent}>
+        <>
           <View
             style={[
               styles.summaryCard,
@@ -388,29 +370,13 @@ export default function AdvisoriesScreen() {
               },
             ]}
           >
-            <View
-              style={[
-                styles.searchBox,
-                {
-                  backgroundColor: colors.inputBackground || COLORS.inputBg,
-                  borderColor: colors.inputBorder || colors.border || COLORS.border,
-                },
-              ]}
-            >
-              <Icon
-                name="search"
-                size={16}
-                color={colors.textMuted || COLORS.textMid}
-                style={{ marginRight: 8 }}
-              />
-              <TextInput
-                style={[styles.searchInput, { color: colors.text || COLORS.textHigh }]}
-                placeholder="Search vehicle, equipment or advisory..."
-                placeholderTextColor={colors.textMuted || COLORS.textLow}
-                value={searchText}
-                onChangeText={setSearchText}
-              />
-            </View>
+            <FormField
+              label="Search"
+              placeholder="Search vehicle, equipment or advisory..."
+              value={searchText}
+              onChangeText={setSearchText}
+              inputProps={{ returnKeyType: "search" }}
+            />
 
             <View style={styles.filterRow}>
               {[
@@ -439,7 +405,7 @@ export default function AdvisoriesScreen() {
                     <Text
                       style={[
                         styles.filterPillText,
-                        { color: active ? "#FFFFFF" : colors.textMuted || COLORS.textMid },
+                        { color: active ? staticColors.hex_ffffff_5c2ocm : colors.textMuted || COLORS.textMid },
                       ]}
                     >
                       {label}
@@ -550,14 +516,14 @@ export default function AdvisoriesScreen() {
                           style={[
                             styles.actionButton,
                             styles.resolveButton,
-                            { borderColor: colors.success || "#157347" },
+                            { borderColor: colors.success || staticColors.hex_157347_a4inet },
                           ]}
                           activeOpacity={0.85}
                           disabled={resolvingId === item.id}
                           onPress={() => confirmMarkAdvisoryFixed(item)}
                         >
-                          <Icon name="check-circle" size={13} color={colors.success || "#157347"} />
-                          <Text style={[styles.actionText, { color: colors.success || "#157347" }]}>
+                          <Icon name="check-circle" size={13} color={colors.success || staticColors.hex_157347_a4inet} />
+                          <Text style={[styles.actionText, { color: colors.success || staticColors.hex_157347_a4inet }]}>
                             {resolvingId === item.id ? "Saving..." : "Mark fixed"}
                           </Text>
                         </TouchableOpacity>
@@ -568,9 +534,9 @@ export default function AdvisoriesScreen() {
               </View>
             ))
           )}
-        </ScrollView>
+        </>
       )}
-    </SafeAreaView>
+    </PageShell>
   );
 }
 
@@ -595,21 +561,21 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingHorizontal: t.spacing.md,
+    paddingVertical: t.spacing.sm,
     borderBottomWidth: 1,
   },
   backButton: {
-    paddingRight: 10,
+    paddingRight: t.spacing.xs,
   },
   pageTitle: {
-    fontSize: 22,
+    fontSize: t.typography.titleSmall.fontSize,
     fontWeight: "800",
     color: COLORS.textHigh,
   },
   pageSubtitle: {
-    marginTop: 2,
-    fontSize: 13,
+    marginTop: t.spacing.none,
+    fontSize: t.typography.bodySmall.fontSize,
     color: COLORS.textMid,
   },
   loadingContainer: {
@@ -618,182 +584,182 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   loadingText: {
-    marginTop: 10,
-    fontSize: 13,
+    marginTop: t.spacing.xs,
+    fontSize: t.typography.bodySmall.fontSize,
   },
   scrollContent: {
-    padding: 16,
+    padding: t.spacing.md,
   },
   summaryCard: {
     flexDirection: "row",
-    borderRadius: 10,
+    borderRadius: t.radius.md,
     borderWidth: 1,
-    padding: 14,
-    marginBottom: 12,
+    padding: t.spacing.sm,
+    marginBottom: t.spacing.sm,
   },
   summaryItem: {
     flex: 1,
   },
   summaryValue: {
-    fontSize: 20,
+    fontSize: t.typography.titleSmall.fontSize,
     fontWeight: "800",
   },
   summaryLabel: {
-    marginTop: 2,
-    fontSize: 12,
+    marginTop: t.spacing.none,
+    fontSize: t.typography.metadata.fontSize,
   },
   filterCard: {
-    borderRadius: 10,
+    borderRadius: t.radius.md,
     borderWidth: 1,
-    padding: 12,
-    marginBottom: 12,
+    padding: t.spacing.sm,
+    marginBottom: t.spacing.sm,
   },
   searchBox: {
     flexDirection: "row",
     alignItems: "center",
-    borderRadius: 8,
+    borderRadius: t.radius.sm,
     borderWidth: 1,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xs,
   },
   searchInput: {
     flex: 1,
-    fontSize: 15,
+    fontSize: t.typography.bodyLarge.fontSize,
   },
   filterRow: {
     flexDirection: "row",
-    gap: 8,
-    marginTop: 10,
+    gap: t.spacing.xs,
+    marginTop: t.spacing.xs,
   },
   filterPill: {
-    borderRadius: 999,
+    borderRadius: t.radius.pill,
     borderWidth: 1,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
+    paddingHorizontal: t.spacing.sm,
+    paddingVertical: t.spacing.xs,
   },
   filterPillText: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "800",
   },
   emptyState: {
-    borderRadius: 10,
+    borderRadius: t.radius.md,
     borderWidth: 1,
-    padding: 22,
+    padding: t.spacing.lg,
     alignItems: "center",
   },
   emptyTitle: {
-    marginTop: 10,
-    fontSize: 17,
+    marginTop: t.spacing.xs,
+    fontSize: t.typography.sectionTitle.fontSize,
     fontWeight: "800",
   },
   emptySubtitle: {
-    marginTop: 4,
-    fontSize: 13,
+    marginTop: t.spacing.xxs,
+    fontSize: t.typography.bodySmall.fontSize,
     textAlign: "center",
   },
   advisoryGroupCard: {
-    borderRadius: 10,
+    borderRadius: t.radius.md,
     borderWidth: 1,
-    padding: 12,
-    marginBottom: 10,
+    padding: t.spacing.sm,
+    marginBottom: t.spacing.xs,
   },
   groupHeaderRow: {
     flexDirection: "row",
     alignItems: "center",
-    marginBottom: 8,
+    marginBottom: t.spacing.xs,
   },
   assetTitle: {
-    fontSize: 16,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "800",
   },
   groupMetaText: {
-    marginTop: 2,
-    fontSize: 12,
+    marginTop: t.spacing.none,
+    fontSize: t.typography.metadata.fontSize,
   },
   countPill: {
     minWidth: 26,
     height: 26,
-    borderRadius: 13,
+    borderRadius: t.radius.lg,
     backgroundColor: COLORS.primaryAction,
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 8,
+    paddingHorizontal: t.spacing.xs,
   },
   countPillText: {
-    color: "#FFFFFF",
-    fontSize: 12,
+    color: staticColors.hex_ffffff_5c2ocm,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "900",
   },
   advisoryItemRow: {
     flexDirection: "row",
-    paddingTop: 8,
+    paddingTop: t.spacing.xs,
   },
   advisoryItemDivider: {
     borderTopWidth: 1,
     borderTopColor: COLORS.border,
-    marginTop: 10,
+    marginTop: t.spacing.xs,
   },
   iconWrap: {
     width: 34,
     height: 34,
-    borderRadius: 17,
+    borderRadius: t.radius.pill,
     backgroundColor: COLORS.amber,
     alignItems: "center",
     justifyContent: "center",
-    marginRight: 10,
+    marginRight: t.spacing.xs,
   },
   cardHeaderRow: {
     flexDirection: "row",
     alignItems: "flex-start",
-    gap: 8,
+    gap: t.spacing.xs,
   },
   advisoryTitle: {
     flex: 1,
-    fontSize: 15,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "800",
   },
   daysPill: {
-    borderRadius: 999,
-    backgroundColor: "rgba(245,158,11,0.16)",
+    borderRadius: t.radius.pill,
+    backgroundColor: staticColors.rgba_iz9fu0,
     borderWidth: 1,
-    borderColor: "rgba(245,158,11,0.55)",
-    paddingHorizontal: 8,
-    paddingVertical: 4,
+    borderColor: staticColors.rgba_iz9cnj,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
   },
   daysPillText: {
     color: COLORS.amber,
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     fontWeight: "800",
   },
   detailsText: {
-    marginTop: 5,
-    fontSize: 13,
-    lineHeight: 18,
+    marginTop: t.spacing.xxs,
+    fontSize: t.typography.bodySmall.fontSize,
+    lineHeight: t.typography.bodySmall.lineHeight,
   },
   metaText: {
-    marginTop: 6,
-    fontSize: 12,
+    marginTop: t.spacing.xxs,
+    fontSize: t.typography.metadata.fontSize,
   },
   actionRow: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 8,
-    marginTop: 10,
+    gap: t.spacing.xs,
+    marginTop: t.spacing.xs,
   },
   actionButton: {
     minHeight: 32,
-    borderRadius: 999,
+    borderRadius: t.radius.pill,
     borderWidth: 1,
-    paddingHorizontal: 10,
+    paddingHorizontal: t.spacing.xs,
     flexDirection: "row",
     alignItems: "center",
-    gap: 5,
+    gap: t.spacing.xxs,
   },
   resolveButton: {
-    backgroundColor: "rgba(21,115,71,0.08)",
+    backgroundColor: staticColors.rgba_13f5dp4,
   },
   actionText: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "800",
   },
 });

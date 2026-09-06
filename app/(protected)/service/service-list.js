@@ -1,19 +1,19 @@
+import { AppText as Text, AppPressable as TouchableOpacity, FormField } from "../../../components/ui/AppPrimitives";
+import {
+  servicePalette as COLORS } from "../../../lib/design/semantics";
 // app/(protected)/service-list.jsx
 import { useRouter } from "expo-router";
-import { useMemo, useState } from "react";
+import { useMemo,
+  useState } from "react";
 import {
   ActivityIndicator,
   ScrollView,
   StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
-import PageHeaderCard from "../../../components/PageHeaderCard";
+import PageShell from "../../../components/layout/PageShell";
 import { designTokens as t } from "../../../lib/design/tokens";
 import {
   getVehicleOperationalStatus,
@@ -28,21 +28,9 @@ import {
 } from "../../../lib/fleetSchema";
 import { useServiceCollection } from "../../../hooks/useServiceData";
 import { useTheme } from "../../../providers/ThemeProvider";
+import { staticColors } from "../../../lib/design/staticColors";
 
 /* ---------- CONSTANTS & HELPERS ---------- */
-
-const COLORS = {
-  background: "#0D0D0D",
-  card: "#1A1A1A",
-  border: "#333333",
-  textHigh: "#FFFFFF",
-  textMid: "#E0E0E0",
-  textLow: "#888888",
-  primaryAction: "#ED1C25", // red accent
-  inputBg: "#1A1A1A",
-  chipBg: "#1F1F1F",
-  chipBorder: "#3A3A3A",
-};
 
 function toDateMaybe(value) {
   if (!value) return null;
@@ -139,7 +127,7 @@ const STATUS_SECTIONS = [
 
 export default function ServiceListScreen() {
   const router = useRouter();
-  const { colors, colorScheme } = useTheme();
+  const { colors } = useTheme();
 
   const { rows: vehicles, loading } = useServiceCollection("vehicles", {
     label: "vehicles for service list",
@@ -268,23 +256,14 @@ export default function ServiceListScreen() {
     byStatus.inactive.length;
 
   return (
-    <SafeAreaView
-      edges={["left", "right"]}
-      style={[
-        styles.container,
-        {
-          backgroundColor:
-            colorScheme === "light" ? "#FFFFFF" : colors.background || COLORS.background,
-        },
-      ]}
+    <PageShell
+      header={{
+        variant: "compact",
+        eyebrow: "Workshop",
+        title: "MOT & Service",
+        subtitle: "Prioritise overdue vehicles, review details and book work.",
+      }}
     >
-      <PageHeaderCard
-        eyebrow="Workshop"
-        title="MOT & Service"
-        subtitle="Prioritise overdue vehicles, then tap to view details and book work."
-        style={styles.headerCard}
-      />
-
       {loading ? (
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={colors.danger || COLORS.primaryAction} />
@@ -298,7 +277,7 @@ export default function ServiceListScreen() {
           </Text>
         </View>
       ) : (
-        <View style={{ flex: 1 }}>
+        <>
           {/* QUICK SUMMARY STRIP */}
           <View style={styles.summaryStrip}>
             <SummaryPill
@@ -330,45 +309,13 @@ export default function ServiceListScreen() {
 
           {/* SEARCH + FILTERS */}
           <View style={styles.controlsContainer}>
-            <View
-              style={[
-                styles.searchBox,
-                {
-                  backgroundColor:
-                    colors.inputBackground || COLORS.inputBg,
-                  borderColor: colors.inputBorder || colors.border || COLORS.border,
-                },
-              ]}
-            >
-              <Icon
-                name="search"
-                size={16}
-                color={colors.textMuted || COLORS.textMid}
-                style={{ marginRight: 6 }}
-              />
-              <TextInput
-                placeholder="Search by name, reg, manufacturer, model…"
-                placeholderTextColor={colors.textMuted || "#777"}
-                value={search}
-                onChangeText={setSearch}
-                style={[
-                  styles.searchInput,
-                  { color: colors.text || COLORS.textHigh },
-                ]}
-              />
-              {search.length > 0 && (
-                <TouchableOpacity
-                  onPress={() => setSearch("")}
-                  activeOpacity={0.7}
-                >
-                  <Icon
-                    name="x"
-                    size={14}
-                    color={colors.textMuted || COLORS.textMid}
-                  />
-                </TouchableOpacity>
-              )}
-            </View>
+            <FormField
+              label="Search vehicles"
+              placeholder="Search by name, reg, manufacturer, model…"
+              value={search}
+              onChangeText={setSearch}
+              inputProps={{ returnKeyType: "search" }}
+            />
 
             <ScrollView
               horizontal
@@ -387,7 +334,7 @@ export default function ServiceListScreen() {
                           ? colors.accent || COLORS.primaryAction
                           : colors.border || COLORS.chipBorder,
                         backgroundColor: active
-                          ? colors.accentSoft || "rgba(255,59,48,0.18)"
+                          ? colors.accentSoft || staticColors.rgba_mxgb17
                           : colors.surfaceAlt || COLORS.chipBg,
                       },
                     ]}
@@ -413,7 +360,7 @@ export default function ServiceListScreen() {
           </View>
 
           {/* LIST SECTIONS */}
-          <ScrollView contentContainerStyle={styles.scrollContent}>
+          <>
             {!hasAnyVehicles ? (
               <View style={styles.emptyState}>
                 <Icon
@@ -446,9 +393,9 @@ export default function ServiceListScreen() {
                 const expanded = expandedStatus[section.key] ?? true;
 
                 let accentColour = colors.border || COLORS.border;
-                if (section.key === "overdue") accentColour = colors.danger || "#ED1C25";
-                else if (section.key === "due-soon") accentColour = "#FF9500";
-                else if (section.key === "ok") accentColour = colors.success || "#34C759";
+                if (section.key === "overdue") accentColour = colors.danger || staticColors.hex_ed1c25_4py4qa;
+                else if (section.key === "due-soon") accentColour = staticColors.hex_ff9500_5c3jxm;
+                else if (section.key === "ok") accentColour = colors.success || staticColors.hex_34c759_8tm7fd;
                 else if (section.key === "inactive") accentColour = colors.textMuted || COLORS.textLow;
 
                 return (
@@ -464,7 +411,7 @@ export default function ServiceListScreen() {
                           name={expanded ? "chevron-down" : "chevron-right"}
                           size={16}
                           color={accentColour}
-                          style={{ marginRight: 6 }}
+                          style={{ marginRight: t.spacing.xxs }}
                         />
                         <Text
                           style={[
@@ -523,11 +470,11 @@ export default function ServiceListScreen() {
 
                         let borderAccent = colors.border || COLORS.border;
                         if (v.worstCode === "overdue")
-                          borderAccent = colors.danger || "#ED1C25";
+                          borderAccent = colors.danger || staticColors.hex_ed1c25_4py4qa;
                         else if (v.worstCode === "due-soon")
-                          borderAccent = "#FF9500";
+                          borderAccent = staticColors.hex_ff9500_5c3jxm;
                         else if (v.worstCode === "ok")
-                          borderAccent = colors.success || "#34C759";
+                          borderAccent = colors.success || staticColors.hex_34c759_8tm7fd;
                         else if (v.worstCode === "inactive")
                           borderAccent = colors.textMuted || COLORS.textLow;
 
@@ -549,63 +496,27 @@ export default function ServiceListScreen() {
                             }
                           >
                             <View style={styles.vehicleHeaderRow}>
-                              <View style={{ flex: 1 }}>
-                                <Text
-                                  style={[
-                                    styles.vehicleTitle,
-                                    { color: colors.text || COLORS.textHigh },
-                                  ]}
-                                >
-                                  {name}
-                                </Text>
-                                {!!reg && (
-                                  <Text
-                                    style={[
-                                      styles.vehicleReg,
-                                      {
-                                        color:
-                                          colors.textMuted || COLORS.textMid,
-                                      },
-                                    ]}
-                                  >
-                                    {reg}
-                                  </Text>
-                                )}
-                                {(manufacturer || model) && (
-                                  <Text
-                                    style={[
-                                      styles.vehicleReg,
-                                      {
-                                        color:
-                                          colors.textMuted || COLORS.textMid,
-                                      },
-                                    ]}
-                                  >
-                                    {manufacturer}
-                                    {manufacturer && model ? " · " : ""}
-                                    {model}
-                                  </Text>
-                                )}
-                              </View>
-                              <View style={{ alignItems: "flex-end" }}>
-                                <Text
-                                  style={[
-                                    styles.cardHint,
-                                    {
-                                      color:
-                                        colors.textMuted || COLORS.textLow,
-                                    },
-                                  ]}
-                                >
-                                  Tap to view & book work
-                                </Text>
-                                <Icon
-                                  name="chevron-right"
-                                  size={18}
-                                  color={colors.textMuted || COLORS.textMid}
-                                  style={{ marginTop: 2 }}
-                                />
-                              </View>
+                              <Text
+                                numberOfLines={1}
+                                style={[
+                                  styles.vehicleTitle,
+                                  { color: colors.text || COLORS.textHigh },
+                                ]}
+                              >
+                                {name}
+                              </Text>
+                              <Text
+                                numberOfLines={1}
+                                style={[
+                                  styles.vehicleIdentity,
+                                  { color: colors.textMuted || COLORS.textMid },
+                                ]}
+                              >
+                                {[
+                                  reg,
+                                  [manufacturer, model].filter(Boolean).join(" · "),
+                                ].filter(Boolean).join(" · ")}
+                              </Text>
                             </View>
 
                             <View style={styles.statusRow}>
@@ -628,82 +539,18 @@ export default function ServiceListScreen() {
                               )}
                             </View>
 
-                            <View style={styles.metaRow}>
-                              <View style={styles.metaItem}>
-                                <Text
-                                  style={[
-                                    styles.metaLabel,
-                                    {
-                                      color:
-                                        colors.textMuted || COLORS.textLow,
-                                    },
-                                  ]}
-                                >
-                                  Tax
-                                </Text>
-                                <Text
-                                  style={[
-                                    styles.metaValue,
-                                    {
-                                      color:
-                                        colors.textMuted || COLORS.textMid,
-                                    },
-                                  ]}
-                                >
-                                  {taxStatus}
-                                </Text>
-                              </View>
-                              <View style={styles.metaItem}>
-                                <Text
-                                  style={[
-                                    styles.metaLabel,
-                                    {
-                                      color:
-                                        colors.textMuted || COLORS.textLow,
-                                    },
-                                  ]}
-                                >
-                                  Insurance
-                                </Text>
-                                <Text
-                                  style={[
-                                    styles.metaValue,
-                                    {
-                                      color:
-                                        colors.textMuted || COLORS.textMid,
-                                    },
-                                  ]}
-                                >
-                                  {insuranceStatus}
-                                </Text>
-                              </View>
-                              {typeof v.mileage === "number" && (
-                                <View style={styles.metaItem}>
-                                  <Text
-                                    style={[
-                                      styles.metaLabel,
-                                      {
-                                        color:
-                                          colors.textMuted || COLORS.textLow,
-                                      },
-                                    ]}
-                                  >
-                                    Odo
-                                  </Text>
-                                  <Text
-                                    style={[
-                                      styles.metaValue,
-                                      {
-                                        color:
-                                          colors.textMuted || COLORS.textMid,
-                                      },
-                                    ]}
-                                  >
-                                    {v.mileage.toLocaleString("en-GB")} mi
-                                  </Text>
-                                </View>
-                              )}
-                            </View>
+                            <Text
+                              numberOfLines={1}
+                              style={[styles.metaSummary, { color: colors.textMuted || COLORS.textMid }]}
+                            >
+                              {[
+                                `Tax: ${taxStatus}`,
+                                `Insurance: ${insuranceStatus}`,
+                                typeof v.mileage === "number"
+                                  ? `${v.mileage.toLocaleString("en-GB")} mi`
+                                  : null,
+                              ].filter(Boolean).join(" · ")}
+                            </Text>
                           </TouchableOpacity>
                         );
                       })}
@@ -712,11 +559,10 @@ export default function ServiceListScreen() {
               })
             )}
 
-            <View style={{ height: 40 }} />
-          </ScrollView>
-        </View>
+          </>
+        </>
       )}
-    </SafeAreaView>
+    </PageShell>
   );
 }
 
@@ -725,23 +571,23 @@ export default function ServiceListScreen() {
 function StatusPill({ label, status }) {
   const { colors } = useTheme();
   const code = status.code;
-  let bg = "rgba(74, 74, 74, 0.7)";
+  let bg = staticColors.rgba_17yqod0;
   let fg = colors.text || COLORS.textHigh;
 
   if (code === "overdue") {
-    bg = "rgba(255,59,48,0.22)";
-    fg = colors.danger || "#ED1C25";
+    bg = staticColors.rgba_mxg8sy;
+    fg = colors.danger || staticColors.hex_ed1c25_4py4qa;
   } else if (code === "due-soon") {
-    bg = "rgba(255,149,0,0.22)";
-    fg = "#FF9500";
+    bg = staticColors.rgba_nffwhq;
+    fg = staticColors.hex_ff9500_5c3jxm;
   } else if (code === "ok") {
-    bg = "rgba(52,199,89,0.22)";
-    fg = colors.success || "#34C759";
+    bg = staticColors.rgba_dg0wlz;
+    fg = colors.success || staticColors.hex_34c759_8tm7fd;
   } else if (code === "unknown") {
-    bg = "rgba(142,142,147,0.22)";
+    bg = staticColors.rgba_y8isnm;
     fg = colors.textMuted || COLORS.textMid;
   } else if (code === "inactive") {
-    bg = "rgba(100,116,139,0.18)";
+    bg = staticColors.rgba_z8bc9h;
     fg = colors.textMuted || COLORS.textMid;
   }
 
@@ -759,11 +605,11 @@ function SummaryPill({ label, value, tone }) {
   let fg = colors.textMuted || COLORS.textMid;
 
   if (tone === "danger") {
-    fg = colors.danger || "#ED1C25";
+    fg = colors.danger || staticColors.hex_ed1c25_4py4qa;
   } else if (tone === "warning") {
-    fg = "#FF9500";
+    fg = staticColors.hex_ff9500_5c3jxm;
   } else if (tone === "success") {
-    fg = colors.success || "#34C759";
+    fg = colors.success || staticColors.hex_34c759_8tm7fd;
   }
 
   return (
@@ -790,8 +636,8 @@ const styles = StyleSheet.create({
   },
   headerCard: {
     marginHorizontal: t.spacing.md,
-    marginTop: 0,
-    marginBottom: 0,
+    marginTop: t.spacing.none,
+    marginBottom: t.spacing.none,
   },
   header: {
     paddingHorizontal: t.spacing.md,
@@ -806,15 +652,15 @@ const styles = StyleSheet.create({
     borderColor: COLORS.border,
     alignItems: "center",
     justifyContent: "center",
-    marginRight: 10,
+    marginRight: t.spacing.xs,
   },
   pageTitle: {
-    fontSize: 18,
+    fontSize: t.typography.sectionTitle.fontSize,
     fontWeight: "800",
   },
   pageSubtitle: {
     marginTop: t.spacing.xxs,
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textMid,
   },
   loadingContainer: {
@@ -823,177 +669,155 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   loadingText: {
-    marginTop: 8,
+    marginTop: t.spacing.xs,
     color: COLORS.textMid,
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
   },
 
   /* SUMMARY STRIP */
   summaryStrip: {
     flexDirection: "row",
-    paddingHorizontal: t.spacing.md,
-    paddingTop: 6,
-    paddingBottom: 2,
+    gap: t.spacing.xxs,
     justifyContent: "space-between",
   },
   summaryPill: {
     flex: 1,
     minHeight: 36,
-    paddingVertical: 4,
-    paddingHorizontal: 6,
-    marginRight: 6,
+    paddingVertical: t.spacing.xxs,
+    paddingHorizontal: t.spacing.xxs,
   },
   summaryValue: {
-    fontSize: 17,
-    lineHeight: 20,
+    fontSize: t.typography.sectionTitle.fontSize,
+    lineHeight: t.typography.sectionTitle.lineHeight,
     fontWeight: "800",
   },
   summaryLabel: {
-    fontSize: 11,
-    lineHeight: 14,
+    fontSize: t.typography.caption.fontSize,
+    lineHeight: t.typography.caption.lineHeight,
     color: COLORS.textMid,
   },
 
   controlsContainer: {
-    paddingHorizontal: t.spacing.md,
-    paddingTop: 4,
-    paddingBottom: 0,
+    gap: t.spacing.xs,
   },
   searchBox: {
     flexDirection: "row",
     alignItems: "center",
     borderWidth: 1,
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
+    borderRadius: t.radius.sm,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
   },
   searchInput: {
     flex: 1,
-    fontSize: 13,
-    paddingVertical: 2,
-    marginRight: 6,
+    fontSize: t.typography.bodySmall.fontSize,
+    paddingVertical: t.spacing.none,
+    marginRight: t.spacing.xxs,
   },
   filterRow: {
-    marginTop: 8,
-    paddingBottom: 2,
+    paddingBottom: t.spacing.none,
   },
   filterChip: {
     minHeight: 30,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 999,
-    marginRight: 8,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
+    borderRadius: t.radius.pill,
+    marginRight: t.spacing.xs,
   },
   filterChipText: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "600",
   },
 
   scrollContent: {
-    paddingHorizontal: 16,
-    paddingTop: 2,
-    paddingBottom: 104,
+    paddingHorizontal: t.spacing.md,
+    paddingTop: t.spacing.none,
+    paddingBottom: 140,
   },
 
   /* STATUS SECTIONS */
   sectionBlock: {
-    marginBottom: 8,
+    gap: t.spacing.xxs,
   },
   sectionHeaderRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingTop: 4,
-    paddingBottom: 2,
+    paddingTop: t.spacing.xxs,
+    paddingBottom: t.spacing.none,
   },
   sectionTitle: {
-    fontSize: 17,
+    fontSize: t.typography.sectionTitle.fontSize,
     fontWeight: "800",
   },
   sectionCount: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
   },
   sectionDescription: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     color: COLORS.textMid,
-    marginBottom: 4,
   },
 
   vehicleCard: {
     backgroundColor: COLORS.card,
-    borderRadius: 10,
-    marginTop: 5,
-    padding: 14,
+    borderRadius: t.radius.md,
+    padding: t.spacing.xs,
     borderWidth: 1,
     borderLeftWidth: 3,
   },
   vehicleHeaderRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginBottom: 5,
+    marginBottom: t.spacing.xxs,
   },
   vehicleTitle: {
-    fontSize: 15,
+    fontSize: t.typography.body.fontSize,
     fontWeight: "700",
   },
-  vehicleReg: {
-    marginTop: 2,
-    fontSize: 12,
+  vehicleIdentity: {
+    marginTop: t.spacing.none,
+    fontSize: t.typography.caption.fontSize,
     color: COLORS.textMid,
   },
   cardHint: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     color: COLORS.textLow,
   },
   statusRow: {
     flexDirection: "row",
     flexWrap: "wrap",
-    marginTop: 4,
+    marginTop: t.spacing.xxs,
     alignItems: "center",
   },
   statusPill: {
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    marginRight: 8,
-    marginBottom: 4,
+    borderRadius: t.radius.pill,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
+    marginRight: t.spacing.xs,
+    marginBottom: t.spacing.xxs,
   },
   statusPillText: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     fontWeight: "600",
   },
-  metaRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    marginTop: 8,
-  },
-  metaItem: {
-    marginRight: 16,
-    marginBottom: 2,
-  },
-  metaLabel: {
-    fontSize: 11,
-    color: COLORS.textLow,
-  },
-  metaValue: {
-    fontSize: 12,
+  metaSummary: {
+    marginTop: t.spacing.xxs,
+    fontSize: t.typography.caption.fontSize,
     color: COLORS.textMid,
   },
 
   emptyState: {
     alignItems: "center",
     justifyContent: "center",
-    marginTop: 12,
-    paddingHorizontal: 24,
+    marginTop: t.spacing.sm,
+    paddingHorizontal: t.spacing.xl,
   },
   emptyTitle: {
-    marginTop: 10,
-    fontSize: 16,
+    marginTop: t.spacing.xs,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "700",
   },
   emptySubtitle: {
-    marginTop: 6,
-    fontSize: 13,
+    marginTop: t.spacing.xxs,
+    fontSize: t.typography.bodySmall.fontSize,
     textAlign: "center",
   },
 });

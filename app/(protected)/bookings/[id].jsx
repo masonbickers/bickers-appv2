@@ -1,11 +1,15 @@
+import { AppText as Text } from "../../../components/ui/AppPrimitives";
 // app/(protected)/bookings/[id].jsx
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { doc, getDoc } from "firebase/firestore";
 import { useEffect, useState } from "react";
-import { Text, View } from "react-native";
+import {
+  View,
+} from "react-native";
 import { db } from "../../../firebaseConfig";
 import { isBookingVisibleToEmployee } from "../../../lib/bookingVisibility";
 import { useAuth } from "../../../providers/AuthProvider";
+import PageShell from "../../../components/layout/PageShell";
 
 export default function BookingView() {
   const { id } = useLocalSearchParams();
@@ -31,19 +35,27 @@ export default function BookingView() {
 
   if (unavailable) {
     return (
-      <View>
+      <PageShell header={{ variant: "compact", title: "Booking", onBack: router.back }}>
+        <View>
         <Text>This booking is not currently available in your employee app.</Text>
         <Text onPress={() => router.back()}>Go back</Text>
-      </View>
+        </View>
+      </PageShell>
     );
   }
-  if (!booking) return <Text>Loading booking…</Text>;
 
   return (
-    <View>
-      <Text>{booking.jobNumber}</Text>
-      <Text>{booking.client}</Text>
-      <Text>{JSON.stringify(booking, null, 2)}</Text>
-    </View>
+    <PageShell
+      header={{ variant: "compact", title: booking?.jobNumber || "Booking", onBack: router.back }}
+      state={{ resources: [{ isInitialLoading: !booking }], hasContent: Boolean(booking), loadingLabel: "Loading booking…" }}
+    >
+      {booking ? (
+        <View>
+          <Text>{booking.jobNumber}</Text>
+          <Text>{booking.client}</Text>
+          <Text>{JSON.stringify(booking, null, 2)}</Text>
+        </View>
+      ) : null}
+    </PageShell>
   );
 }

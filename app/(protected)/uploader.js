@@ -1,16 +1,15 @@
+import { AppText as Text, AppPressable as TouchableOpacity } from "../../components/ui/AppPrimitives";
 // app/uploader.js
-import { useState } from 'react';
+import {
+  useState } from 'react';
 import {
   Alert,
   Image,
   Platform,
-  ScrollView,
   StyleSheet,
-  Text,
-  TouchableOpacity,
   View,
-} from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+} from "react-native";
+
 
 import * as ImageManipulator from 'expo-image-manipulator';
 import * as ImagePicker from 'expo-image-picker';
@@ -21,6 +20,9 @@ import {
   uploadBytesResumable,
 } from 'firebase/storage';
 import { auth, storage } from '../../firebaseConfig';
+import { staticColors } from "../../lib/design/staticColors";
+import { designTokens as t } from "../../lib/design/tokens";
+import PageShell from "../../components/layout/PageShell";
 
 const IMAGES_ONLY = ImagePicker.MediaTypeOptions.Images;
 
@@ -171,8 +173,8 @@ export default function Uploader() {
   };
 
   return (
-    <SafeAreaView style={styles.container}>
-      <ScrollView contentContainerStyle={styles.content}>
+    <PageShell>
+      <>
         {/* Header & actions */}
         <View style={styles.headerRow}>
           <Text style={styles.title}>Photo Uploader</Text>
@@ -206,13 +208,13 @@ export default function Uploader() {
             items.map((it, idx) => (
               <View
                 key={`${it?.uri || 'item'}-${idx}`}
-                style={[styles.thumbWrap, (idx % 3 !== 2) && { marginRight: 8 }]}
+                style={[styles.thumbWrap, (idx % 3 !== 2) && { marginRight: t.spacing.xs }]}
               >
                 {it?.uri ? (
                   <Image source={{ uri: it.uri }} style={styles.thumb} />
                 ) : (
                   <View style={[styles.thumb, { alignItems: 'center', justifyContent: 'center' }]}>
-                    <Text style={{ color: '#888', fontSize: 12 }}>No preview</Text>
+                    <Text style={{ color: staticColors.hex_888_yhlrem, fontSize: t.typography.metadata.fontSize }}>No preview</Text>
                   </View>
                 )}
                 <TouchableOpacity
@@ -229,7 +231,7 @@ export default function Uploader() {
 
         {/* Results */}
         {!!urls.length && (
-          <View style={{ marginTop: 16 }}>
+          <View style={{ marginTop: t.spacing.md }}>
             <Text style={styles.sectionTitle}>Uploaded URLs</Text>
             {urls.map((u, i) => (
               <Text key={`${u}-${i}`} style={styles.url} numberOfLines={1}>
@@ -238,7 +240,7 @@ export default function Uploader() {
             ))}
 
             <TouchableOpacity
-              style={[styles.btn, styles.btnGhost, { marginTop: 10, alignSelf: 'flex-start' }]}
+              style={[styles.btn, styles.btnGhost, { marginTop: t.spacing.xs, alignSelf: 'flex-start' }]}
               onPress={clearAll}
               disabled={uploading}
             >
@@ -246,22 +248,22 @@ export default function Uploader() {
             </TouchableOpacity>
           </View>
         )}
-      </ScrollView>
-    </SafeAreaView>
+      </>
+    </PageShell>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#000' },
-  content: { padding: 16 },
+  container: { flex: 1, backgroundColor: staticColors.hex_000_yhlkvq },
+  content: { padding: t.spacing.md },
 
   headerRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 12,
+    marginBottom: t.spacing.sm,
   },
-  title: { color: '#fff', fontSize: 20, fontWeight: '800' },
+  title: { color: staticColors.hex_fff_yhjmu8, fontSize: t.typography.titleSmall.fontSize, fontWeight: '800' },
 
   actionsRow: {
     flexDirection: 'row',
@@ -269,18 +271,18 @@ const styles = StyleSheet.create({
   },
 
   btn: {
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 10,
+    paddingVertical: t.spacing.xs,
+    paddingHorizontal: t.spacing.sm,
+    borderRadius: t.radius.md,
     borderWidth: 1,
     alignItems: 'center',
-    marginLeft: 8,
+    marginLeft: t.spacing.xs,
   },
-  btnPrimary: { backgroundColor: '#C8102E', borderColor: '#a40e25' },
-  btnGhost: { backgroundColor: '#141414', borderColor: '#232323' },
-  btnText: { color: '#fff', fontWeight: '800' },
+  btnPrimary: { backgroundColor: staticColors.hex_c8102e_6za5cb, borderColor: staticColors.hex_a40e25_u1mmqp },
+  btnGhost: { backgroundColor: staticColors.hex_141414_a6icwz, borderColor: staticColors.hex_232323_72yy4n },
+  btnText: { color: staticColors.hex_fff_yhjmu8, fontWeight: '800' },
 
-  progress: { color: '#cfcfcf', marginBottom: 8 },
+  progress: { color: staticColors.hex_cfcfcf_r9h9nn, marginBottom: t.spacing.xs },
 
   grid: {
     flexDirection: 'row',
@@ -290,26 +292,26 @@ const styles = StyleSheet.create({
     position: 'relative',
     width: THUMB,
     height: THUMB,
-    borderRadius: 8,
-    backgroundColor: '#1a1a1a',
-    marginBottom: 8,
+    borderRadius: t.radius.sm,
+    backgroundColor: staticColors.hex_1a1a1a_98rvna,
+    marginBottom: t.spacing.xs,
   },
-  thumb: { width: THUMB, height: THUMB, borderRadius: 8 },
+  thumb: { width: THUMB, height: THUMB, borderRadius: t.radius.sm },
   remove: {
     position: 'absolute',
     top: -8,
     right: -8,
-    backgroundColor: '#C8102E',
-    borderRadius: 12,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
+    backgroundColor: staticColors.hex_c8102e_6za5cb,
+    borderRadius: t.radius.md,
+    paddingHorizontal: t.spacing.xxs,
+    paddingVertical: t.spacing.none,
     borderWidth: 1,
-    borderColor: '#8e0b22',
+    borderColor: staticColors.hex_8e0b22_ezjn49,
   },
-  removeText: { color: '#fff', fontWeight: '900', fontSize: 14 },
+  removeText: { color: staticColors.hex_fff_yhjmu8, fontWeight: '900', fontSize: t.typography.body.fontSize },
 
-  emptyHint: { color: '#8e8e8e' },
+  emptyHint: { color: staticColors.hex_8e8e8e_ezdnbv },
 
-  sectionTitle: { color: '#fff', fontWeight: '800', marginBottom: 6, marginTop: 8 },
-  url: { color: '#9bd', fontSize: 12 },
+  sectionTitle: { color: staticColors.hex_fff_yhjmu8, fontWeight: '800', marginBottom: t.spacing.xxs, marginTop: t.spacing.xs },
+  url: { color: staticColors.hex_9bd_yhlsqh, fontSize: t.typography.metadata.fontSize },
 });

@@ -1,14 +1,18 @@
-import { useRouter } from "expo-router";
-import { useCallback, useEffect, useState } from "react";
+import { AppText as Text, AppPressable as TouchableOpacity } from "../../components/ui/AppPrimitives";
+import {
+  useRouter } from "expo-router";
+import * as Application from "expo-application";
+import Constants from "expo-constants";
+import { useCallback,
+  useEffect,
+  useState } from "react";
 import {
   Alert,
+  AppState,
   Linking,
-  SafeAreaView,
-  ScrollView,
+  Platform,
   StyleSheet,
   Switch,
-  Text,
-  TouchableOpacity,
   View,
 } from "react-native";
 import Icon from "react-native-vector-icons/Feather";
@@ -22,6 +26,7 @@ import { doc, getDoc } from "firebase/firestore";
 
 import ChangePasswordModal from "../../components/ChangePasswordModal";
 import { auth, db } from "../../firebaseConfig";
+import { registerDeviceToken } from "../../lib/authApi";
 import {
   getNotificationPermissionStatus,
   NOTIFICATIONS_ENABLED,
@@ -32,23 +37,24 @@ import {
 import { useAuth } from "../../providers/AuthProvider";
 import { useNotificationPreferences } from "../../providers/NotificationPreferencesProvider";
 import { useTheme } from "../../providers/ThemeProvider";
+import { staticColors } from "../../lib/design/staticColors";
+import { withAlpha } from "../../lib/design/color";
+import { designTokens as t } from "../../lib/design/tokens";
+import PageShell from "../../components/layout/PageShell";
 
-function withAlpha(hex, alpha) {
-  const safeAlpha = Math.max(0, Math.min(1, Number(alpha) || 0));
-  const raw = String(hex || "").replace("#", "");
-  if (!/^[0-9a-fA-F]{6}$/.test(raw)) return `rgba(255,255,255,${safeAlpha})`;
-  const r = parseInt(raw.slice(0, 2), 16);
-  const g = parseInt(raw.slice(2, 4), 16);
-  const b = parseInt(raw.slice(4, 6), 16);
-  return `rgba(${r},${g},${b},${safeAlpha})`;
+function getCurrentAppVersion() {
+  return (
+    Application.nativeApplicationVersion ||
+    Constants.expoConfig?.version ||
+    Constants.manifest2?.extra?.expoClient?.version ||
+    Constants.manifest?.version ||
+    "0.0.0"
+  );
 }
 
 export default function SettingsPage() {
   const router = useRouter();
   const { user, employee } = useAuth();
-  const [notificationsEnabled, setNotificationsEnabled] = useState(
-    !!NOTIFICATIONS_ENABLED
-  );
   const {
     maintenanceRemindersEnabled: maintenanceReminderEnabled,
     maintenanceReminderTime,
@@ -69,7 +75,6 @@ export default function SettingsPage() {
   });
   const [securityStatus, setSecurityStatus] = useState({
     loading: true,
-    refreshing: false,
     passwordEnabled: true,
     notificationsGranted: false,
     notificationStatus: "unknown",
@@ -79,11 +84,6 @@ export default function SettingsPage() {
 
   const handleSetTheme = (mode) => {
     setTheme(mode);
-  };
-
-  const handleNotificationsToggle = (next) => {
-    if (!NOTIFICATIONS_ENABLED) return;
-    setNotificationsEnabled(next);
   };
 
   const passwordEmail = () =>
@@ -104,20 +104,12 @@ export default function SettingsPage() {
   };
 
   const refreshAccountSetupStatus = useCallback(
-    async ({ silent = false } = {}) => {
+    async () => {
       const firebaseUser = user || auth.currentUser;
       const employeeId = employee?.employeeId;
       const hasPasswordProvider =
         firebaseUser?.providerData?.some((provider) => provider?.providerId === "password") ||
         false;
-
-      if (!silent) {
-        setSecurityStatus((current) => ({
-          ...current,
-          loading: current.loading,
-          refreshing: true,
-        }));
-      }
 
       try {
         const [userSnap, employeeSnap, notificationPermission] = await Promise.all([
@@ -140,7 +132,6 @@ export default function SettingsPage() {
 
         setSecurityStatus({
           loading: false,
-          refreshing: false,
           passwordEnabled,
           notificationsGranted: notificationPermission.granted,
           notificationStatus: notificationPermission.status || "unknown",
@@ -149,7 +140,6 @@ export default function SettingsPage() {
         setSecurityStatus((current) => ({
           ...current,
           loading: false,
-          refreshing: false,
         }));
       }
     },
@@ -157,7 +147,14 @@ export default function SettingsPage() {
   );
 
   useEffect(() => {
-    refreshAccountSetupStatus({ silent: true });
+    refreshAccountSetupStatus();
+  }, [refreshAccountSetupStatus]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (nextState) => {
+      if (nextState === "active") refreshAccountSetupStatus();
+    });
+    return () => subscription.remove();
   }, [refreshAccountSetupStatus]);
 
   const handleMaintenanceReminderToggle = async (next) => {
@@ -248,22 +245,44 @@ export default function SettingsPage() {
       return;
     }
 
-    const result = await requestNotificationPermission();
-    await refreshAccountSetupStatus();
+    try {
+      const result = await requestNotificationPermission();
+      await refreshAccountSetupStatus();
 
-    if (result.granted) {
-      Alert.alert("Notifications enabled", "App notifications are ready.");
-      return;
+      if (result.granted) {
+        const firebaseUser = user || auth.currentUser;
+        const token = await registerForPushNotificationsAsync();
+        if (!firebaseUser || !token) {
+          throw new Error("This device could not be registered for push notifications.");
+        }
+
+        await registerDeviceToken({
+          idToken: await firebaseUser.getIdToken(),
+          token,
+          platform: Platform.OS,
+          appVersion: getCurrentAppVersion(),
+          employeeId: employee?.employeeId,
+          employeeCode: employee?.userCode,
+          email: employee?.email || firebaseUser.email,
+        });
+        Alert.alert("Notifications enabled", "This device is registered for reminders.");
+        return;
+      }
+
+      Alert.alert(
+        "Notifications blocked",
+        "Enable notifications for this app in iOS Settings.",
+        [
+          { text: "Cancel", style: "cancel" },
+          { text: "Open Settings", onPress: () => Linking.openSettings() },
+        ]
+      );
+    } catch (error) {
+      Alert.alert(
+        "Could not enable notifications",
+        error?.message || "Please try again."
+      );
     }
-
-    Alert.alert(
-      "Notifications blocked",
-      "Enable notifications for this app in iOS Settings.",
-      [
-        { text: "Cancel", style: "cancel" },
-        { text: "Open Settings", onPress: () => Linking.openSettings() },
-      ]
-    );
   };
 
   const handleChangePassword = () => {
@@ -336,7 +355,7 @@ export default function SettingsPage() {
       await updatePassword(firebaseUser, newPassword);
       setPasswordModalVisible(false);
       resetPasswordForm();
-      await refreshAccountSetupStatus({ silent: true });
+      await refreshAccountSetupStatus();
       Alert.alert("Password changed", "Your password has been updated.");
     } catch (err) {
       if (
@@ -368,20 +387,9 @@ export default function SettingsPage() {
       actionLabel: "Send",
       onPress: () => handleSendPasswordSetupEmail(),
     },
-    {
-      key: "notifications",
-      label: "Notifications",
-      icon: "bell",
-      complete: securityStatus.notificationsGranted,
-      subLabel: securityStatus.notificationsGranted
-        ? "Device notifications are allowed"
-        : securityStatus.notificationStatus === "denied"
-          ? "Notifications are blocked in device settings"
-          : "Allow notifications for alerts and reminders",
-      actionLabel: securityStatus.notificationStatus === "denied" ? "Open" : "Enable",
-      onPress: () => handleEnableNotifications(),
-    },
   ];
+
+  const incompleteSetupItems = accountSetupItems.filter((item) => !item.complete);
 
   const settings = [
     {
@@ -402,39 +410,57 @@ export default function SettingsPage() {
       ],
     },
     {
-      group: "App",
+      group: "Notifications",
       items: [
         {
-          label: "Notifications",
+          label: "Device Notifications",
           icon: "bell",
-          type: "toggle",
-          subLabel: NOTIFICATIONS_ENABLED
-            ? "Control in-app notification alerts"
-            : "Temporarily disabled across the app",
+          type: "notification-permission",
+          complete: securityStatus.notificationsGranted,
+          subLabel: securityStatus.notificationsGranted
+            ? "Alerts are allowed on this device"
+            : securityStatus.notificationStatus === "denied"
+              ? "Blocked in device settings"
+              : "Allow job and reminder alerts",
+          actionLabel: securityStatus.notificationStatus === "denied" ? "Open" : "Enable",
+          onPress: securityStatus.notificationStatus === "denied"
+            ? () => Linking.openSettings()
+            : handleEnableNotifications,
         },
         {
-          label: "Maintenance Job Reminders",
+          label: "Maintenance Reminders",
           icon: "clock",
           type: "maintenance-reminder-toggle",
-          subLabel: "Day-before alerts for booked maintenance jobs",
+          subLabel: securityStatus.notificationsGranted
+            ? "Alert me the day before booked maintenance"
+            : "Enable device notifications first",
         },
+        ...(maintenanceReminderEnabled && securityStatus.notificationsGranted
+          ? [{
+              label: "Reminder Time",
+              icon: "watch",
+              type: "maintenance-reminder-time",
+              subLabel: "When the day-before alert arrives",
+            }]
+          : []),
+        ...(securityStatus.notificationsGranted
+          ? [{
+              label: "Test Alert",
+              icon: "send",
+              type: "test-notification",
+              subLabel: "Send a test in 10 seconds",
+            }]
+          : []),
+      ],
+    },
+    {
+      group: "Appearance",
+      items: [
         {
-          label: "Reminder Time",
-          icon: "watch",
-          type: "maintenance-reminder-time",
-          subLabel: "When maintenance job alerts should arrive",
-        },
-        {
-          label: "Test Notification",
-          icon: "send",
-          type: "test-notification",
-          subLabel: "Sends a test alert after 10 seconds",
-        },
-        {
-          label: "Appearance",
+          label: "Theme",
           icon: "moon",
           type: "theme",
-          subLabel: "Choose system, light, or dark mode",
+          subLabel: "Use system, light, or dark mode",
         },
       ],
     },
@@ -453,122 +479,44 @@ export default function SettingsPage() {
           subLabel: "Version and company information",
           onPress: () => router.push("/about"),
         },
+        {
+          label: "Working Terms",
+          icon: "file-text",
+          subLabel: "View the terms you have signed",
+          onPress: () => router.push("/working-terms"),
+        },
       ],
     },
   ];
 
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>
-      <ScrollView
-        contentContainerStyle={styles.scrollContent}
-        keyboardShouldPersistTaps="handled"
-      >
-        <View style={styles.heroCard}>
-          <View style={styles.heroContent}>
-            <View style={styles.heroTopRow}>
-              <TouchableOpacity
-                onPress={() => router.back()}
-                activeOpacity={0.85}
-                style={[
-                  styles.backBtn,
-                  {
-                    backgroundColor: withAlpha(colors.surfaceAlt, 0.75),
-                    borderColor: withAlpha(colors.border, 0.75),
-                  },
-                ]}
-              >
-                <Icon name="arrow-left" size={15} color={colors.text} />
-              </TouchableOpacity>
-
-              <View style={styles.heroTitleWrap}>
-                <Text style={[styles.heroEyebrow, { color: colors.textMuted }]}>
-                  Profile & App
-                </Text>
-                <Text style={[styles.heroTitle, { color: colors.text }]}>Settings</Text>
-              </View>
-
-              <View style={styles.heroSpacer} />
-            </View>
-
-          </View>
-        </View>
-
-        {!securityStatus.loading ? (
-          <View style={[styles.sectionCard, { borderColor: colors.border }]}>
+    <PageShell
+      mode="form"
+      width="form"
+      header={{
+        variant: "compact",
+        eyebrow: "Profile & App",
+        title: "Settings",
+        onBack: router.back,
+      }}
+    >
+      <>
+        {!securityStatus.loading && incompleteSetupItems.length > 0 ? (
+          <View style={[styles.sectionCard, { borderColor: colors.border }]}> 
             <View style={styles.sectionHeader}>
-              <Text style={[styles.sectionTitle, { color: colors.text }]}>
-                Account Setup
+              <Text style={[styles.sectionTitle, { color: colors.text }]}> 
+                Finish Setup
               </Text>
-              <View style={styles.sectionHeaderActions}>
-                <TouchableOpacity
-                  onPress={() => refreshAccountSetupStatus()}
-                  activeOpacity={0.85}
-                  accessibilityRole="button"
-                  disabled={securityStatus.refreshing}
-                  style={[
-                    styles.refreshButton,
-                    {
-                      borderColor: colors.border,
-                      backgroundColor: colors.surfaceAlt,
-                    },
-                  ]}
-                >
-                  <Icon
-                    name="refresh-cw"
-                    size={13}
-                    color={securityStatus.refreshing ? colors.textMuted : colors.text}
-                  />
-                </TouchableOpacity>
-                <View
-                  style={[
-                    styles.sectionCountPill,
-                    {
-                      backgroundColor: withAlpha(
-                        accountSetupItems.every((item) => item.complete)
-                          ? colors.success
-                          : colors.warning,
-                        0.16
-                      ),
-                      borderColor: withAlpha(
-                        accountSetupItems.every((item) => item.complete)
-                          ? colors.success
-                          : colors.warning,
-                        0.42
-                      ),
-                    },
-                  ]}
-                >
-                  <Text
-                    style={[
-                      styles.sectionCountText,
-                      {
-                        color: accountSetupItems.every((item) => item.complete)
-                          ? colors.success
-                          : colors.warning,
-                      },
-                    ]}
-                  >
-                    {accountSetupItems.filter((item) => item.complete).length}/
-                    {accountSetupItems.length}
-                  </Text>
-                </View>
-              </View>
             </View>
 
-            {accountSetupItems.map((item) => {
-              const statusColor = item.complete ? colors.success : colors.warning;
-              return (
+            {incompleteSetupItems.map((item) => (
               <View
                 key={item.key}
                 style={[
                   styles.itemRow,
                   {
-                    backgroundColor: item.complete
-                      ? colors.surfaceAlt
-                      : withAlpha(colors.warning, 0.08),
-                    borderColor: item.complete
-                      ? colors.border
-                      : withAlpha(colors.warning, 0.38),
+                    backgroundColor: withAlpha(colors.warning, 0.08),
+                    borderColor: withAlpha(colors.warning, 0.38),
                   },
                 ]}
               >
@@ -577,12 +525,12 @@ export default function SettingsPage() {
                     style={[
                       styles.itemIconWrap,
                       {
-                        backgroundColor: withAlpha(statusColor, 0.14),
-                        borderColor: withAlpha(statusColor, 0.38),
+                        backgroundColor: withAlpha(colors.warning, 0.14),
+                        borderColor: withAlpha(colors.warning, 0.38),
                       },
                     ]}
                   >
-                    <Icon name={item.icon} size={16} color={statusColor} />
+                    <Icon name={item.icon} size={16} color={colors.warning} />
                   </View>
 
                   <View style={styles.itemTextWrap}>
@@ -595,50 +543,30 @@ export default function SettingsPage() {
                   </View>
                 </View>
 
-                {item.complete ? (
-                  <View
-                    style={[
-                      styles.securityStatusBadge,
-                      {
-                        borderColor: colors.success,
-                        backgroundColor: withAlpha(colors.success, 0.14),
-                      },
-                    ]}
-                  >
-                    <Icon name="check" size={13} color={colors.success} />
-                    <Text
-                      style={[styles.securityStatusText, { color: colors.success }]}
-                    >
-                      Done
-                    </Text>
-                  </View>
-                ) : (
-                  <TouchableOpacity
-                    onPress={item.onPress}
-                    accessibilityRole="button"
-                    activeOpacity={0.85}
-                    style={[
-                      styles.securityActionButton,
-                      {
-                        borderColor: colors.warning,
-                        backgroundColor: withAlpha(colors.warning, 0.14),
-                      },
-                    ]}
-                  >
-                    <Text style={[styles.securityActionText, { color: colors.warning }]}>
-                      {item.actionLabel}
-                    </Text>
-                  </TouchableOpacity>
-                )}
+                <TouchableOpacity
+                  onPress={item.onPress}
+                  accessibilityRole="button"
+                  activeOpacity={0.85}
+                  style={[
+                    styles.securityActionButton,
+                    {
+                      borderColor: colors.warning,
+                      backgroundColor: withAlpha(colors.warning, 0.14),
+                    },
+                  ]}
+                >
+                  <Text style={[styles.securityActionText, { color: colors.warning }]}> 
+                    {item.actionLabel}
+                  </Text>
+                </TouchableOpacity>
               </View>
-              );
-            })}
+            ))}
           </View>
         ) : null}
 
-        {settings.map((section, idx) => (
+        {settings.map((section) => (
           <View
-            key={idx}
+            key={section.group}
             style={[
               styles.sectionCard,
               { borderColor: colors.border },
@@ -646,26 +574,15 @@ export default function SettingsPage() {
           >
             <View style={styles.sectionHeader}>
               <Text style={[styles.sectionTitle, { color: colors.text }]}>{section.group}</Text>
-              <View
-                style={[
-                  styles.sectionCountPill,
-                  {
-                    backgroundColor: withAlpha(colors.accent, 0.16),
-                    borderColor: withAlpha(colors.accent, 0.42),
-                  },
-                ]}
-              >
-                <Text style={[styles.sectionCountText, { color: colors.accent }]}>
-                  {section.items.length}
-                </Text>
-              </View>
             </View>
 
-            {section.items.map((item, index) => (
+            {section.items.map((item) => (
               <View
-                key={index}
+                key={item.label}
                 style={[
                   styles.itemRow,
+                  (item.type === "maintenance-reminder-time" || item.type === "theme") &&
+                    styles.controlItemRow,
                   {
                     backgroundColor: colors.surfaceAlt,
                     borderColor: colors.border,
@@ -695,24 +612,45 @@ export default function SettingsPage() {
                   </View>
                 </View>
 
-                {item.type === "toggle" ? (
-                  <Switch
-                    value={notificationsEnabled}
-                    onValueChange={handleNotificationsToggle}
-                    disabled={!NOTIFICATIONS_ENABLED}
-                    trackColor={{
-                      false: withAlpha(colors.textMuted, 0.45),
-                      true: colors.accent,
-                    }}
-                    thumbColor={notificationsEnabled ? "#fff" : "#888"}
-                  />
+                {item.type === "notification-permission" ? (
+                  item.complete ? (
+                    <View
+                      style={[
+                        styles.statusBadge,
+                        {
+                          borderColor: withAlpha(colors.success, 0.42),
+                          backgroundColor: withAlpha(colors.success, 0.14),
+                        },
+                      ]}
+                    >
+                      <Icon name="check" size={13} color={colors.success} />
+                      <Text style={[styles.statusBadgeText, { color: colors.success }]}>Allowed</Text>
+                    </View>
+                  ) : (
+                    <TouchableOpacity
+                      onPress={item.onPress}
+                      accessibilityRole="button"
+                      activeOpacity={0.85}
+                      style={[
+                        styles.securityActionButton,
+                        {
+                          borderColor: colors.warning,
+                          backgroundColor: withAlpha(colors.warning, 0.14),
+                        },
+                      ]}
+                    >
+                      <Text style={[styles.securityActionText, { color: colors.warning }]}> 
+                        {item.actionLabel}
+                      </Text>
+                    </TouchableOpacity>
+                  )
                 ) : item.type === "maintenance-reminder-toggle" ? (
                   maintenanceReminderError ? (
                     <TouchableOpacity
                       onPress={() => refreshMaintenancePreferences().catch(() => {})}
                       accessibilityRole="button"
                       accessibilityLabel="Retry loading maintenance reminder settings"
-                      style={{ paddingHorizontal: 12, paddingVertical: 9 }}
+                      style={{ paddingHorizontal: t.spacing.sm, paddingVertical: t.spacing.xs }}
                     >
                       <Text style={{ color: colors.warning, fontWeight: "700" }}>Retry</Text>
                     </TouchableOpacity>
@@ -720,12 +658,16 @@ export default function SettingsPage() {
                     <Switch
                       value={maintenanceReminderEnabled}
                       onValueChange={handleMaintenanceReminderToggle}
-                      disabled={maintenanceReminderSaving || maintenanceReminderLoading}
+                      disabled={
+                        maintenanceReminderSaving ||
+                        maintenanceReminderLoading ||
+                        !securityStatus.notificationsGranted
+                      }
                       trackColor={{
                         false: withAlpha(colors.textMuted, 0.45),
                         true: colors.accent,
                       }}
-                      thumbColor={maintenanceReminderEnabled ? "#fff" : "#888"}
+                      thumbColor={maintenanceReminderEnabled ? staticColors.hex_fff_yhjmu8 : staticColors.hex_888_yhlrem}
                     />
                   )
                 ) : item.type === "maintenance-reminder-time" ? (
@@ -838,9 +780,7 @@ export default function SettingsPage() {
             ))}
           </View>
         ))}
-
-        <View style={{ height: 24 }} />
-      </ScrollView>
+      </>
       <ChangePasswordModal
         visible={passwordModalVisible}
         colors={colors}
@@ -851,142 +791,44 @@ export default function SettingsPage() {
         onSubmit={handleSubmitPasswordChange}
         onForgotPassword={handleForgotCurrentPassword}
       />
-    </SafeAreaView>
+    </PageShell>
   );
 }
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1 },
-  scrollContent: { paddingHorizontal: 14, paddingBottom: 24, paddingTop: 8 },
-
-  heroCard: {
-    position: "relative",
-    marginBottom: 8,
-  },
-  heroContent: {
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-  },
-  heroTopRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 10,
-  },
-  backBtn: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    borderWidth: 1,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  heroTitleWrap: {
-    flex: 1,
-    paddingTop: 1,
-    alignItems: "center",
-  },
-  heroSpacer: {
-    width: 34,
-    height: 34,
-  },
-  heroEyebrow: {
-    fontSize: 12,
-    letterSpacing: 0.6,
-    textTransform: "uppercase",
-    fontWeight: "800",
-    textAlign: "center",
-  },
-  heroTitle: {
-    marginTop: 2,
-    fontSize: 24,
-    fontWeight: "900",
-    letterSpacing: 0.2,
-    textAlign: "center",
-  },
-  heroSubTitle: {
-    marginTop: 2,
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: "600",
-    textAlign: "center",
-  },
-  heroMetaRow: {
-    marginTop: 10,
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
-    justifyContent: "center",
-  },
-  heroMetaChip: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    borderWidth: 1,
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-  },
-  heroMetaText: {
-    fontSize: 11,
-    fontWeight: "700",
-  },
-
   sectionCard: {
-    marginBottom: 12,
+    marginBottom: t.spacing.sm,
     borderWidth: 0,
-    borderRadius: 14,
-    paddingHorizontal: 0,
-    paddingVertical: 0,
+    borderRadius: t.radius.lg,
+    paddingHorizontal: t.spacing.none,
+    paddingVertical: t.spacing.none,
   },
   sectionHeader: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: 8,
-    paddingHorizontal: 2,
-  },
-  sectionHeaderActions: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  refreshButton: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    borderWidth: 1,
-    alignItems: "center",
-    justifyContent: "center",
+    marginBottom: t.spacing.xs,
+    paddingHorizontal: t.spacing.none,
   },
   sectionTitle: {
-    fontSize: 16,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "900",
     letterSpacing: 0.2,
   },
-  sectionCountPill: {
-    minWidth: 30,
-    height: 26,
-    borderRadius: 999,
-    borderWidth: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 8,
-  },
-  sectionCountText: {
-    fontSize: 12,
-    fontWeight: "900",
-  },
-
   itemRow: {
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-    borderRadius: 12,
-    marginBottom: 8,
+    paddingHorizontal: t.spacing.sm,
+    paddingVertical: t.spacing.sm,
+    borderRadius: t.radius.md,
+    marginBottom: t.spacing.xs,
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
     borderWidth: 1,
-    gap: 10,
+    gap: t.spacing.xs,
+  },
+  controlItemRow: {
+    flexDirection: "column",
+    alignItems: "stretch",
   },
   itemLeftWrap: {
     flexDirection: "row",
@@ -997,13 +839,13 @@ const styles = StyleSheet.create({
   itemIconWrap: {
     width: 34,
     height: 34,
-    borderRadius: 10,
+    borderRadius: t.radius.md,
     borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
   },
   itemTextWrap: {
-    marginLeft: 10,
+    marginLeft: t.spacing.xs,
     flex: 1,
     minWidth: 0,
   },
@@ -1013,51 +855,52 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   itemText: {
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     fontWeight: "800",
-    lineHeight: 18,
+    lineHeight: t.typography.body.lineHeight,
   },
   itemSubText: {
-    fontSize: 12,
-    lineHeight: 16,
-    marginTop: 2,
+    fontSize: t.typography.metadata.fontSize,
+    lineHeight: t.typography.metadata.lineHeight,
+    marginTop: t.spacing.none,
   },
 
   timeButtonsRow: {
     flexDirection: "row",
-    flexWrap: "wrap",
-    justifyContent: "flex-end",
-    gap: 6,
-    maxWidth: 180,
+    justifyContent: "space-between",
+    gap: t.spacing.xxs,
+    width: "100%",
   },
   timeButton: {
-    minWidth: 54,
+    flex: 1,
     alignItems: "center",
-    paddingVertical: 6,
-    paddingHorizontal: 8,
-    borderRadius: 8,
+    paddingVertical: t.spacing.xxs,
+    paddingHorizontal: t.spacing.xs,
+    borderRadius: t.radius.sm,
     borderWidth: 1,
   },
   timeButtonText: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "800",
   },
 
   themeButtonsRow: {
     flexDirection: "row",
-    flexWrap: "wrap",
     alignItems: "center",
-    justifyContent: "flex-end",
-    gap: 6,
+    justifyContent: "space-between",
+    gap: t.spacing.xxs,
+    width: "100%",
   },
   themeButton: {
-    paddingVertical: 7,
-    paddingHorizontal: 10,
-    borderRadius: 999,
+    flex: 1,
+    alignItems: "center",
+    paddingVertical: t.spacing.xs,
+    paddingHorizontal: t.spacing.xs,
+    borderRadius: t.radius.pill,
     borderWidth: 1,
   },
   themeButtonText: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "800",
     textTransform: "capitalize",
     letterSpacing: 0.1,
@@ -1066,41 +909,41 @@ const styles = StyleSheet.create({
     minWidth: 64,
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 7,
-    paddingHorizontal: 12,
-    borderRadius: 8,
+    paddingVertical: t.spacing.xs,
+    paddingHorizontal: t.spacing.sm,
+    borderRadius: t.radius.sm,
     borderWidth: 1,
   },
   testButtonText: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "900",
   },
   securityActionButton: {
     minWidth: 64,
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 7,
-    paddingHorizontal: 12,
-    borderRadius: 8,
+    paddingVertical: t.spacing.xs,
+    paddingHorizontal: t.spacing.sm,
+    borderRadius: t.radius.sm,
     borderWidth: 1,
   },
   securityActionText: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "900",
   },
-  securityStatusBadge: {
+  statusBadge: {
     minWidth: 70,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 5,
-    paddingVertical: 7,
-    paddingHorizontal: 10,
-    borderRadius: 8,
+    gap: t.spacing.xxs,
+    paddingVertical: t.spacing.xs,
+    paddingHorizontal: t.spacing.xs,
+    borderRadius: t.radius.sm,
     borderWidth: 1,
   },
-  securityStatusText: {
-    fontSize: 12,
+  statusBadgeText: {
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "900",
   },
 });

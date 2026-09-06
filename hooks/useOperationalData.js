@@ -17,7 +17,7 @@ function belongsToCompany(row, companyId) {
 async function fetchCollection(collectionName, companyId) {
   const snapshot = await getDocs(collection(db, collectionName));
   return snapshot.docs
-    .map((document) => ({ id: document.id, ...document.data() }))
+    .map((document) => ({ ...document.data(), id: document.id }))
     .filter((row) => belongsToCompany(row, companyId));
 }
 
@@ -56,6 +56,10 @@ export function useEmployees(options) {
 
 export function useVehicles(options) {
   return useCompanyCollection("vehicles", options);
+}
+
+export function useEquipment(options) {
+  return useCompanyCollection("equipment", options);
 }
 
 export function useHolidays(options) {

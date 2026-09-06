@@ -1,33 +1,30 @@
-import { useLocalSearchParams, useRouter } from "expo-router";
-import { doc, getDoc, serverTimestamp, writeBatch } from "firebase/firestore";
-import { useEffect, useMemo, useState } from "react";
+import { AppButton, AppModal, AppText as Text, AppPressable as TouchableOpacity, TextArea } from "../../../../components/ui/AppPrimitives";
+import {
+  servicePalette as COLORS } from "../../../../lib/design/semantics";
+import { useLocalSearchParams,
+  useRouter } from "expo-router";
+import { doc,
+  getDoc,
+  serverTimestamp,
+  writeBatch } from "firebase/firestore";
+import { useEffect,
+  useMemo,
+  useState } from "react";
 import {
   ActivityIndicator,
   Alert,
-  Modal,
-  ScrollView,
   StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+
 import Icon from "react-native-vector-icons/Feather";
 
 import { db } from "../../../../firebaseConfig";
+import { getVehicleDisplayLabel } from "../../../../lib/fleetSchema";
 import { useTheme } from "../../../../providers/ThemeProvider";
-
-const COLORS = {
-  background: "#0D0D0D",
-  card: "#1A1A1A",
-  border: "#333333",
-  textHigh: "#FFFFFF",
-  textMid: "#E0E0E0",
-  textLow: "#888888",
-  primaryAction: "#ED1C25",
-  inputBg: "#2a2a2a",
-};
+import { staticColors } from "../../../../lib/design/staticColors";
+import { designTokens as t } from "../../../../lib/design/tokens";
+import PageShell from "../../../../components/layout/PageShell";
 
 function parseRouteId(value) {
   try {
@@ -133,7 +130,24 @@ export default function ResolvedDefectDetailScreen() {
       try {
         if (route.source === "defectReports") {
           const snap = await getDoc(doc(db, "defectReports", route.docId));
-          setDefect(snap.exists() ? buildManualResolvedDefect(snap.data()) : null);
+          if (!snap.exists()) {
+            setDefect(null);
+            return;
+          }
+          const report = snap.data() || {};
+          let vehicle = null;
+          if (report.vehicleId || report.vehicleDocId) {
+            const vehicleSnap = await getDoc(
+              doc(db, "vehicles", String(report.vehicleId || report.vehicleDocId))
+            );
+            if (vehicleSnap.exists()) {
+              vehicle = { id: vehicleSnap.id, ...vehicleSnap.data() };
+            }
+          }
+          setDefect({
+            ...buildManualResolvedDefect(report),
+            vehicle: getVehicleDisplayLabel(vehicle || report, vehicle ? [vehicle] : []),
+          });
           return;
         }
 
@@ -255,44 +269,13 @@ export default function ResolvedDefectDetailScreen() {
   };
 
   return (
-    <SafeAreaView
-      edges={["left", "right"]}
-      style={[
-        styles.container,
-        { backgroundColor: colors.background || COLORS.background },
-      ]}
-    >
-      <View
-        style={[
-          styles.header,
-          { borderBottomColor: colors.border || COLORS.border },
-        ]}
-      >
-        <TouchableOpacity
-          onPress={router.back}
-          style={styles.backButton}
-          activeOpacity={0.8}
-        >
-          <Icon
-            name="chevron-left"
-            size={22}
-            color={colors.text || COLORS.textHigh}
-          />
-        </TouchableOpacity>
-        <View style={{ flex: 1 }}>
-          <Text style={[styles.pageTitle, { color: colors.text || COLORS.textHigh }]}>
-            Resolved Defect
-          </Text>
-          <Text
-            style={[
-              styles.pageSubtitle,
-              { color: colors.textMuted || COLORS.textMid },
-            ]}
-          >
-            View what was reported and what was done.
-          </Text>
-        </View>
-      </View>
+    <PageShell header={{
+      variant: "compact",
+      title: "Resolved Defect",
+      subtitle: "View what was reported and what was done.",
+      onBack: router.back,
+    }}>
+      
 
       {loading ? (
         <View style={styles.center}>
@@ -314,7 +297,7 @@ export default function ResolvedDefectDetailScreen() {
           </Text>
         </View>
       ) : (
-        <ScrollView contentContainerStyle={styles.scrollContent}>
+        <>
           <View
             style={[
               styles.card,
@@ -378,32 +361,25 @@ export default function ResolvedDefectDetailScreen() {
               name="edit-2"
               size={17}
               color={COLORS.primaryAction}
-              style={{ marginRight: 8 }}
+              style={{ marginRight: t.spacing.xs }}
             />
             <Text style={styles.editButtonText}>Edit completion note</Text>
           </TouchableOpacity>
 
-          <Modal
+          <AppModal
             visible={editModalVisible}
-            transparent
-            animationType="fade"
+            title="Edit completion note"
+            busy={saving}
             onRequestClose={() => {
               if (!saving) setEditModalVisible(false);
             }}
+            actions={
+              <>
+                <AppButton label="Cancel" variant="secondary" onPress={() => setEditModalVisible(false)} disabled={saving} />
+                <AppButton label="Save" onPress={saveCompletionNote} loading={saving} />
+              </>
+            }
           >
-            <View style={styles.modalOverlay}>
-              <View
-                style={[
-                  styles.modalCard,
-                  {
-                    backgroundColor: colors.surfaceAlt || COLORS.card,
-                    borderColor: colors.border || COLORS.border,
-                  },
-                ]}
-              >
-                <Text style={[styles.modalTitle, { color: colors.text || COLORS.textHigh }]}>
-                  Edit completion note
-                </Text>
                 <Text
                   style={[
                     styles.modalSubtitle,
@@ -412,54 +388,16 @@ export default function ResolvedDefectDetailScreen() {
                 >
                   Update what was done to resolve this defect.
                 </Text>
-                <TextInput
+                <TextArea
+                  label="Completion note"
                   value={editCompletionNote}
                   onChangeText={setEditCompletionNote}
                   placeholder="What was done?"
-                  placeholderTextColor={colors.textMuted || COLORS.textLow}
-                  multiline
-                  textAlignVertical="top"
-                  style={[
-                    styles.completionInput,
-                    {
-                      backgroundColor: colors.inputBackground || COLORS.inputBg,
-                      borderColor: colors.border || COLORS.border,
-                      color: colors.text || COLORS.textHigh,
-                    },
-                  ]}
                 />
-                <View style={styles.modalActions}>
-                  <TouchableOpacity
-                    style={[
-                      styles.modalButton,
-                      styles.modalCancelButton,
-                      { borderColor: colors.border || COLORS.border },
-                    ]}
-                    onPress={() => setEditModalVisible(false)}
-                    disabled={saving}
-                  >
-                    <Text style={[styles.modalCancelText, { color: colors.text || COLORS.textHigh }]}>
-                      Cancel
-                    </Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[styles.modalButton, styles.modalSaveButton]}
-                    onPress={saveCompletionNote}
-                    disabled={saving}
-                  >
-                    {saving ? (
-                      <ActivityIndicator size="small" color={COLORS.textHigh} />
-                    ) : (
-                      <Text style={styles.modalSaveText}>Save</Text>
-                    )}
-                  </TouchableOpacity>
-                </View>
-              </View>
-            </View>
-          </Modal>
-        </ScrollView>
+          </AppModal>
+        </>
       )}
-    </SafeAreaView>
+    </PageShell>
   );
 }
 
@@ -501,112 +439,112 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingHorizontal: t.spacing.md,
+    paddingVertical: t.spacing.sm,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
   },
   backButton: {
-    paddingRight: 10,
+    paddingRight: t.spacing.xs,
   },
   pageTitle: {
-    fontSize: 22,
+    fontSize: t.typography.titleSmall.fontSize,
     fontWeight: "800",
     color: COLORS.textHigh,
   },
   pageSubtitle: {
-    marginTop: 2,
-    fontSize: 13,
+    marginTop: t.spacing.none,
+    fontSize: t.typography.bodySmall.fontSize,
     color: COLORS.textMid,
   },
   center: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 30,
+    paddingHorizontal: t.spacing["2xl"],
   },
   scrollContent: {
-    padding: 16,
-    paddingBottom: 28,
+    padding: t.spacing.md,
+    paddingBottom: t.spacing.xl,
   },
   card: {
     borderWidth: 1,
-    borderRadius: 10,
+    borderRadius: t.radius.md,
     borderColor: COLORS.border,
     backgroundColor: COLORS.card,
-    padding: 14,
+    padding: t.spacing.sm,
   },
   titleRow: {
     flexDirection: "row",
     alignItems: "flex-start",
-    marginBottom: 8,
+    marginBottom: t.spacing.xs,
   },
   title: {
-    fontSize: 16,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "700",
     color: COLORS.textHigh,
   },
   vehicleText: {
-    marginTop: 2,
-    fontSize: 12,
+    marginTop: t.spacing.none,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textMid,
   },
   resolvedBadge: {
-    marginLeft: 10,
+    marginLeft: t.spacing.xs,
     minHeight: 28,
-    borderRadius: 999,
-    paddingHorizontal: 10,
+    borderRadius: t.radius.pill,
+    paddingHorizontal: t.spacing.xs,
     borderWidth: 1,
     borderColor: COLORS.primaryAction,
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
+    gap: t.spacing.xxs,
   },
   resolvedBadgeText: {
     color: COLORS.primaryAction,
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "800",
   },
   divider: {
     height: 1,
     backgroundColor: COLORS.border,
     opacity: 0.6,
-    marginVertical: 8,
+    marginVertical: t.spacing.xs,
   },
   noteField: {
-    paddingTop: 8,
+    paddingTop: t.spacing.xs,
   },
   noteLabel: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textLow,
-    marginBottom: 3,
+    marginBottom: t.spacing.xxs,
   },
   noteValue: {
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
     color: COLORS.textMid,
-    lineHeight: 18,
+    lineHeight: t.typography.bodySmall.lineHeight,
     textAlign: "left",
   },
   fieldRow: {
     flexDirection: "row",
     justifyContent: "space-between",
-    paddingVertical: 4,
+    paddingVertical: t.spacing.xxs,
   },
   fieldLabel: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textLow,
   },
   fieldValue: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textMid,
     textAlign: "right",
     flex: 1,
-    marginLeft: 10,
+    marginLeft: t.spacing.xs,
   },
   editButton: {
-    marginTop: 12,
+    marginTop: t.spacing.sm,
     minHeight: 48,
-    borderRadius: 10,
+    borderRadius: t.radius.md,
     backgroundColor: "transparent",
     borderWidth: 1,
     alignItems: "center",
@@ -615,52 +553,52 @@ const styles = StyleSheet.create({
   },
   editButtonText: {
     color: COLORS.primaryAction,
-    fontSize: 15,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "800",
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.72)",
+    backgroundColor: staticColors.rgba_18a7uad,
     alignItems: "center",
     justifyContent: "center",
-    padding: 20,
+    padding: t.spacing.lg,
   },
   modalCard: {
     width: "100%",
     borderWidth: 1,
-    borderRadius: 10,
-    padding: 16,
+    borderRadius: t.radius.md,
+    padding: t.spacing.md,
     backgroundColor: COLORS.card,
   },
   modalTitle: {
-    fontSize: 18,
+    fontSize: t.typography.sectionTitle.fontSize,
     fontWeight: "800",
     color: COLORS.textHigh,
   },
   modalSubtitle: {
-    marginTop: 4,
-    fontSize: 13,
+    marginTop: t.spacing.xxs,
+    fontSize: t.typography.bodySmall.fontSize,
     color: COLORS.textMid,
   },
   completionInput: {
-    marginTop: 14,
+    marginTop: t.spacing.sm,
     minHeight: 110,
     borderWidth: 1,
-    borderRadius: 8,
-    padding: 12,
-    fontSize: 14,
-    lineHeight: 20,
+    borderRadius: t.radius.sm,
+    padding: t.spacing.sm,
+    fontSize: t.typography.body.fontSize,
+    lineHeight: t.typography.body.lineHeight,
     color: COLORS.textHigh,
   },
   modalActions: {
-    marginTop: 14,
+    marginTop: t.spacing.sm,
     flexDirection: "row",
-    gap: 10,
+    gap: t.spacing.xs,
   },
   modalButton: {
     flex: 1,
     minHeight: 44,
-    borderRadius: 8,
+    borderRadius: t.radius.sm,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -671,25 +609,25 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.primaryAction,
   },
   modalCancelText: {
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     fontWeight: "800",
     color: COLORS.textHigh,
   },
   modalSaveText: {
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     fontWeight: "800",
     color: COLORS.textHigh,
   },
   emptyTitle: {
-    marginTop: 10,
-    fontSize: 16,
+    marginTop: t.spacing.xs,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "800",
     color: COLORS.textHigh,
   },
   emptyText: {
-    marginTop: 6,
+    marginTop: t.spacing.xxs,
     textAlign: "center",
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
     color: COLORS.textMid,
   },
 });

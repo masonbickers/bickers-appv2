@@ -1,5 +1,7 @@
+import { AppButton, AppText as Text, AppPressable as TouchableOpacity, Checkbox, FormField, IconButton } from "../../components/ui/AppPrimitives";
 // app/(protected)/me.js
-import { useRouter } from "expo-router";
+import {
+  useRouter } from "expo-router";
 import {
   collection,
   doc,
@@ -9,190 +11,49 @@ import {
   serverTimestamp,
   where,
   writeBatch,
-} from "firebase/firestore";
-import { useCallback, useEffect, useMemo, useState } from "react";
+  } from "firebase/firestore";
+import { useCallback,
+  useEffect,
+  useMemo,
+  useState } from "react";
 import {
-  ActivityIndicator,
   Alert,
-  RefreshControl,
-  ScrollView,
   StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
 import { Calendar } from "react-native-calendars";
 import Icon from "react-native-vector-icons/Feather";
 
 import {
-  AsyncContentState,
   EmptyState,
   LoadingState,
 } from "../../components/AsyncState";
+import PageShell from "../../components/layout/PageShell";
 import { createDashboardCardStyles } from "../../lib/design/dashboard";
 import { designTokens as t } from "../../lib/design/tokens";
+import {
+  calculateRemainingHolidayAllowance,
+  holidayBelongsToYear,
+} from "../../lib/holidayYear";
+import { employeeMatchesHoliday } from "../../lib/holidayOwnership";
+import { computeTimesheetWeekHours } from "../../lib/timesheetHours";
 import {
   useEmployeeTimesheets,
   useEmployees,
   useHolidays,
   useTimesheetQueries,
 } from "../../hooks/useOperationalData";
-import { useResponsiveLayout } from "../../hooks/useResponsiveLayout";
 
 // 🔑 Provider + Firebase
 import { auth, db } from "../../firebaseConfig";
 import { useAuth } from "../../providers/AuthProvider";
 import { useTheme } from "../../providers/ThemeProvider";
 import { useDataCache } from "../../providers/DataCacheProvider";
+import { staticColors } from "../../lib/design/staticColors";
+import { withAlpha } from "../../lib/design/color";
 
-function withAlpha(hex, alpha) {
-  const safeAlpha = Math.max(0, Math.min(1, Number(alpha) || 0));
-  const raw = String(hex || "").replace("#", "");
-  if (!/^[0-9a-fA-F]{6}$/.test(raw)) return `rgba(255,255,255,${safeAlpha})`;
-  const r = parseInt(raw.slice(0, 2), 16);
-  const g = parseInt(raw.slice(2, 4), 16);
-  const b = parseInt(raw.slice(4, 6), 16);
-  return `rgba(${r},${g},${b},${safeAlpha})`;
-}
 
-const TIMESHEET_DAYS = [
-  "Monday",
-  "Tuesday",
-  "Wednesday",
-  "Thursday",
-  "Friday",
-  "Saturday",
-  "Sunday",
-];
-const TIMESHEET_WEEKEND_SET = new Set(["Saturday", "Sunday"]);
-const DEFAULT_YARD_START = "08:00";
-const DEFAULT_YARD_END = "16:30";
 const ME_CACHE_TTL_MS = 10 * 60 * 1000;
-
-function timeToMinutes(value) {
-  const raw = String(value || "").trim();
-  const match = /^(\d{1,2}):(\d{2})$/.exec(raw);
-  if (!match) return null;
-  const hour = Number(match[1]);
-  const minute = Number(match[2]);
-  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
-  return hour * 60 + minute;
-}
-
-function normaliseTimeValue(value) {
-  const mins = timeToMinutes(value);
-  if (mins == null) return null;
-  const hour = Math.floor(mins / 60);
-  const minute = mins % 60;
-  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
-}
-
-function timesheetBoolish(value) {
-  if (value === true) return true;
-  if (value === false) return false;
-  const raw = String(value ?? "").trim().toLowerCase();
-  return raw === "true" || raw === "1" || raw === "yes" || raw === "y";
-}
-
-function durationMinutes(startTime, endTime) {
-  const start = timeToMinutes(startTime);
-  const end = timeToMinutes(endTime);
-  if (start == null || end == null) return 0;
-  return end >= start ? end - start : end + 24 * 60 - start;
-}
-
-function parseHoursValue(value) {
-  const hours = Number(String(value ?? "").trim().replace(",", "."));
-  if (!Number.isFinite(hours) || hours <= 0) return 0;
-  return hours;
-}
-
-function normaliseYardSegments(entry) {
-  const defaultStart = normaliseTimeValue(entry?.leaveTime) || DEFAULT_YARD_START;
-  const defaultEnd = normaliseTimeValue(entry?.arriveBack) || DEFAULT_YARD_END;
-  const segments = Array.isArray(entry?.yardSegments) ? entry.yardSegments : [];
-
-  if (segments.length === 0) {
-    return [{ start: defaultStart, end: defaultEnd }];
-  }
-
-  return segments.map((seg) => ({
-    start: normaliseTimeValue(seg?.start) || defaultStart,
-    end: normaliseTimeValue(seg?.end) || defaultEnd,
-  }));
-}
-
-function computeTimesheetDayMinutes(entry) {
-  const mode = String(entry?.mode || "off").trim().toLowerCase();
-  if (mode === "off" || mode === "holiday" || mode === "bankholiday" || mode === "unpaid") {
-    return 0;
-  }
-
-  if (mode === "yard") {
-    if (entry?.isTurnaround === true) return 0;
-    let total = normaliseYardSegments(entry).reduce(
-      (sum, segment) => sum + durationMinutes(segment.start, segment.end),
-      0
-    );
-    if (timesheetBoolish(entry?.yardTravelEnabled)) {
-      total += durationMinutes(entry?.yardTravelLeaveTime, entry?.yardTravelArriveTime);
-    }
-    if (!timesheetBoolish(entry?.lunchSup) && total > 0) total = Math.max(0, total - 30);
-    return total;
-  }
-
-  if (mode === "travel") {
-    return durationMinutes(entry?.leaveTime, entry?.arriveTime);
-  }
-
-  if (mode === "workshop") {
-    const segments = Array.isArray(entry?.yardSegments) ? entry.yardSegments : [];
-    if (segments.length > 0) {
-      return segments.reduce(
-        (sum, segment) => sum + durationMinutes(segment?.start, segment?.end),
-        0
-      );
-    }
-
-    const rows = Array.isArray(entry?.workshopJobs) ? entry.workshopJobs : [];
-    return rows.reduce((sum, row) => sum + parseHoursValue(row?.hours) * 60, 0);
-  }
-
-  if (mode === "onset") {
-    let baseStart = entry?.leaveTime || entry?.arriveTime || entry?.callTime || null;
-    let baseEnd = entry?.arriveBack || entry?.wrapTime || null;
-
-    if (entry?.callTime && entry?.wrapTime) {
-      baseStart = entry.callTime;
-      baseEnd = entry.wrapTime;
-    } else if (!baseEnd && entry?.wrapTime) {
-      baseEnd = entry.wrapTime;
-    }
-
-    let mins = durationMinutes(baseStart, baseEnd);
-    if (entry?.callTime && entry?.precallDuration) {
-      mins += Math.max(0, durationMinutes(entry.precallDuration, entry.callTime));
-    }
-    return mins;
-  }
-
-  return 0;
-}
-
-function computeTimesheetWeekHours(timesheet) {
-  const storedHours = toNumber(timesheet?.totalHours, 0);
-  if (storedHours > 0) return storedHours;
-
-  const days = timesheet?.days || {};
-  const totalMinutes = TIMESHEET_DAYS.reduce((sum, day) => {
-    const fallback = { mode: TIMESHEET_WEEKEND_SET.has(day) ? "off" : "yard" };
-    return sum + computeTimesheetDayMinutes(days?.[day] || fallback);
-  }, 0);
-
-  return Math.round((totalMinutes / 60) * 100) / 100;
-}
 
 function formatTimesheetHours(hours) {
   const totalMinutes = Math.max(0, Math.round(toNumber(hours, 0) * 60));
@@ -207,7 +68,6 @@ export default function MePage() {
   const router = useRouter();
   const { user, employee, isAuthed, loading } = useAuth();
   const { colors } = useTheme();
-  const responsive = useResponsiveLayout();
   const employeesResource = useEmployees();
   const holidaysResource = useHolidays();
   const timesheetsResource = useEmployeeTimesheets();
@@ -232,9 +92,10 @@ export default function MePage() {
   const [nextHoliday, setNextHoliday] = useState(null);
   const [pendingHolidayCount, setPendingHolidayCount] = useState(0);
 
-  // Allowance + used + remaining (CURRENT YEAR)
+  // Allowance + used + booked + remaining (CURRENT YEAR)
   const [holidayAllowance, setHolidayAllowance] = useState(0); // totalAllowance (allowance + carryover)
   const [holidayUsedDays, setHolidayUsedDays] = useState(0);
+  const [holidayBookedDays, setHolidayBookedDays] = useState(0);
   const [holidayRemaining, setHolidayRemaining] = useState(0);
 
   const [timesheetStats, setTimesheetStats] = useState({
@@ -253,6 +114,7 @@ export default function MePage() {
   const [noteText, setNoteText] = useState("");
   const [noteBlocksBookings, setNoteBlocksBookings] = useState(true);
   const [savingNote, setSavingNote] = useState(false);
+  const [noteComposerOpen, setNoteComposerOpen] = useState(false);
   const [noteHistoryOpen, setNoteHistoryOpen] = useState(false);
   const [noteHistoryLoading, setNoteHistoryLoading] = useState(false);
   const [sentNotes, setSentNotes] = useState([]);
@@ -339,6 +201,7 @@ export default function MePage() {
     setPendingHolidayCount(safePayload.pendingHolidayCount || 0);
     setHolidayAllowance(safePayload.holidayAllowance || 0);
     setHolidayUsedDays(safePayload.holidayUsedDays || 0);
+    setHolidayBookedDays(safePayload.holidayBookedDays || 0);
     setHolidayRemaining(safePayload.holidayRemaining || 0);
     setTimesheetStats(
       safePayload.timesheetStats && typeof safePayload.timesheetStats === "object"
@@ -355,7 +218,7 @@ export default function MePage() {
   const loadPersonal = useCallback(async (options = {}) => {
     const forceRefresh = Boolean(options?.forceRefresh);
     const cacheKey = employee?.userCode || employee?.employeeId || user?.uid || "";
-    const cacheRecordKey = cacheKey ? `me-dashboard:${cacheKey}` : "";
+    const cacheRecordKey = cacheKey ? `me-dashboard:v3:${cacheKey}` : "";
     let cachedRecord = null;
 
     if (cacheRecordKey && dataCache?.read) {
@@ -391,6 +254,7 @@ export default function MePage() {
         setPendingHolidayCount(0);
         setHolidayAllowance(0);
         setHolidayUsedDays(0);
+        setHolidayBookedDays(0);
         setHolidayRemaining(0);
         setTimesheetStats({ weekHours: 0, pending: 0, lastSubmitted: null });
         setLatestTimesheetQuery(null);
@@ -419,8 +283,11 @@ export default function MePage() {
       const mine = holidayRows.filter((holiday) =>
         employeeMatchesHoliday(holiday, empRecord, employee, user)
       );
+      const mineForYear = mine.filter((holiday) =>
+        holidayBelongsToYear(holiday, currentYear, getHolidayStart(holiday))
+      );
 
-      setMyHolidays(mine);
+      setMyHolidays(mineForYear);
 
       // ============================================================
       // 3) CURRENT YEAR allowance (match HolidayPage maps)
@@ -431,17 +298,18 @@ export default function MePage() {
       setHolidayAllowance(roundToHalf(totalAllowance));
 
       // ============================================================
-      // 4) CURRENT YEAR used / remaining (Paid only, approved only)
-      //    - clamps holidays spanning years
+      // 4) CURRENT YEAR taken / available (Paid only, approved only)
+      //    - assigns the full holiday to the year in which it starts
       //    - ✅ supports half-days
       //    - ✅ excludes weekends + bank holidays
       // ============================================================
-      const yearStart = new Date(currentYear, 0, 1);
-      const yearEnd = new Date(currentYear, 11, 31);
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
 
-      let used = 0;
+      let paidTaken = 0;
+      let paidBooked = 0;
 
-      for (const h of mine) {
+      for (const h of mineForYear) {
         if (!isApproved(h)) continue;
 
         const { displayType } = displayTypeAndColor(h);
@@ -451,32 +319,30 @@ export default function MePage() {
         const origE = getHolidayEnd(h) || origS;
         if (!origS) continue;
 
-        if (origE < yearStart || origS > yearEnd) continue;
-
-        const clampS = maxDate(origS, yearStart);
-        const clampE = minDate(origE, yearEnd);
-
-        used += computeBusinessDaysClamped(h, clampS, clampE, origS, origE, isBankHoliday);
+        const days = computeBusinessDaysClamped(h, origS, origE, origS, origE, isBankHoliday);
+        if (origE < today) paidTaken += days;
+        else paidBooked += days;
       }
 
-      used = roundToHalf(used);
-      const remaining = roundToHalf(Math.max(0, totalAllowance - used));
+      const used = roundToHalf(paidTaken);
+      const booked = roundToHalf(paidBooked);
+      const remaining = roundToHalf(
+        calculateRemainingHolidayAllowance(totalAllowance, used, booked)
+      );
 
       setHolidayUsedDays(used);
+      setHolidayBookedDays(booked);
       setHolidayRemaining(remaining);
 
       // ============================================================
       // 5) Next holiday + pending count (simple, based on mine)
       // ============================================================
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-
-      const pendingCount = mine.filter((h) => {
+      const pendingCount = mineForYear.filter((h) => {
         return isRequestedHoliday(h);
       }).length;
       setPendingHolidayCount(pendingCount);
 
-      const upcomingApproved = mine
+      const upcomingApproved = mineForYear
         .filter((h) => isApproved(h))
         .filter((h) => {
           const end = getHolidayEnd(h) || getHolidayStart(h);
@@ -557,11 +423,12 @@ export default function MePage() {
         await dataCache.write(
           cacheRecordKey,
           {
-            myHolidays: mine,
+            myHolidays: mineForYear,
             nextHoliday: nextHolidayValue,
             pendingHolidayCount: pendingCount,
             holidayAllowance: roundToHalf(totalAllowance),
             holidayUsedDays: used,
+            holidayBookedDays: booked,
             holidayRemaining: remaining,
             timesheetStats: {
               weekHours,
@@ -585,6 +452,7 @@ export default function MePage() {
         setPendingHolidayCount(0);
         setHolidayAllowance(0);
         setHolidayUsedDays(0);
+        setHolidayBookedDays(0);
         setHolidayRemaining(0);
         setTimesheetStats({ weekHours: 0, pending: 0, lastSubmitted: null });
         setLatestTimesheetQuery(null);
@@ -629,7 +497,7 @@ export default function MePage() {
     refreshHolidays,
   ]);
 
-  const noteTone = "#0F766E";
+  const noteTone = staticColors.hex_0f766e_adtgo2;
   const noteMarkedDates = useMemo(() => {
     const marks = {};
     const start = parseYMD(noteStartDate);
@@ -641,7 +509,7 @@ export default function MePage() {
       const date = isoDate(day);
       marks[date] = {
         color: withAlpha(noteTone, 0.42),
-        textColor: "#fff",
+        textColor: staticColors.hex_fff_yhjmu8,
       };
     });
 
@@ -649,7 +517,7 @@ export default function MePage() {
       ...(marks[noteStartDate] || {}),
       startingDay: true,
       color: noteTone,
-      textColor: "#fff",
+      textColor: staticColors.hex_fff_yhjmu8,
     };
 
     const endDate = noteDateMode === "multi" ? noteEndDate || noteStartDate : noteStartDate;
@@ -657,7 +525,7 @@ export default function MePage() {
       ...(marks[endDate] || {}),
       endingDay: true,
       color: noteTone,
-      textColor: "#fff",
+      textColor: staticColors.hex_fff_yhjmu8,
     };
 
     return marks;
@@ -695,9 +563,18 @@ export default function MePage() {
   const queryWeekLabel = queryCard?.weekStart ? formatWeekLabel(queryCard.weekStart) : null;
   const queryFieldLabel = fieldLabel(queryCard?.field);
   const queryDay = queryCard?.day;
-  const profileTone = "#64748B";
-  const timesheetTone = "#CA8A04";
-  const holidayTone = "#16A34A";
+  const profileTone = staticColors.hex_64748b_4jwrvh;
+  const holidayTone = staticColors.hex_16a34a_a5i1hi;
+  const holidayUsageProgress = holidayAllowance > 0
+    ? Math.min(1, Math.max(0, (holidayUsedDays + holidayBookedDays) / holidayAllowance))
+    : 0;
+  const profileInitials = String(account.name || "")
+    .split(" ")
+    .filter(Boolean)
+    .map((part) => part[0])
+    .join("")
+    .toUpperCase()
+    .slice(0, 2);
   const currentNoteEmployeeName = String(
     employee?.name ||
       employee?.displayName ||
@@ -868,56 +745,63 @@ export default function MePage() {
   };
 
   return (
-    <SafeAreaView
-      edges={["top", "left", "right"]}
-      style={[styles.container, { backgroundColor: colors.background }]}
+    <PageShell
+      refresh={{ refreshing, onRefresh }}
+      state={{
+        resources: [
+          employeesResource,
+          holidaysResource,
+          timesheetsResource,
+          queriesResource,
+          {
+            isInitialLoading: busy,
+            isRefreshing: refreshing,
+            error: personalError,
+          },
+        ],
+        hasContent: hasPersonalContent,
+        onRetry: onRefresh,
+        loadingLabel: "Loading your profile…",
+      }}
     >
-      <View style={{ flex: 1 }}>
-        <ScrollView
-          contentContainerStyle={[
-            styles.scrollContent,
-            { width: "100%", maxWidth: responsive.maxContentWidth, alignSelf: "center" },
-          ]}
-          refreshControl={
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={onRefresh}
-              tintColor={colors.accent}
-            />
-          }
-        >
-          <AsyncContentState
-            resources={[
-              employeesResource,
-              holidaysResource,
-              timesheetsResource,
-              queriesResource,
-              {
-                isInitialLoading: busy,
-                isRefreshing: refreshing,
-                error: personalError,
-              },
-            ]}
-            hasContent={hasPersonalContent}
-            onRetry={onRefresh}
-            loadingLabel="Loading your profile…"
-          >
-          {/* My Profile */}
+          {/* Compact profile identity */}
           <View
             style={[
               styles.sectionCard,
               dashboardCards.sectionCard,
+              styles.profileCard,
             ]}
           >
-            <View style={styles.sectionHeader}>
-              <Text style={[styles.profileTitle, { color: colors.text }]}>My Profile</Text>
+            <View style={styles.profileIdentityRow}>
+              <View
+                style={[
+                  styles.profileAvatar,
+                  {
+                    backgroundColor: withAlpha(profileTone, 0.14),
+                    borderColor: withAlpha(profileTone, 0.42),
+                  },
+                ]}
+              >
+                <Text style={[styles.profileAvatarText, { color: profileTone }]}>
+                  {profileInitials || "ME"}
+                </Text>
+              </View>
+              <View style={styles.profileIdentityCopy}>
+                <Text style={[styles.profileTitle, { color: colors.text }]} numberOfLines={1}>
+                  {account.name}
+                </Text>
+                <Text style={[styles.profileMeta, { color: colors.textMuted }]} numberOfLines={1}>
+                  {account.email}
+                </Text>
+                <Text style={[styles.profileCode, { color: colors.textMuted }]}>Code {account.userCode}</Text>
+              </View>
               <View style={styles.profileActionRow}>
                 <TouchableOpacity
                   style={[
-                    styles.sectionCountPill,
+                    styles.profileActionButton,
                     {
-                      backgroundColor: withAlpha(profileTone, 0.13),
-                      borderColor: withAlpha(profileTone, 0.4),
+                      backgroundColor: colors.surfaceAlt,
+                      borderColor: colors.border,
                     },
                   ]}
                   activeOpacity={0.85}
@@ -925,15 +809,15 @@ export default function MePage() {
                   accessibilityRole="button"
                   accessibilityLabel="Open settings"
                 >
-                  <Icon name="settings" size={13} color={profileTone} />
+                  <Icon name="settings" size={16} color={colors.text} />
                 </TouchableOpacity>
 
                 <TouchableOpacity
                   style={[
-                    styles.sectionCountPill,
+                    styles.profileEditButton,
                     {
-                      backgroundColor: withAlpha(profileTone, 0.13),
-                      borderColor: withAlpha(profileTone, 0.4),
+                      backgroundColor: colors.surfaceAlt,
+                      borderColor: colors.border,
                     },
                   ]}
                   activeOpacity={0.85}
@@ -941,55 +825,14 @@ export default function MePage() {
                   accessibilityRole="button"
                   accessibilityLabel="Edit my profile"
                 >
-                  <Icon name="user" size={13} color={profileTone} />
+                  <Icon name="edit-2" size={14} color={colors.text} />
+                  <Text style={[styles.profileEditText, { color: colors.text }]}>Edit</Text>
                 </TouchableOpacity>
               </View>
             </View>
-
-            <View
-              style={[
-                styles.infoRow,
-                dashboardCards.nestedCard,
-              ]}
-            >
-              <View
-                style={[
-                  styles.infoIconWrap,
-                  {
-                    backgroundColor: withAlpha(colors.surfaceAlt, 0.9),
-                    borderColor: withAlpha(colors.border, 0.82),
-                  },
-                ]}
-              >
-                <Icon name="mail" size={14} color={colors.textMuted} />
-              </View>
-              <Text style={[styles.cardRowText, { color: colors.text }]} numberOfLines={1}>
-                {account.email}
-              </Text>
-            </View>
-
-            <View
-              style={[
-                styles.infoRow,
-                dashboardCards.nestedCard,
-              ]}
-            >
-              <View
-                style={[
-                  styles.infoIconWrap,
-                  {
-                    backgroundColor: withAlpha(colors.surfaceAlt, 0.9),
-                    borderColor: withAlpha(colors.border, 0.82),
-                  },
-                ]}
-              >
-                <Icon name="hash" size={14} color={colors.textMuted} />
-              </View>
-              <Text style={[styles.cardRowText, { color: colors.text }]}>Code: {account.userCode}</Text>
-            </View>
           </View>
 
-          {/* Add Note */}
+          {/* Availability */}
           <View
             style={[
               styles.sectionCard,
@@ -999,33 +842,46 @@ export default function MePage() {
           >
             <View style={styles.sectionHeader}>
               <View style={styles.sectionTitleWrap}>
-                <Text style={[styles.sectionTitle, { color: colors.text }]}>Add Note</Text>
+                <Text style={[styles.sectionTitle, { color: colors.text }]}>Availability</Text>
                 <Text style={[styles.sectionSubTitle, { color: colors.textMuted }]}>
-                  Availability update
+                  Tell the office when you cannot be booked
                 </Text>
               </View>
-              <TouchableOpacity
-                style={[
-                  styles.noteHistoryButton,
-                  {
-                    backgroundColor: withAlpha(noteTone, 0.13),
-                    borderColor: withAlpha(noteTone, 0.4),
-                  },
-                ]}
-                activeOpacity={0.85}
-                onPress={toggleNoteHistory}
-                accessibilityRole="button"
-                accessibilityLabel={noteHistoryOpen ? "Hide sent note history" : "Show sent note history"}
-                accessibilityState={{ expanded: noteHistoryOpen }}
-              >
-                <Icon name={noteHistoryOpen ? "chevron-up" : "clock"} size={13} color={noteTone} />
-                <Text style={[styles.noteHistoryButtonText, { color: noteTone }]}>
-                  {noteHistoryOpen ? "Hide" : "History"}
-                </Text>
-              </TouchableOpacity>
+              <View style={styles.availabilityActions}>
+                <TouchableOpacity
+                  style={[
+                    styles.noteHistoryButton,
+                    {
+                      backgroundColor: withAlpha(noteTone, 0.13),
+                      borderColor: withAlpha(noteTone, 0.4),
+                    },
+                  ]}
+                  activeOpacity={0.85}
+                  onPress={() => setNoteComposerOpen((open) => !open)}
+                  accessibilityRole="button"
+                  accessibilityLabel={noteComposerOpen ? "Close availability form" : "Add availability"}
+                  accessibilityState={{ expanded: noteComposerOpen }}
+                >
+                  <Icon name={noteComposerOpen ? "x" : "plus"} size={13} color={noteTone} />
+                  <Text style={[styles.noteHistoryButtonText, { color: noteTone }]}>
+                    {noteComposerOpen ? "Close" : "Add"}
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.historyTextButton}
+                  activeOpacity={0.85}
+                  onPress={toggleNoteHistory}
+                  accessibilityRole="button"
+                  accessibilityLabel={noteHistoryOpen ? "Hide sent note history" : "Show sent note history"}
+                  accessibilityState={{ expanded: noteHistoryOpen }}
+                >
+                  <Icon name="clock" size={13} color={colors.textMuted} />
+                  <Text style={[styles.historyTextButtonLabel, { color: colors.textMuted }]}>History</Text>
+                </TouchableOpacity>
+              </View>
             </View>
 
-            <View
+            {noteComposerOpen ? <View
               style={[
                 styles.sectionPanel,
                 styles.notePanelCompact,
@@ -1167,78 +1023,39 @@ export default function MePage() {
                       monthTextColor: colors.text,
                       arrowColor: noteTone,
                       selectedDayBackgroundColor: noteTone,
-                      selectedDayTextColor: "#fff",
+                      selectedDayTextColor: staticColors.hex_fff_yhjmu8,
                       todayTextColor: noteTone,
                     }}
                   />
                 </View>
               ) : null}
 
-              <Text style={[styles.inputLabel, { color: colors.textMuted }]}>Note</Text>
-              <TextInput
+              <FormField
+                label="Note"
                 value={noteText}
                 onChangeText={setNoteText}
                 placeholder="Short note"
-                placeholderTextColor={colors.textMuted}
-                style={[
-                  styles.noteInput,
-                  {
-                    backgroundColor: colors.surfaceAlt,
-                    borderColor: colors.border,
-                    color: colors.text,
-                  },
-                ]}
-                accessibilityLabel="Availability note"
-                accessibilityHint="Enter a short note for the office"
+                hint="Enter a short note for the office"
               />
 
               <View style={styles.noteFooterRow}>
-                <TouchableOpacity
-                  style={styles.checkRow}
-                  activeOpacity={0.85}
-                  onPress={() => setNoteBlocksBookings((v) => !v)}
-                  accessibilityRole="checkbox"
-                  accessibilityLabel="Block bookings for these dates"
-                  accessibilityState={{ checked: noteBlocksBookings }}
-                >
-                  <Icon
-                    name={noteBlocksBookings ? "check-square" : "square"}
-                    size={17}
-                    color={noteBlocksBookings ? noteTone : colors.textMuted}
-                  />
-                  <Text style={[styles.checkRowText, { color: colors.text }]}>
-                    Block bookings
-                  </Text>
-                </TouchableOpacity>
+                <Checkbox
+                  checked={noteBlocksBookings}
+                  onChange={setNoteBlocksBookings}
+                  label="Block bookings"
+                />
 
-                <TouchableOpacity
-                  style={[
-                    styles.sectionAction,
-                    styles.noteSendAction,
-                    {
-                      backgroundColor: withAlpha(noteTone, savingNote ? 0.08 : 0.13),
-                      borderColor: withAlpha(noteTone, 0.4),
-                      opacity: savingNote ? 0.65 : 1,
-                    },
-                  ]}
+                <AppButton
+                  label={savingNote ? "Sending" : "Send"}
+                  icon="send"
+                  variant="secondary"
                   onPress={submitNote}
-                  activeOpacity={0.9}
                   disabled={savingNote}
-                  accessibilityRole="button"
+                  loading={savingNote}
                   accessibilityLabel="Send availability note"
-                  accessibilityState={{ disabled: savingNote, busy: savingNote }}
-                >
-                  {savingNote ? (
-                    <ActivityIndicator size="small" color={noteTone} />
-                  ) : (
-                    <Icon name="send" size={14} color={noteTone} />
-                  )}
-                  <Text style={[styles.sectionActionText, { color: noteTone }]}>
-                    {savingNote ? "Sending" : "Send"}
-                  </Text>
-                </TouchableOpacity>
+                />
               </View>
-            </View>
+            </View> : null}
 
             {noteHistoryOpen ? (
               <View
@@ -1282,27 +1099,14 @@ export default function MePage() {
                           {item.text}
                         </Text>
                       </View>
-                      <TouchableOpacity
-                        style={[
-                          styles.noteHistoryDelete,
-                          {
-                            backgroundColor: withAlpha(colors.danger || "#dc2626", 0.12),
-                            borderColor: withAlpha(colors.danger || "#dc2626", 0.35),
-                          },
-                        ]}
-                        activeOpacity={0.85}
+                      <IconButton
+                        icon="trash-2"
+                        tone="danger"
                         onPress={() => deleteSentNote(item)}
                         disabled={deletingNoteKey === item.key}
-                        accessibilityRole="button"
-                        accessibilityLabel={`Delete note for ${formatNoteHistoryRange(item)}`}
-                        accessibilityState={{ disabled: deletingNoteKey === item.key, busy: deletingNoteKey === item.key }}
-                      >
-                        {deletingNoteKey === item.key ? (
-                          <ActivityIndicator size="small" color={colors.danger || "#dc2626"} />
-                        ) : (
-                          <Icon name="trash-2" size={14} color={colors.danger || "#dc2626"} />
-                        )}
-                      </TouchableOpacity>
+                        loading={deletingNoteKey === item.key}
+                        label={`Delete note for ${formatNoteHistoryRange(item)}`}
+                      />
                     </View>
                   ))
                 )}
@@ -1325,19 +1129,6 @@ export default function MePage() {
                   Weekly hours and approvals
                 </Text>
               </View>
-              <View
-                style={[
-                  styles.sectionCountPill,
-                  {
-                    backgroundColor: withAlpha(timesheetTone, 0.13),
-                    borderColor: withAlpha(timesheetTone, 0.4),
-                  },
-                ]}
-              >
-                <Text style={[styles.sectionCountText, { color: timesheetTone }]}>
-                  Pending: {timesheetStats.pending}
-                </Text>
-              </View>
             </View>
 
             <View
@@ -1351,32 +1142,43 @@ export default function MePage() {
             >
               {(
                 <>
-                  <View style={styles.statRow}>
-                    <View style={[styles.statCard, styles.flatStatCard]}>
-                      <Text style={[styles.statLabel, { color: colors.textMuted }]}>This Week</Text>
-                      <Text style={[styles.statValue, { color: colors.text }]}>
-                        {formatTimesheetHours(timesheetStats.weekHours)}
-                      </Text>
-                    </View>
+                  <TouchableOpacity
+                    style={styles.summaryLink}
+                    onPress={() => router.push("/timesheet")}
+                    accessibilityRole="button"
+                    accessibilityLabel="Open timesheets"
+                    accessibilityHint="View weekly hours and approvals"
+                  >
+                    <View style={styles.statRow}>
+                      <View style={[styles.statCard, styles.flatStatCard]}>
+                        <Text style={[styles.statLabel, { color: colors.textMuted }]} numberOfLines={1}>This Week</Text>
+                        <Text style={[styles.statValue, { color: colors.text }]}>
+                          {formatTimesheetHours(timesheetStats.weekHours)}
+                        </Text>
+                      </View>
 
-                    <View style={[styles.statCard, styles.flatStatCard]}>
-                      <Text style={[styles.statLabel, { color: colors.textMuted }]}>Pending</Text>
-                      <Text style={[styles.statValue, { color: colors.text }]}>{timesheetStats.pending}</Text>
-                    </View>
+                      <View style={[styles.statCard, styles.flatStatCard]}>
+                        <Text style={[styles.statLabel, { color: colors.textMuted }]} numberOfLines={1}>Pending</Text>
+                        <Text style={[styles.statValue, { color: colors.text }]}>{timesheetStats.pending}</Text>
+                      </View>
 
-                    <View style={[styles.statCard, styles.flatStatCard]}>
-                      <Text style={[styles.statLabel, { color: colors.textMuted }]}>Last Submitted</Text>
-                      <Text style={[styles.statValue, { color: colors.text }]}>
-                        {formatDateShort(timesheetStats.lastSubmitted) || "—"}
-                      </Text>
+                      <View style={[styles.statCard, styles.flatStatCard]}>
+                        <Text style={[styles.statLabel, { color: colors.textMuted }]} numberOfLines={1}>Last Submitted</Text>
+                        <Text style={[styles.statValue, { color: colors.text }]}>
+                          {formatDateShort(timesheetStats.lastSubmitted) || "—"}
+                        </Text>
+                      </View>
                     </View>
-                  </View>
+                    <View style={styles.summaryChevron} pointerEvents="none">
+                      <Icon name="chevron-right" size={18} color={colors.textMuted} />
+                    </View>
+                  </TouchableOpacity>
 
                   {queryCard && (
                     <TouchableOpacity
                       style={[
                         styles.queryCard,
-                        { borderColor: "#f97316", backgroundColor: colors.surface },
+                        { borderColor: staticColors.hex_f97316_oh807u, backgroundColor: colors.surface },
                       ]}
                       activeOpacity={0.9}
                       onPress={() => router.push(`/(protected)/query/${queryCard.id}`)}
@@ -1385,7 +1187,7 @@ export default function MePage() {
                       accessibilityHint="Review the queried week and respond"
                     >
                       <View style={styles.queryIcon}>
-                        <Icon name="alert-circle" size={16} color="#f97316" />
+                        <Icon name="alert-circle" size={16} color={staticColors.hex_f97316_oh807u} />
                       </View>
 
                       <View style={{ flex: 1 }}>
@@ -1414,26 +1216,55 @@ export default function MePage() {
                     </TouchableOpacity>
                   )}
 
-                  <TouchableOpacity
-                    style={[
-                      styles.sectionAction,
-                      styles.sectionActionPrimary,
-                      {
-                        backgroundColor: withAlpha(timesheetTone, 0.13),
-                        borderColor: withAlpha(timesheetTone, 0.4),
-                      },
-                    ]}
-                    onPress={() => router.push("/timesheet")}
-                    accessibilityRole="button"
-                    accessibilityLabel="Open timesheets"
-                  >
-                    <Icon name="clock" size={14} color={timesheetTone} />
-                    <Text style={[styles.sectionActionText, { color: timesheetTone }]}>
-                      Open Timesheet
-                    </Text>
-                  </TouchableOpacity>
                 </>
               )}
+            </View>
+          </View>
+
+          {/* Expenses and monthly receipts */}
+          <View
+            style={[
+              styles.sectionCard,
+              dashboardCards.sectionCard,
+              styles.flatSectionCard,
+            ]}
+          >
+            <View style={styles.sectionHeader}>
+              <View style={styles.sectionTitleWrap}>
+                <Text style={[styles.sectionTitle, { color: colors.text }]}>Expenses & Receipts</Text>
+                <Text style={[styles.sectionSubTitle, { color: colors.textMuted }]}>Job costs and monthly VAT receipts</Text>
+              </View>
+            </View>
+
+            <View style={[styles.sectionPanel, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              <View style={styles.actionGrid}>
+                <TouchableOpacity
+                  style={[
+                    styles.actionTile,
+                    { backgroundColor: withAlpha(staticColors.hex_3b82f6_9w6unh, 0.13), borderColor: withAlpha(staticColors.hex_3b82f6_9w6unh, 0.4) },
+                  ]}
+                  onPress={() => router.push("/expenses")}
+                  accessibilityRole="button"
+                  accessibilityLabel="Open expenses"
+                >
+                  <Icon name="credit-card" size={18} color={staticColors.hex_3b82f6_9w6unh} />
+                  <Text style={[styles.actionTileTitle, { color: colors.text }]}>Expenses</Text>
+                  <Text style={[styles.actionTileSubtitle, { color: colors.textMuted }]}>Job costs</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[
+                    styles.actionTile,
+                    { backgroundColor: withAlpha(staticColors.hex_3b82f6_9w6unh, 0.13), borderColor: withAlpha(staticColors.hex_3b82f6_9w6unh, 0.4) },
+                  ]}
+                  onPress={() => router.push("/receipts")}
+                  accessibilityRole="button"
+                  accessibilityLabel="Open monthly receipts"
+                >
+                  <Icon name="file-text" size={18} color={staticColors.hex_3b82f6_9w6unh} />
+                  <Text style={[styles.actionTileTitle, { color: colors.text }]}>Receipts</Text>
+                  <Text style={[styles.actionTileSubtitle, { color: colors.textMuted }]}>Monthly VAT</Text>
+                </TouchableOpacity>
+              </View>
             </View>
           </View>
 
@@ -1487,21 +1318,41 @@ export default function MePage() {
                 <>
                   <View style={styles.statRow}>
                     <View style={[styles.statCard, styles.flatStatCard]}>
-                      <Text style={[styles.statLabel, { color: colors.textMuted }]}>
-                        Allowance ({currentYear})
-                      </Text>
+                      <Text style={[styles.statLabel, { color: colors.textMuted }]}>Allowance</Text>
                       <Text style={[styles.statValue, { color: colors.text }]}>{fmtHalf(holidayAllowance)}</Text>
                     </View>
 
                     <View style={[styles.statCard, styles.flatStatCard]}>
-                      <Text style={[styles.statLabel, { color: colors.textMuted }]}>Used</Text>
+                      <Text style={[styles.statLabel, { color: colors.textMuted }]}>Taken</Text>
                       <Text style={[styles.statValue, { color: colors.text }]}>{fmtHalf(holidayUsedDays)}</Text>
                     </View>
 
                     <View style={[styles.statCard, styles.flatStatCard]}>
-                      <Text style={[styles.statLabel, { color: colors.textMuted }]}>Remaining</Text>
+                      <Text style={[styles.statLabel, { color: colors.textMuted }]}>Booked</Text>
+                      <Text style={[styles.statValue, { color: colors.text }]}>{fmtHalf(holidayBookedDays)}</Text>
+                    </View>
+
+                    <View style={[styles.statCard, styles.flatStatCard]}>
+                      <Text style={[styles.statLabel, { color: colors.textMuted }]}>Available</Text>
                       <Text style={[styles.statValue, { color: colors.text }]}>{fmtHalf(holidayRemaining)}</Text>
                     </View>
+                  </View>
+
+                  <View style={styles.holidayProgressRow}>
+                    <View style={[styles.holidayProgressTrack, { backgroundColor: withAlpha(holidayTone, 0.14) }]}>
+                      <View
+                        style={[
+                          styles.holidayProgressFill,
+                          {
+                            backgroundColor: holidayTone,
+                            width: `${holidayUsageProgress * 100}%`,
+                          },
+                        ]}
+                      />
+                    </View>
+                    <Text style={[styles.holidayProgressText, { color: colors.textMuted }]}>
+                      {fmtHalf(holidayRemaining)} remaining
+                    </Text>
                   </View>
 
                   <View style={styles.cardRow}>
@@ -1540,11 +1391,7 @@ export default function MePage() {
             </View>
           </View>
 
-          <View style={{ height: 12 }} />
-          </AsyncContentState>
-        </ScrollView>
-      </View>
-    </SafeAreaView>
+    </PageShell>
   );
 }
 
@@ -1553,111 +1400,8 @@ function safeStr(v) {
   return String(v ?? "").trim().toLowerCase();
 }
 
-function canonicalEmployeeCode(v) {
-  const raw = String(v ?? "").trim();
-  if (!raw) return "";
-  const digits = raw.replace(/\D/g, "");
-  return digits ? digits.padStart(4, "0") : safeStr(raw);
-}
-
 function firstValue(...values) {
   return values.find((value) => value !== undefined && value !== null && String(value).trim() !== "");
-}
-
-function employeeMatchesHoliday(h, empRecord, sessionEmployee, user) {
-  const employeeIds = [
-    empRecord?.id,
-    empRecord?.employeeId,
-    empRecord?.uid,
-    empRecord?.authUid,
-    sessionEmployee?.employeeId,
-    sessionEmployee?.id,
-    sessionEmployee?.uid,
-    user?.uid,
-  ]
-    .map(safeStr)
-    .filter(Boolean);
-
-  const holidayIds = [
-    h?.employeeId,
-    h?.employeeDocId,
-    h?.staffId,
-    h?.userId,
-    h?.uid,
-    h?.authUid,
-    h?.employeeUid,
-  ]
-    .map(safeStr)
-    .filter(Boolean);
-
-  if (holidayIds.some((id) => employeeIds.includes(id))) return true;
-
-  const employeeCodes = [
-    empRecord?.userCode,
-    empRecord?.employeeCode,
-    empRecord?.code,
-    sessionEmployee?.userCode,
-    sessionEmployee?.employeeCode,
-    sessionEmployee?.code,
-  ]
-    .map(canonicalEmployeeCode)
-    .filter(Boolean);
-
-  const holidayCodes = [
-    h?.employeeCode,
-    h?.userCode,
-    h?.code,
-    h?.staffCode,
-    h?.requestedByCode,
-    h?.createdByCode,
-    h?.driverCode,
-  ]
-    .map(canonicalEmployeeCode)
-    .filter(Boolean);
-
-  if (holidayCodes.some((code) => employeeCodes.includes(code))) return true;
-
-  const employeeNames = [
-    empRecord?.name,
-    empRecord?.displayName,
-    sessionEmployee?.name,
-    sessionEmployee?.displayName,
-    sessionEmployee?.fullName,
-    user?.displayName,
-  ]
-    .map(safeStr)
-    .filter(Boolean);
-
-  const holidayNames = [
-    h?.employee,
-    h?.name,
-    h?.employeeName,
-    h?.displayName,
-    h?.staffName,
-    h?.requestedBy,
-    h?.requestedByName,
-    h?.createdByName,
-  ]
-    .map(safeStr)
-    .filter(Boolean);
-
-  if (holidayNames.some((name) => employeeNames.includes(name))) return true;
-
-  const employeeEmails = [empRecord?.email, sessionEmployee?.email, user?.email]
-    .map(safeStr)
-    .filter(Boolean);
-
-  const holidayEmails = [
-    h?.email,
-    h?.employeeEmail,
-    h?.userEmail,
-    h?.requestedByEmail,
-    h?.createdByEmail,
-  ]
-    .map(safeStr)
-    .filter(Boolean);
-
-  return holidayEmails.some((email) => employeeEmails.includes(email));
 }
 
 function roundToHalf(n) {
@@ -1675,6 +1419,9 @@ function numOrZero(v) {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
 }
+function hasOwn(object, key) {
+  return Object.prototype.hasOwnProperty.call(object || {}, key);
+}
 function yearKey(y) {
   return String(y);
 }
@@ -1685,11 +1432,14 @@ function getAllowanceForYear(emp, y) {
   const carryoverByYear =
     emp?.carryoverByYear || emp?.carryOverByYear || emp?.carriedOverByYear || {};
 
-  const allowance = numOrZero(holidayAllowances?.[Y]) || numOrZero(emp?.holidayAllowance);
-  const carryOver =
-    numOrZero(carryoverByYear?.[Y]) ||
-    numOrZero(emp?.carriedOverDays) ||
-    numOrZero(emp?.carryOverDays);
+  const allowance = hasOwn(holidayAllowances, Y)
+    ? numOrZero(holidayAllowances[Y])
+    : numOrZero(emp?.holidayAllowance);
+  const carryOver = hasOwn(carryoverByYear, Y)
+    ? numOrZero(carryoverByYear[Y])
+    : emp?.carriedOverDays !== undefined && emp?.carriedOverDays !== null
+      ? numOrZero(emp.carriedOverDays)
+      : numOrZero(emp?.carryOverDays);
 
   return { allowance, carryOver };
 }
@@ -1766,17 +1516,6 @@ function toNumber(n, fallback = 0) {
   const num = Number(n);
   return Number.isNaN(num) ? fallback : num;
 }
-function minDate(a, b) {
-  if (!a) return b;
-  if (!b) return a;
-  return a < b ? a : b;
-}
-function maxDate(a, b) {
-  if (!a) return b;
-  if (!b) return a;
-  return a > b ? a : b;
-}
-
 /* ---------- business days + half-days (matches HolidayPage schema) ---------- */
 const isWeekend = (d) => d.getDay() === 0 || d.getDay() === 6;
 
@@ -1902,21 +1641,21 @@ function computeBusinessDaysClamped(h, clampS, clampE, origS, origE, isBankHolid
 
 function displayTypeAndColor(h) {
   let displayType = "Other";
-  let typeColor = "#22d3ee";
+  let typeColor = staticColors.hex_22d3ee_74my7l;
   const typeStr = (h.leaveType || h.paidStatus || h.type || h.holidayType || "").toLowerCase();
 
   if (h.isAccrued || typeStr.includes("accrued") || typeStr.includes("toil")) {
     displayType = "Accrued";
-    typeColor = "#38bdf8";
+    typeColor = staticColors.hex_38bdf8_92tkol;
   } else if (h.isUnpaid || typeStr.includes("unpaid") || h.paid === false) {
     displayType = "Unpaid";
-    typeColor = "#f87171";
+    typeColor = staticColors.hex_f87171_ohxdjs;
   } else if (h.paid || typeStr.includes("paid")) {
     displayType = "Paid";
-    typeColor = "#29bc5f";
+    typeColor = staticColors.hex_29bc5f_75jpdr;
   } else {
     displayType = "Paid";
-    typeColor = "#29bc5f";
+    typeColor = staticColors.hex_29bc5f_75jpdr;
   }
   return { displayType, typeColor };
 }
@@ -2049,11 +1788,11 @@ function fieldLabel(field) {
 
 /* ---------- styles ---------- */
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#0b0b0b" },
+  container: { flex: 1, backgroundColor: staticColors.hex_0b0b0b_9v81ck },
   scrollContent: {
-    paddingHorizontal: 14,
+    paddingHorizontal: t.spacing.sm,
     paddingTop: t.spacing.md,
-    paddingBottom: t.spacing.lg,
+    paddingBottom: 200,
   },
 
   heroCard: {
@@ -2072,7 +1811,7 @@ const styles = StyleSheet.create({
   headerRight: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
+    gap: t.spacing.xs,
   },
   notifBtn: {
     width: t.controls.iconButton,
@@ -2087,15 +1826,15 @@ const styles = StyleSheet.create({
     right: -4,
     minWidth: 18,
     height: 18,
-    borderRadius: 9,
-    paddingHorizontal: 5,
+    borderRadius: t.radius.md,
+    paddingHorizontal: t.spacing.xxs,
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 2,
   },
   badgeText: {
-    color: "#0b0b0b",
-    fontSize: 10,
+    color: staticColors.hex_0b0b0b_9v81ck,
+    fontSize: t.typography.micro.fontSize,
     fontWeight: "900",
   },
   userIcon: {
@@ -2105,7 +1844,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
   },
-  userInitials: { fontSize: 15, fontWeight: "900", letterSpacing: 0.4 },
+  userInitials: { fontSize: t.typography.bodyLarge.fontSize, fontWeight: "900", letterSpacing: 0.4 },
 
   heroContent: {
     paddingHorizontal: t.spacing.sm,
@@ -2117,396 +1856,524 @@ const styles = StyleSheet.create({
     letterSpacing: 0.6,
   },
   heroTitle: {
-    marginTop: 3,
-    fontSize: 25,
+    marginTop: t.spacing.xxs,
+    fontSize: t.typography.pageTitle.fontSize,
     fontWeight: "900",
     letterSpacing: 0.2,
   },
   heroSubTitle: {
-    marginTop: 3,
-    fontSize: 13,
+    marginTop: t.spacing.xxs,
+    fontSize: t.typography.bodySmall.fontSize,
     fontWeight: "600",
-    lineHeight: 18,
+    lineHeight: t.typography.bodySmall.lineHeight,
   },
   heroMetaRow: {
-    marginTop: 12,
+    marginTop: t.spacing.sm,
     flexDirection: "row",
-    gap: 8,
+    gap: t.spacing.xs,
     flexWrap: "wrap",
   },
   heroMetaAction: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
+    gap: t.spacing.xxs,
     minHeight: t.controls.chipMinHeight,
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+    borderRadius: t.radius.pill,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
   },
   heroMetaActionPrimary: {},
   heroMetaActionText: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     fontWeight: "800",
   },
   heroMetaChip: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
+    gap: t.spacing.xxs,
     minHeight: t.controls.chipMinHeight,
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+    borderRadius: t.radius.pill,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
     borderWidth: 1,
     maxWidth: "100%",
   },
   heroMetaText: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     fontWeight: "700",
     flexShrink: 1,
   },
 
   sectionCard: {
-    marginBottom: 16,
-    borderRadius: 16,
-    paddingHorizontal: 0,
-    paddingTop: 0,
-    paddingBottom: 0,
+    marginBottom: t.spacing.md,
+    borderRadius: t.radius.xl,
+    paddingHorizontal: t.spacing.none,
+    paddingTop: t.spacing.none,
+    paddingBottom: t.spacing.none,
   },
   flatSectionCard: {
     borderWidth: 0,
     backgroundColor: "transparent",
   },
+  profileCard: {
+    padding: t.spacing.sm,
+    borderWidth: 0,
+  },
+  profileIdentityRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: t.spacing.xs,
+  },
+  profileAvatar: {
+    width: 48,
+    height: 48,
+    borderRadius: t.radius.pill,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  profileAvatarText: {
+    fontSize: t.typography.bodyLarge.fontSize,
+    fontWeight: "900",
+  },
+  profileIdentityCopy: { flex: 1, minWidth: 0 },
+  profileMeta: {
+    marginTop: t.spacing.none,
+    fontSize: t.typography.metadata.fontSize,
+    fontWeight: "600",
+  },
+  profileCode: {
+    marginTop: t.spacing.none,
+    fontSize: t.typography.caption.fontSize,
+    fontWeight: "700",
+  },
   panelSectionCard: {
     borderWidth: 1,
-    borderRadius: 14,
-    padding: 14,
+    borderRadius: t.radius.lg,
+    padding: t.spacing.sm,
   },
   sectionTitleWrap: {
     flex: 1,
-    paddingRight: 12,
+    paddingRight: t.spacing.sm,
   },
   sectionHeader: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: 8,
-    marginBottom: 10,
+    gap: t.spacing.xs,
+    marginBottom: t.spacing.xs,
   },
   sectionTitle: {
-    fontSize: 17,
+    fontSize: t.typography.sectionTitle.fontSize,
     fontWeight: "900",
     letterSpacing: 0.2,
   },
   profileTitle: {
-    ...t.typography.pageTitle,
-    marginTop: 3,
+    fontSize: t.typography.sectionTitle.fontSize,
+    lineHeight: t.typography.sectionTitle.lineHeight,
+    fontWeight: "900",
     letterSpacing: 0.2,
   },
   sectionSubTitle: {
-    marginTop: 2,
-    fontSize: 12,
+    marginTop: t.spacing.none,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "600",
   },
   sectionCountPill: {
     minHeight: 30,
-    borderRadius: 999,
+    borderRadius: t.radius.pill,
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 12,
+    paddingHorizontal: t.spacing.sm,
     borderWidth: 1,
   },
   sectionPanel: {
     borderWidth: 1,
-    borderRadius: 14,
-    padding: 14,
+    borderRadius: t.radius.lg,
+    padding: t.spacing.sm,
   },
   sectionCountText: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     fontWeight: "900",
   },
   noteHistoryButton: {
     minHeight: 30,
-    borderRadius: 999,
+    borderRadius: t.radius.pill,
     alignItems: "center",
     justifyContent: "center",
     flexDirection: "row",
-    gap: 5,
-    paddingHorizontal: 10,
+    gap: t.spacing.xxs,
+    paddingHorizontal: t.spacing.xs,
     borderWidth: 1,
   },
   noteHistoryButtonText: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     fontWeight: "900",
   },
 
   infoRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
-    borderRadius: 14,
+    gap: t.spacing.xs,
+    borderRadius: t.radius.lg,
     minHeight: t.controls.buttonHeight,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    marginTop: 10,
+    paddingHorizontal: t.spacing.sm,
+    paddingVertical: t.spacing.xs,
+    marginTop: t.spacing.xs,
   },
   infoIconWrap: {
     width: 28,
     height: 28,
-    borderRadius: 14,
+    borderRadius: t.radius.pill,
     alignItems: "center",
     justifyContent: "center",
   },
   profileActionRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
+    gap: t.spacing.xxs,
+  },
+  profileActionButton: {
+    width: t.controls.iconButton,
+    height: t.controls.iconButton,
+    borderRadius: t.radius.pill,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  profileEditButton: {
+    minHeight: t.controls.iconButton,
+    borderRadius: t.radius.pill,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: t.spacing.sm,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: t.spacing.xxs,
+  },
+  profileEditText: {
+    fontSize: t.typography.caption.fontSize,
+    fontWeight: "800",
+  },
+  availabilityActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: t.spacing.xs,
+  },
+  historyTextButton: {
+    minHeight: t.controls.chipMinHeight,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: t.spacing.xxs,
+  },
+  historyTextButtonLabel: {
+    fontSize: t.typography.caption.fontSize,
+    fontWeight: "800",
   },
   cardRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
-    marginTop: 14,
-    paddingHorizontal: 4,
+    gap: t.spacing.xs,
+    marginTop: t.spacing.sm,
+    paddingHorizontal: t.spacing.xxs,
   },
-  cardRowText: { fontSize: 14, fontWeight: "600", flexShrink: 1 },
+  cardRowText: { fontSize: t.typography.body.fontSize, fontWeight: "600", flexShrink: 1 },
   loadingWrap: {
-    paddingVertical: 16,
+    paddingVertical: t.spacing.md,
     alignItems: "center",
     justifyContent: "center",
   },
 
-  statRow: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginTop: 0 },
+  statRow: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: "row",
+    gap: t.spacing.xs,
+    marginTop: t.spacing.none,
+  },
   statCard: {
     flex: 1,
-    minWidth: 94,
-    borderRadius: 14,
-    paddingVertical: 8,
-    paddingHorizontal: 4,
+    minWidth: 0,
+    borderRadius: t.radius.lg,
+    paddingVertical: t.spacing.xs,
+    paddingHorizontal: t.spacing.xxs,
     alignItems: "center",
   },
   flatStatCard: {
     backgroundColor: "transparent",
     borderWidth: 0,
-    paddingHorizontal: 0,
+    paddingHorizontal: t.spacing.none,
   },
-  statLabel: { fontSize: 11, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.2 },
-  statValue: { fontSize: 16, fontWeight: "900", marginTop: 3 },
+  statLabel: { fontSize: t.typography.caption.fontSize, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.2 },
+  statValue: { fontSize: t.typography.bodyLarge.fontSize, fontWeight: "900", marginTop: t.spacing.xxs },
+  summaryLink: {
+    minHeight: t.controls.buttonHeightLg,
+    position: "relative",
+    paddingRight: t.spacing.lg,
+  },
+  summaryChevron: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    bottom: 0,
+    justifyContent: "center",
+  },
 
   queryCard: {
     flexDirection: "row",
     padding: t.controls.cardPadding,
-    borderRadius: 14,
-    marginTop: 10,
-    gap: 8,
+    borderRadius: t.radius.lg,
+    marginTop: t.spacing.xs,
+    gap: t.spacing.xs,
     borderWidth: 1,
   },
   queryIcon: {
     width: 26,
     height: 26,
-    borderRadius: 13,
-    backgroundColor: "#fff7ed",
+    borderRadius: t.radius.pill,
+    backgroundColor: staticColors.hex_fff7ed_pfszcm,
     alignItems: "center",
     justifyContent: "center",
-    marginTop: 2,
+    marginTop: t.spacing.none,
   },
-  queryTitle: { fontSize: 13, fontWeight: "800", marginBottom: 2 },
-  querySubtitle: { fontSize: 12, marginBottom: 2 },
-  queryBody: { fontSize: 12, fontStyle: "italic", marginBottom: 4 },
+  queryTitle: { fontSize: t.typography.bodySmall.fontSize, fontWeight: "800", marginBottom: t.spacing.none },
+  querySubtitle: { fontSize: t.typography.metadata.fontSize, marginBottom: t.spacing.none },
+  queryBody: { fontSize: t.typography.metadata.fontSize, fontStyle: "italic", marginBottom: t.spacing.xxs },
   queryFooterRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
   },
-  queryFooterText: { fontSize: 11, fontWeight: "600" },
+  queryFooterText: { fontSize: t.typography.caption.fontSize, fontWeight: "600" },
 
   sectionAction: {
-    marginTop: 18,
+    marginTop: t.spacing.md,
     alignSelf: "center",
     minHeight: t.controls.buttonHeight,
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 999,
+    gap: t.spacing.xxs,
+    paddingVertical: t.spacing.xs,
+    paddingHorizontal: t.spacing.sm,
+    borderRadius: t.radius.pill,
   },
   sectionActionPrimary: {},
   sectionActionText: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
+    fontWeight: "800",
+  },
+  expensesIntro: {
+    fontSize: t.typography.bodySmall.fontSize,
+    lineHeight: t.typography.bodySmall.lineHeight,
+    marginBottom: t.spacing.sm,
+  },
+  actionGrid: {
+    flexDirection: "row",
+    gap: t.spacing.xs,
+  },
+  actionTile: {
+    flex: 1,
+    minHeight: 88,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: t.radius.lg,
+    padding: t.spacing.sm,
+    justifyContent: "center",
+  },
+  actionTileTitle: {
+    marginTop: t.spacing.xs,
+    fontSize: t.typography.bodySmall.fontSize,
+    fontWeight: "900",
+  },
+  actionTileSubtitle: {
+    marginTop: t.spacing.none,
+    fontSize: t.typography.caption.fontSize,
+    fontWeight: "600",
+  },
+  holidayProgressRow: {
+    marginTop: t.spacing.xs,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: t.spacing.xs,
+  },
+  holidayProgressTrack: {
+    flex: 1,
+    height: 6,
+    borderRadius: t.radius.pill,
+    overflow: "hidden",
+  },
+  holidayProgressFill: {
+    height: "100%",
+    borderRadius: t.radius.pill,
+  },
+  holidayProgressText: {
+    fontSize: t.typography.caption.fontSize,
     fontWeight: "800",
   },
   notePanelCompact: {
-    padding: 10,
-    borderRadius: 12,
+    padding: t.spacing.xs,
+    borderRadius: t.radius.md,
   },
   noteModeRow: {
     flexDirection: "row",
-    gap: 6,
+    gap: t.spacing.xxs,
     borderWidth: 1,
-    borderRadius: 10,
-    padding: 3,
-    marginBottom: 8,
+    borderRadius: t.radius.md,
+    padding: t.spacing.xxs,
+    marginBottom: t.spacing.xs,
   },
   noteModeButton: {
     flex: 1,
     minHeight: 30,
     borderWidth: 1,
-    borderRadius: 8,
+    borderRadius: t.radius.sm,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 6,
-    paddingHorizontal: 8,
+    gap: t.spacing.xxs,
+    paddingHorizontal: t.spacing.xs,
   },
   noteModeText: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "900",
   },
   dateSelectRow: {
     flexDirection: "row",
-    gap: 8,
-    marginBottom: 8,
+    gap: t.spacing.xs,
+    marginBottom: t.spacing.xs,
   },
   dateSelectButton: {
     flex: 1,
     minWidth: 0,
     borderWidth: 1,
-    borderRadius: 10,
-    paddingHorizontal: 10,
-    paddingTop: 8,
-    paddingBottom: 7,
+    borderRadius: t.radius.md,
+    paddingHorizontal: t.spacing.xs,
+    paddingTop: t.spacing.xs,
+    paddingBottom: t.spacing.xs,
   },
   dateSelectValueRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: 8,
+    gap: t.spacing.xs,
   },
   dateSelectValue: {
     flex: 1,
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
     fontWeight: "800",
   },
   calendarWrap: {
     borderWidth: 1,
-    borderRadius: 12,
-    marginBottom: 8,
+    borderRadius: t.radius.md,
+    marginBottom: t.spacing.xs,
     overflow: "hidden",
   },
   inputLabel: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     fontWeight: "800",
     textTransform: "uppercase",
     letterSpacing: 0.2,
-    marginBottom: 4,
+    marginBottom: t.spacing.xxs,
   },
   noteInput: {
     minHeight: 44,
     borderWidth: 1,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    fontSize: 14,
+    borderRadius: t.radius.md,
+    paddingHorizontal: t.spacing.sm,
+    paddingVertical: t.spacing.xs,
+    fontSize: t.typography.body.fontSize,
     fontWeight: "600",
   },
   noteFooterRow: {
-    marginTop: 8,
+    marginTop: t.spacing.xs,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: 10,
+    gap: t.spacing.xs,
   },
   checkRow: {
     flex: 1,
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
+    gap: t.spacing.xs,
     minHeight: 32,
   },
   checkRowText: {
     flex: 1,
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
     fontWeight: "700",
   },
   noteSendAction: {
-    marginTop: 0,
+    marginTop: t.spacing.none,
     minHeight: 34,
-    paddingVertical: 6,
-    paddingHorizontal: 11,
+    paddingVertical: t.spacing.xxs,
+    paddingHorizontal: t.spacing.sm,
   },
   noteHistoryPanel: {
     borderWidth: 1,
-    borderRadius: 12,
-    marginTop: 8,
-    padding: 8,
-    gap: 8,
+    borderRadius: t.radius.md,
+    marginTop: t.spacing.xs,
+    padding: t.spacing.xs,
+    gap: t.spacing.xs,
   },
   noteHistoryLoading: {
     minHeight: 34,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 8,
+    gap: t.spacing.xs,
   },
   noteHistoryMeta: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "700",
     textAlign: "center",
   },
   noteHistoryItem: {
     minHeight: 48,
     borderWidth: 1,
-    borderRadius: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
+    borderRadius: t.radius.md,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xs,
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
+    gap: t.spacing.xs,
   },
   noteHistoryTextWrap: {
     flex: 1,
     minWidth: 0,
   },
   noteHistoryDate: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     fontWeight: "900",
-    marginBottom: 2,
+    marginBottom: t.spacing.none,
   },
   noteHistoryText: {
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
     fontWeight: "700",
-  },
-  noteHistoryDelete: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    borderWidth: 1,
-    alignItems: "center",
-    justifyContent: "center",
   },
   statusText: {
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     fontWeight: "700",
     textAlign: "center",
-    marginTop: 8,
+    marginTop: t.spacing.xs,
   },
   emptyState: {
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 18,
-    paddingHorizontal: 10,
+    paddingVertical: t.spacing.md,
+    paddingHorizontal: t.spacing.xs,
   },
   emptyStateTitle: {
-    marginTop: 8,
-    fontSize: 14,
+    marginTop: t.spacing.xs,
+    fontSize: t.typography.body.fontSize,
     fontWeight: "800",
     textAlign: "center",
   },
   emptyStateText: {
-    marginTop: 4,
-    fontSize: 12,
+    marginTop: t.spacing.xxs,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "600",
-    lineHeight: 17,
+    lineHeight: t.typography.metadata.lineHeight,
     textAlign: "center",
   },
 

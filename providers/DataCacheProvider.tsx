@@ -33,6 +33,7 @@ export type CacheRecord<T = unknown> = {
 type FetchOptions = { force?: boolean; ttlMs?: number };
 
 type DataCacheContextValue = {
+  peek: <T>(key: string) => CacheRecord<T> | null;
   read: <T>(key: string) => Promise<CacheRecord<T> | null>;
   write: <T>(key: string, data: T, ttlMs?: number) => Promise<void>;
   getOrFetch: <T>(
@@ -53,6 +54,7 @@ type DataCacheContextValue = {
 };
 
 const DataCacheCtx = createContext<DataCacheContextValue>({
+  peek: () => null,
   read: async () => null,
   write: async () => {},
   getOrFetch: async (_key, fetcher) => fetcher(),
@@ -122,7 +124,7 @@ export function isStorageValueExpired(
 }
 
 export function DataCacheProvider({ children }: { children: React.ReactNode }) {
-  const { user, employee, isAuthed } = useAuth();
+  const { user, employee, isAuthed, loading: authLoading } = useAuth();
   const scope = useMemo(
     () =>
       buildCacheScope({
@@ -148,6 +150,12 @@ export function DataCacheProvider({ children }: { children: React.ReactNode }) {
   const scopedKey = useCallback(
     (key: string) => `${scope}.${String(key || "default")}`,
     [scope]
+  );
+
+  const peek = useCallback(
+    <T,>(key: string): CacheRecord<T> | null =>
+      (inMemory.current.get(scopedKey(key)) as CacheRecord<T> | undefined) ?? null,
+    [scopedKey]
   );
 
   const read = useCallback(
@@ -307,9 +315,9 @@ export function DataCacheProvider({ children }: { children: React.ReactNode }) {
   }, [clearScope, scope]);
 
   useEffect(() => {
-    if (isAuthed) return;
+    if (authLoading || isAuthed) return;
     clear().catch(() => {});
-  }, [clear, isAuthed]);
+  }, [authLoading, clear, isAuthed]);
 
   useEffect(() => {
     if (!isAuthed) return undefined;
@@ -329,6 +337,7 @@ export function DataCacheProvider({ children }: { children: React.ReactNode }) {
 
   const value = useMemo(
     () => ({
+      peek,
       read,
       write,
       getOrFetch,
@@ -340,7 +349,7 @@ export function DataCacheProvider({ children }: { children: React.ReactNode }) {
       refreshSignal,
       scope,
     }),
-    [clear, getOrFetch, invalidate, isExpired, mutate, read, refreshSignal, remove, scope, write]
+    [clear, getOrFetch, invalidate, isExpired, mutate, peek, read, refreshSignal, remove, scope, write]
   );
 
   return <DataCacheCtx.Provider value={value}>{children}</DataCacheCtx.Provider>;
@@ -359,20 +368,23 @@ export function useCachedResource<T>({
   enabled?: boolean;
   ttlMs?: number;
 }) {
-  const { read, getOrFetch, isExpired, refreshSignal, scope } = useDataCache();
+  const { peek, read, getOrFetch, isExpired, refreshSignal, scope } = useDataCache();
   const fetcherRef = useRef(fetcher);
   const requestIdRef = useRef(0);
-  const [data, setData] = useState<T | null>(null);
-  const [dataIdentity, setDataIdentity] = useState("");
-  const [isInitialLoading, setIsInitialLoading] = useState(enabled);
+  const resourceIdentity = `${scope}:${key}`;
+  const initialCached = enabled && key ? peek<T>(key) : null;
+  const [data, setData] = useState<T | null>(() => initialCached?.data ?? null);
+  const [dataIdentity, setDataIdentity] = useState(() => initialCached ? resourceIdentity : "");
+  const [isInitialLoading, setIsInitialLoading] = useState(() => enabled && !initialCached);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<unknown>(null);
-  const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null);
-  const resourceIdentity = `${scope}:${key}`;
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(
+    () => initialCached?.updatedAt ?? null
+  );
   fetcherRef.current = fetcher;
 
   const load = useCallback(
-    async ({ force = false } = {}) => {
+    async ({ force = false, showRefreshing = false } = {}) => {
       if (!enabled || !key) {
         setIsInitialLoading(false);
         return null;
@@ -393,7 +405,16 @@ export function useCachedResource<T>({
       }
 
       if (!force && cached && !isExpired(cached, ttlMs)) return cached.data;
-      if (cached) setIsRefreshing(true);
+      if (cached) {
+        const networkState = await NetInfo.fetch().catch(() => null);
+        if (
+          networkState?.isConnected === false ||
+          networkState?.isInternetReachable === false
+        ) {
+          return cached.data;
+        }
+      }
+      if (cached && showRefreshing) setIsRefreshing(true);
       setError(null);
 
       try {
@@ -427,7 +448,10 @@ export function useCachedResource<T>({
     };
   }, [load, refreshSignal]);
 
-  const refresh = useCallback(() => load({ force: true }), [load]);
+  const refresh = useCallback(
+    () => load({ force: true, showRefreshing: true }),
+    [load]
+  );
   const revalidate = useCallback(() => load(), [load]);
   const hasCurrentIdentity = dataIdentity === resourceIdentity;
 

@@ -1,37 +1,33 @@
+import { AppText as Text, AppPressable as TouchableOpacity, FormField } from "../../../components/ui/AppPrimitives";
+import {
+  servicePalette as COLORS } from "../../../lib/design/semantics";
 import { useRouter } from "expo-router";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect,
+  useMemo,
+  useState } from "react";
 import {
   ActivityIndicator,
   ScrollView,
   StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+
 import Icon from "react-native-vector-icons/Feather";
 
 import { useServiceCollection } from "../../../hooks/useServiceData";
+import { getVehicleDisplayLabel } from "../../../lib/fleetSchema";
 import { useTheme } from "../../../providers/ThemeProvider";
-
-const COLORS = {
-  background: "#0D0D0D",
-  card: "#1A1A1A",
-  border: "#333333",
-  textHigh: "#FFFFFF",
-  textMid: "#E0E0E0",
-  textLow: "#888888",
-  primaryAction: "#ED1C25",
-};
+import { staticColors } from "../../../lib/design/staticColors";
+import { designTokens as t } from "../../../lib/design/tokens";
+import PageShell from "../../../components/layout/PageShell";
 
 const ACTIVITY_ICON_COLORS = {
-  services: "#2563EB",
-  repairs: "#D97706",
+  services: staticColors.hex_2563eb_6ywilf,
+  repairs: staticColors.hex_d97706_6cn8pp,
   defects: COLORS.primaryAction,
-  inspections: "#64748B",
-  mot: "#2563EB",
-  prep: "#64748B",
+  inspections: staticColors.hex_64748b_4jwrvh,
+  mot: staticColors.hex_2563eb_6ywilf,
+  prep: staticColors.hex_64748b_4jwrvh,
 };
 
 function toDateMaybe(value) {
@@ -80,10 +76,8 @@ function getActivityDate(item) {
   );
 }
 
-function getVehicleText(item) {
-  return [item?.vehicleName || item?.vehicle || item?.name, item?.registration || item?.reg]
-    .filter(Boolean)
-    .join(" · ");
+function getVehicleText(item, vehicles) {
+  return getVehicleDisplayLabel(item, vehicles);
 }
 
 function getEquipmentText(item) {
@@ -124,7 +118,7 @@ function buildActivityItems({
       typeKey: isRepair ? "repairs" : "services",
       title: serviceType,
       subtitle: record.workSummary || record.repairSummary || record.extraNotes || "Service record completed",
-      vehicle: getVehicleText(record),
+      vehicle: getVehicleText(record, vehicles),
       technician: record.signedBy || record.completedBy || "",
       date: getActivityDate(record),
       route: record.id ? `/service/service-record/${record.id}` : null,
@@ -140,7 +134,7 @@ function buildActivityItems({
       report.status === "resolved" && report.completionNote
         ? report.completionNote
         : report.description || report.category || report.notes || "Defect report logged",
-    vehicle: getVehicleText(report),
+    vehicle: getVehicleText(report, vehicles),
     technician: report.reportedBy || report.reporterName || report.driverName || "",
     date: getActivityDate(report),
     route:
@@ -165,7 +159,7 @@ function buildActivityItems({
         vehicle: getVehicleText({
           vehicleName: vehicle?.name || vehicle?.vehicleName || item?.vehicleName,
           registration: vehicle?.registration || vehicle?.reg || item?.registration,
-        }),
+        }, vehicles),
         technician: item?.completedBy || item?.resolvedBy || item?.reporter || "",
         date: item?.completedAt || item?.resolvedAt || item?.recordedAt,
         route: `/service/resolved-defects/${buildResolvedDefectRouteId("vehicles", vehicle.id, index)}`,
@@ -178,7 +172,7 @@ function buildActivityItems({
     typeKey: "prep",
     title: record.completed ? "Vehicle prep completed" : "Vehicle prep saved",
     subtitle: record.notes || "Vehicle prep record saved",
-    vehicle: getVehicleText(record),
+    vehicle: getVehicleText(record, vehicles),
     technician: record.completedBy || record.signedBy || "",
     date: getActivityDate(record),
     route: null,
@@ -190,7 +184,7 @@ function buildActivityItems({
     typeKey: "mot",
     title: "MOT pre-check",
     subtitle: record.status || record.motPrecheckStatus || record.summary || "MOT pre-check completed",
-    vehicle: getVehicleText(record),
+    vehicle: getVehicleText(record, vehicles),
     technician: record.signedBy || record.completedBy || "",
     date: getActivityDate(record),
     route: null,
@@ -226,7 +220,7 @@ function useCollectionRows(collectionName, onErrorLabel) {
 
 export default function ActivityHistoryScreen() {
   const router = useRouter();
-  const { colors, colorScheme } = useTheme();
+  const { colors } = useTheme();
   const [loading, setLoading] = useState(true);
   const [searchText, setSearchText] = useState("");
   const [typeFilter, setTypeFilter] = useState("all");
@@ -302,43 +296,13 @@ export default function ActivityHistoryScreen() {
   }, [activity, dateFilter, searchText, typeFilter]);
 
   return (
-    <SafeAreaView
-      edges={["left", "right"]}
-      style={[
-        styles.container,
-        {
-          backgroundColor:
-            colorScheme === "light" ? "#FFFFFF" : colors.background || COLORS.background,
-        },
-      ]}
-    >
-      <View
-        style={[
-          styles.header,
-          { borderBottomColor: colors.border || COLORS.border },
-        ]}
-      >
-        <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-          <Icon
-            name="chevron-left"
-            size={22}
-            color={colors.text || COLORS.textHigh}
-          />
-        </TouchableOpacity>
-        <View style={{ flex: 1 }}>
-          <Text style={[styles.pageTitle, { color: colors.text || COLORS.textHigh }]}>
-            Activity History
-          </Text>
-          <Text
-            style={[
-              styles.pageSubtitle,
-              { color: colors.textMuted || COLORS.textMid },
-            ]}
-          >
-            Recent services, repairs, defects and inspections.
-          </Text>
-        </View>
-      </View>
+    <PageShell header={{
+      variant: "compact",
+      title: "Activity History",
+      subtitle: "Recent services, repairs, defects and inspections.",
+      onBack: router.back,
+    }}>
+      
 
       {loading ? (
         <View style={styles.loadingContainer}>
@@ -356,7 +320,7 @@ export default function ActivityHistoryScreen() {
           </Text>
         </View>
       ) : (
-        <ScrollView contentContainerStyle={styles.scrollContent}>
+        <>
           <View
             style={styles.summaryCard}
           >
@@ -370,32 +334,13 @@ export default function ActivityHistoryScreen() {
           <View
             style={styles.filterCard}
           >
-            <View
-              style={[
-                styles.searchBox,
-                {
-                  backgroundColor: colors.inputBackground || "#111114",
-                  borderColor: colors.inputBorder || colors.border || COLORS.border,
-                },
-              ]}
-            >
-              <Icon
-                name="search"
-                size={16}
-                color={colors.textMuted || COLORS.textMid}
-                style={{ marginRight: 8 }}
-              />
-              <TextInput
-                style={[
-                  styles.searchInput,
-                  { color: colors.text || COLORS.textHigh },
-                ]}
-                placeholder="Search vehicle, equipment, reg, notes, technician..."
-                placeholderTextColor={colors.textMuted || COLORS.textLow}
-                value={searchText}
-                onChangeText={setSearchText}
-              />
-            </View>
+            <FormField
+              label="Search"
+              placeholder="Search vehicle, equipment, reg, notes, technician..."
+              value={searchText}
+              onChangeText={setSearchText}
+              inputProps={{ returnKeyType: "search" }}
+            />
 
             <FilterRow
               label="Type"
@@ -530,9 +475,9 @@ export default function ActivityHistoryScreen() {
               </TouchableOpacity>
             ))
           )}
-        </ScrollView>
+        </>
       )}
-    </SafeAreaView>
+    </PageShell>
   );
 }
 
@@ -577,7 +522,7 @@ function FilterRow({ label, value, options, onChange, colors }) {
                     ? COLORS.primaryAction
                     : colors.border || COLORS.border,
                   backgroundColor: active
-                    ? "rgba(237,28,37,0.18)"
+                    ? staticColors.rgba_qyx9xt
                     : colors.surface || COLORS.card,
                 },
               ]}
@@ -612,22 +557,22 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingHorizontal: t.spacing.md,
+    paddingVertical: t.spacing.sm,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
   },
   backButton: {
-    paddingRight: 10,
+    paddingRight: t.spacing.xs,
   },
   pageTitle: {
-    fontSize: 22,
+    fontSize: t.typography.titleSmall.fontSize,
     fontWeight: "800",
     color: COLORS.textHigh,
   },
   pageSubtitle: {
-    marginTop: 2,
-    fontSize: 13,
+    marginTop: t.spacing.none,
+    fontSize: t.typography.bodySmall.fontSize,
     color: COLORS.textMid,
   },
   loadingContainer: {
@@ -636,90 +581,90 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   loadingText: {
-    marginTop: 10,
-    fontSize: 13,
+    marginTop: t.spacing.xs,
+    fontSize: t.typography.bodySmall.fontSize,
     color: COLORS.textMid,
   },
   scrollContent: {
-    padding: 16,
-    paddingBottom: 36,
+    padding: t.spacing.md,
+    paddingBottom: t.spacing["2xl"],
   },
   summaryCard: {
     flexDirection: "row",
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    marginBottom: 10,
+    paddingHorizontal: t.spacing.sm,
+    paddingVertical: t.spacing.xxs,
+    marginBottom: t.spacing.xs,
   },
   summaryItem: {
     flex: 1,
-    paddingRight: 8,
+    paddingRight: t.spacing.xs,
   },
   summaryValue: {
-    fontSize: 17,
+    fontSize: t.typography.sectionTitle.fontSize,
     fontWeight: "800",
   },
   summaryLabel: {
-    fontSize: 10,
+    fontSize: t.typography.micro.fontSize,
   },
   filterCard: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    marginBottom: 12,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
+    marginBottom: t.spacing.sm,
   },
   searchBox: {
     minHeight: 38,
     flexDirection: "row",
     alignItems: "center",
     borderWidth: 1,
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    marginBottom: 7,
+    borderRadius: t.radius.sm,
+    paddingHorizontal: t.spacing.xs,
+    marginBottom: t.spacing.xs,
   },
   searchInput: {
     flex: 1,
     minHeight: 36,
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
   },
   filterBlock: {
-    marginTop: 5,
+    marginTop: t.spacing.xxs,
     flexDirection: "row",
     alignItems: "center",
   },
   filterLabel: {
     width: 42,
-    fontSize: 10,
+    fontSize: t.typography.micro.fontSize,
     fontWeight: "800",
     textTransform: "uppercase",
   },
   filterChip: {
     borderWidth: 1,
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    marginRight: 7,
+    borderRadius: t.radius.pill,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
+    marginRight: t.spacing.xs,
   },
   filterChipsContent: {
-    paddingRight: 18,
+    paddingRight: t.spacing.md,
   },
   filterChipText: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "800",
   },
   activityCard: {
     flexDirection: "row",
     position: "relative",
     borderWidth: 1,
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 10,
+    borderRadius: t.radius.md,
+    padding: t.spacing.sm,
+    marginBottom: t.spacing.xs,
   },
   iconWrap: {
     width: 34,
     height: 34,
-    borderRadius: 17,
+    borderRadius: t.radius.pill,
     alignItems: "center",
     justifyContent: "center",
-    marginRight: 10,
+    marginRight: t.spacing.xs,
     backgroundColor: COLORS.primaryAction,
   },
   activityHeaderRow: {
@@ -728,24 +673,24 @@ const styles = StyleSheet.create({
   },
   activityTitle: {
     flex: 1,
-    paddingRight: 10,
-    fontSize: 15,
+    paddingRight: t.spacing.xs,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "800",
   },
   activityDate: {
     maxWidth: 112,
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     textAlign: "right",
   },
   activityVehicle: {
-    marginTop: 3,
-    fontSize: 12,
+    marginTop: t.spacing.xxs,
+    fontSize: t.typography.metadata.fontSize,
   },
   activitySubtitle: {
-    marginTop: 6,
-    fontSize: 13,
-    lineHeight: 18,
-    paddingRight: 12,
+    marginTop: t.spacing.xxs,
+    fontSize: t.typography.bodySmall.fontSize,
+    lineHeight: t.typography.bodySmall.lineHeight,
+    paddingRight: t.spacing.sm,
   },
   cardChevron: {
     position: "absolute",
@@ -755,18 +700,18 @@ const styles = StyleSheet.create({
   emptyState: {
     alignItems: "center",
     borderWidth: 1,
-    borderRadius: 10,
-    padding: 24,
+    borderRadius: t.radius.md,
+    padding: t.spacing.xl,
   },
   emptyTitle: {
-    marginTop: 10,
-    fontSize: 16,
+    marginTop: t.spacing.xs,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "800",
   },
   emptySubtitle: {
-    marginTop: 6,
-    fontSize: 13,
-    lineHeight: 18,
+    marginTop: t.spacing.xxs,
+    fontSize: t.typography.bodySmall.fontSize,
+    lineHeight: t.typography.bodySmall.lineHeight,
     textAlign: "center",
   },
 });

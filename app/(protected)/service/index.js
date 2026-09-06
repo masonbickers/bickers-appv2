@@ -1,15 +1,15 @@
+import { AppText as Text, AppPressable as TouchableOpacity } from "../../../components/ui/AppPrimitives";
+import {
+  servicePalette as COLORS } from "../../../lib/design/semantics";
 // app/(protected)/service/index.jsx
 import { useRouter } from "expo-router";
 import { useMemo } from "react";
 import {
     ActivityIndicator,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  StyleSheet,
+  View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+
 import Icon from "react-native-vector-icons/Feather";
 
 import {
@@ -22,19 +22,9 @@ import {
 } from "../../../lib/fleetSchema";
 import { useServiceCollection } from "../../../hooks/useServiceData";
 import { useTheme } from "../../../providers/ThemeProvider";
-
-const COLORS = {
-  background: "#0D0D0D",
-  card: "#1A1A1A",
-  border: "#333333",
-  textHigh: "#FFFFFF",
-  textMid: "#E0E0E0",
-  textLow: "#888888",
-  primaryAction: "#2176FF",
-  recceAction: "#ED1C25",
-  inputBg: "#2a2a2a",
-  lightGray: "#4a4a4a",
-};
+import { staticColors } from "../../../lib/design/staticColors";
+import { designTokens as t } from "../../../lib/design/tokens";
+import PageShell from "../../../components/layout/PageShell";
 
 function toDateMaybe(value) {
   if (!value) return null;
@@ -138,15 +128,7 @@ export default function ServiceOverviewScreen() {
   }, [processed]);
 
   return (
-    <SafeAreaView
-      edges={["left", "right"]}
-      style={[
-        styles.container,
-        { backgroundColor: colors.background || COLORS.background },
-      ]}
-    >
-      {/* HEADER */}
-      <View
+    <PageShell customHeader={<View
         style={[
           styles.header,
           { borderBottomColor: colors.border || COLORS.border },
@@ -168,7 +150,9 @@ export default function ServiceOverviewScreen() {
         >
           Overview of MOT, servicing, defects and workshop activity.
         </Text>
-      </View>
+      </View>} customHeaderPlacement="fixed">
+      {/* HEADER */}
+      
 
       {loading ? (
         <View style={styles.loadingContainer}>
@@ -183,7 +167,7 @@ export default function ServiceOverviewScreen() {
           </Text>
         </View>
       ) : (
-        <ScrollView contentContainerStyle={styles.scrollContent}>
+        <>
           {/* FLEET SUMMARY CARD */}
           <View
             style={[
@@ -216,20 +200,20 @@ export default function ServiceOverviewScreen() {
                 value={summary.overdue}
                 color={
                   summary.overdue > 0
-                    ? colors.danger || "#ED1C25"
+                    ? colors.danger || staticColors.hex_ed1c25_4py4qa
                     : colors.textMuted || COLORS.textMid
                 }
                 labelColor={colors.textMuted || COLORS.textMid}
               />
             </View>
 
-            <View style={[styles.summaryRow, { marginTop: 10 }]}>
+            <View style={[styles.summaryRow, { marginTop: t.spacing.xs }]}>
               <SummaryItem
                 label="Due soon (30d)"
                 value={summary.dueSoon}
                 color={
                   summary.dueSoon > 0
-                    ? "#FF9500"
+                    ? staticColors.hex_ff9500_5c3jxm
                     : colors.textMuted || COLORS.textMid
                 }
                 labelColor={colors.textMuted || COLORS.textMid}
@@ -239,7 +223,7 @@ export default function ServiceOverviewScreen() {
                 value={summary.defects}
                 color={
                   summary.defects > 0
-                    ? colors.danger || "#ED1C25"
+                    ? colors.danger || staticColors.hex_ed1c25_4py4qa
                     : colors.textMuted || COLORS.textMid
                 }
                 labelColor={colors.textMuted || COLORS.textMid}
@@ -274,7 +258,7 @@ export default function ServiceOverviewScreen() {
             />
           </View>
 
-          <View style={[styles.quickRow, { marginTop: 10 }]}>
+          <View style={[styles.quickRow, { marginTop: t.spacing.xs }]}>
             <QuickActionCard
               icon="tool"
               title="Book Workshop"
@@ -326,8 +310,8 @@ export default function ServiceOverviewScreen() {
               const worstCode = v.worstCode;
 
               let borderAccent = COLORS.border;
-              if (worstCode === "overdue") borderAccent = "#ED1C25";
-              else if (worstCode === "due-soon") borderAccent = "#FF9500";
+              if (worstCode === "overdue") borderAccent = staticColors.hex_ed1c25_4py4qa;
+              else if (worstCode === "due-soon") borderAccent = staticColors.hex_ff9500_5c3jxm;
 
               return (
                 <TouchableOpacity
@@ -379,7 +363,7 @@ export default function ServiceOverviewScreen() {
                           name="alert-triangle"
                           size={14}
                           color={COLORS.textHigh}
-                          style={{ marginRight: 4 }}
+                          style={{ marginRight: t.spacing.xxs }}
                         />
                         <Text style={styles.defectText}>
                           {v.defects.length} defect
@@ -394,9 +378,9 @@ export default function ServiceOverviewScreen() {
           )}
 
           <View style={{ height: 40 }} />
-        </ScrollView>
+        </>
       )}
-    </SafeAreaView>
+    </PageShell>
   );
 }
 
@@ -427,20 +411,20 @@ function QuickActionCard({ icon, title, subtitle, onPress }) {
 
 function StatusPill({ label, status }) {
   const code = status.code;
-  let bg = "rgba(74, 74, 74, 0.7)";
+  let bg = staticColors.rgba_17yqod0;
   let fg = COLORS.textHigh;
 
   if (code === "overdue") {
-    bg = "rgba(255,59,48,0.22)";
-    fg = "#ED1C25";
+    bg = staticColors.rgba_mxg8sy;
+    fg = staticColors.hex_ed1c25_4py4qa;
   } else if (code === "due-soon") {
-    bg = "rgba(255,149,0,0.22)";
-    fg = "#FF9500";
+    bg = staticColors.rgba_nffwhq;
+    fg = staticColors.hex_ff9500_5c3jxm;
   } else if (code === "ok") {
-    bg = "rgba(52,199,89,0.22)";
-    fg = "#34C759";
+    bg = staticColors.rgba_dg0wlz;
+    fg = staticColors.hex_34c759_8tm7fd;
   } else if (code === "unknown") {
-    bg = "rgba(142,142,147,0.22)";
+    bg = staticColors.rgba_y8isnm;
     fg = COLORS.textMid;
   }
 
@@ -459,16 +443,16 @@ const summaryStyles = StyleSheet.create({
   item: {
     flex: 1,
     minWidth: 0,
-    paddingRight: 12,
+    paddingRight: t.spacing.sm,
   },
   value: {
-    fontSize: 20,
+    fontSize: t.typography.titleSmall.fontSize,
     fontWeight: "800",
   },
   label: {
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
     color: COLORS.textMid,
-    marginTop: 2,
+    marginTop: t.spacing.none,
   },
 });
 
@@ -477,30 +461,30 @@ const quickStyles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
     backgroundColor: COLORS.card,
-    borderRadius: 10,
-    padding: 12,
+    borderRadius: t.radius.md,
+    padding: t.spacing.sm,
     borderWidth: 1,
     borderColor: COLORS.border,
   },
   iconWrap: {
     width: 28,
     height: 28,
-    borderRadius: 14,
-    backgroundColor: "#262626",
+    borderRadius: t.radius.pill,
+    backgroundColor: staticColors.hex_262626_70t9oi,
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 8,
+    marginBottom: t.spacing.xs,
   },
   title: {
     color: COLORS.textHigh,
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     fontWeight: "700",
-    marginBottom: 2,
+    marginBottom: t.spacing.none,
     flexShrink: 1,
   },
   subtitle: {
     color: COLORS.textLow,
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     flexShrink: 1,
   },
 });
@@ -511,20 +495,20 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.background,
   },
   header: {
-    paddingHorizontal: 16,
-    paddingVertical: 14,
+    paddingHorizontal: t.spacing.md,
+    paddingVertical: t.spacing.sm,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
   },
   pageTitle: {
     color: COLORS.textHigh,
-    fontSize: 22,
+    fontSize: t.typography.titleSmall.fontSize,
     fontWeight: "800",
   },
   pageSubtitle: {
-    marginTop: 4,
+    marginTop: t.spacing.xxs,
     color: COLORS.textMid,
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
   },
   loadingContainer: {
     flex: 1,
@@ -532,116 +516,116 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   loadingText: {
-    marginTop: 10,
+    marginTop: t.spacing.xs,
     color: COLORS.textMid,
   },
   scrollContent: {
-    padding: 16,
-    paddingTop: 8,
+    padding: t.spacing.md,
+    paddingTop: t.spacing.xs,
   },
   infoCard: {
     backgroundColor: COLORS.card,
-    padding: 12,
-    borderRadius: 10,
-    marginBottom: 12,
+    padding: t.spacing.sm,
+    borderRadius: t.radius.md,
+    marginBottom: t.spacing.sm,
     borderWidth: 1,
     borderLeftWidth: 4,
     borderLeftColor: COLORS.primaryAction,
   },
   infoTextTitle: {
     color: COLORS.textHigh,
-    fontSize: 18,
+    fontSize: t.typography.sectionTitle.fontSize,
     fontWeight: "700",
-    marginBottom: 8,
+    marginBottom: t.spacing.xs,
   },
   summaryRow: {
     flexDirection: "row",
-    gap: 10,
+    gap: t.spacing.xs,
   },
   sectionDivider: {
     flexDirection: "row",
     alignItems: "center",
-    marginTop: 12,
-    marginBottom: 8,
+    marginTop: t.spacing.sm,
+    marginBottom: t.spacing.xs,
   },
   sectionTitle: {
     color: COLORS.textHigh,
-    fontSize: 16,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "700",
-    paddingRight: 10,
+    paddingRight: t.spacing.xs,
   },
   quickRow: {
     flexDirection: "row",
     alignItems: "stretch",
-    gap: 10,
+    gap: t.spacing.xs,
   },
   emptyState: {
     alignItems: "center",
     justifyContent: "center",
-    marginTop: 4,
-    paddingHorizontal: 24,
+    marginTop: t.spacing.xxs,
+    paddingHorizontal: t.spacing.xl,
   },
   emptyTitle: {
-    marginTop: 10,
-    fontSize: 16,
+    marginTop: t.spacing.xs,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "700",
   },
   emptySubtitle: {
-    marginTop: 6,
-    fontSize: 13,
+    marginTop: t.spacing.xxs,
+    fontSize: t.typography.bodySmall.fontSize,
     textAlign: "center",
   },
   vehicleCard: {
     backgroundColor: COLORS.card,
-    padding: 12,
-    borderRadius: 10,
-    marginBottom: 12,
+    padding: t.spacing.sm,
+    borderRadius: t.radius.md,
+    marginBottom: t.spacing.sm,
     borderLeftWidth: 4,
     borderLeftColor: COLORS.border,
   },
   vehicleHeaderRow: {
     flexDirection: "row",
     alignItems: "center",
-    marginBottom: 6,
+    marginBottom: t.spacing.xxs,
   },
   vehicleTitle: {
-    fontSize: 15,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "700",
     color: COLORS.textHigh,
   },
   vehicleReg: {
-    marginTop: 2,
-    fontSize: 13,
+    marginTop: t.spacing.none,
+    fontSize: t.typography.bodySmall.fontSize,
     color: COLORS.textMid,
   },
   statusRow: {
     flexDirection: "row",
     flexWrap: "wrap",
-    marginTop: 4,
+    marginTop: t.spacing.xxs,
     alignItems: "center",
   },
   statusPill: {
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    marginRight: 8,
-    marginBottom: 4,
+    borderRadius: t.radius.pill,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
+    marginRight: t.spacing.xs,
+    marginBottom: t.spacing.xxs,
   },
   statusPillText: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     fontWeight: "600",
   },
   defectPill: {
     flexDirection: "row",
     alignItems: "center",
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
+    borderRadius: t.radius.pill,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
     backgroundColor: COLORS.recceAction,
-    marginBottom: 4,
+    marginBottom: t.spacing.xxs,
   },
   defectText: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     color: COLORS.textHigh,
     fontWeight: "600",
   },

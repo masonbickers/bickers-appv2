@@ -1,8 +1,13 @@
+import { AppButton, AppModal, AppText as Text, AppPressable as TouchableOpacity, FormField as SharedFormField, TextArea } from "../../../../components/ui/AppPrimitives";
+import {
+  servicePalette as COLORS } from "../../../../lib/design/semantics";
 // app/(protected)/service/service-form/[id].jsx
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as ImagePicker from "expo-image-picker";
 import * as ImageManipulator from "expo-image-manipulator";
-import { useLocalSearchParams, useNavigation, useRouter } from "expo-router";
+import { useLocalSearchParams,
+  useNavigation,
+  useRouter } from "expo-router";
 import {
   arrayUnion,
   collection,
@@ -11,23 +16,24 @@ import {
   serverTimestamp,
   setDoc,
   updateDoc,
-} from "firebase/firestore";
-import { getDownloadURL, ref, uploadBytesResumable } from "firebase/storage";
-import { useEffect, useMemo, useRef, useState } from "react";
+  } from "firebase/firestore";
+import { getDownloadURL,
+  ref,
+  uploadBytesResumable } from "firebase/storage";
+import { useEffect,
+  useMemo,
+  useRef,
+  useState } from "react";
 import {
   ActivityIndicator,
   Alert,
   Image,
-  Modal,
   Platform,
   ScrollView,
   StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+
 import Icon from "react-native-vector-icons/Feather";
 
 import { db, storage } from "../../../../firebaseConfig";
@@ -44,19 +50,9 @@ import {
 import { useServiceCacheActions, useServiceCollectionReader } from "../../../../hooks/useServiceData";
 import { runOrQueueFirestoreMutations } from "../../../../lib/sync/firestoreQueue";
 import { useTheme } from "../../../../providers/ThemeProvider";
-
-const COLORS = {
-  background: "#0D0D0D",
-  card: "#1A1A1A",
-  border: "#333333",
-  textHigh: "#FFFFFF",
-  textMid: "#E0E0E0",
-  textLow: "#888888",
-  primaryAction: "#ED1C25",
-  recceAction: "#ED1C25",
-  inputBg: "#2a2a2a",
-  lightGray: "#4a4a4a",
-};
+import { staticColors } from "../../../../lib/design/staticColors";
+import { designTokens as t } from "../../../../lib/design/tokens";
+import PageShell from "../../../../components/layout/PageShell";
 
 const SERVICE_TYPE_OPTIONS = [
   "Full service",
@@ -67,9 +63,9 @@ const SERVICE_TYPE_OPTIONS = [
 ];
 
 const CHECK_STATUS_OPTIONS = [
-  { value: "green", label: "Green", color: "#22C55E" },
-  { value: "amber", label: "Amber", color: "#F59E0B" },
-  { value: "red", label: "Red", color: "#EF4444" },
+  { value: "green", label: "Green", color: staticColors.hex_22c55e_740if4 },
+  { value: "amber", label: "Amber", color: staticColors.hex_f59e0b_4zbh7f },
+  { value: "red", label: "Red", color: staticColors.hex_ef4444_4oizhh },
 ];
 
 const NOTE_REQUIRED_STATUSES = new Set(["amber", "red"]);
@@ -1554,53 +1550,18 @@ export default function ServiceFormScreen() {
   /* ---------------- RENDER ---------------- */
 
   return (
-    <SafeAreaView
-      edges={["left", "right"]}
-      style={[
-        styles.container,
-        { backgroundColor: colors.background || COLORS.background },
-      ]}
-    >
+    <PageShell mode="form" width="form" header={{
+      variant: "compact",
+      title: isEditingRecord ? "Edit Service Record" : "Service Job Form",
+      subtitle: isEditingRecord
+        ? "Update missed details, check status, notes and photos."
+        : "Record full service, check status and photos.",
+      onBack: () => confirmLeave(() => router.back()),
+    }}>
       {/* HEADER */}
-      <View
-        style={[
-          styles.header,
-          { borderBottomColor: colors.border || COLORS.border },
-        ]}
-      >
-        <TouchableOpacity
-          onPress={() => confirmLeave(() => router.back())}
-          style={styles.backButton}
-        >
-          <Icon
-            name="chevron-left"
-            size={22}
-            color={colors.text || COLORS.textHigh}
-          />
-        </TouchableOpacity>
-        <View style={{ flex: 1 }}>
-          <Text
-            style={[
-              styles.pageTitle,
-              { color: colors.text || COLORS.textHigh },
-            ]}
-          >
-            {isEditingRecord ? "Edit Service Record" : "Service Job Form"}
-          </Text>
-          <Text
-            style={[
-              styles.pageSubtitle,
-              { color: colors.textMuted || COLORS.textMid },
-            ]}
-          >
-            {isEditingRecord
-              ? "Update missed details, check status, notes and photos."
-              : "Record full service, check status and photos."}
-          </Text>
-        </View>
-      </View>
+      
 
-      <ScrollView contentContainerStyle={styles.scrollContent}>
+      <>
         {loadingRecord && (
           <View style={styles.centerRow}>
             <ActivityIndicator size="small" color={COLORS.primaryAction} />
@@ -1696,37 +1657,12 @@ export default function ServiceFormScreen() {
             </>
           ) : (
             <>
-              <Text
-                style={[
-                  styles.fieldLabel,
-                  { color: colors.textMuted || COLORS.textMid },
-                ]}
-              >
-                Search vehicle
-              </Text>
-              <View
-                style={[
-                  styles.searchBox,
-                  {
-                    backgroundColor: colors.inputBackground || "#FFFFFF",
-                    borderColor: colors.inputBorder || colors.border || COLORS.border,
-                  },
-                ]}
-              >
-                <Icon
-                  name="search"
-                  size={18}
-                  color={colors.textMuted || COLORS.textMid}
-                  style={{ marginRight: 6 }}
-                />
-                <TextInput
-                  style={[styles.searchInput, { color: colors.text || COLORS.textHigh }]}
+              <SharedFormField
+                  label="Search vehicle"
                   placeholder="Name, reg, manufacturer or model…"
-                  placeholderTextColor={colors.textMuted || COLORS.textLow}
                   value={vehicleSearch}
                   onChangeText={setVehicleSearch}
                 />
-              </View>
 
               {loadingVehicles ? (
                 <View style={styles.centerRow}>
@@ -1739,8 +1675,8 @@ export default function ServiceFormScreen() {
                   </Text>
                 </View>
               ) : (
-                <ScrollView
-                  style={{ maxHeight: 180, marginTop: 8 }}
+                <View
+                  style={{ maxHeight: 180, marginTop: t.spacing.xs }}
                   nestedScrollEnabled
                 >
                   {filteredVehicles.map((v) => {
@@ -1796,7 +1732,7 @@ export default function ServiceFormScreen() {
                       </TouchableOpacity>
                     );
                   })}
-                </ScrollView>
+                </View>
               )}
             </>
           )}
@@ -1828,7 +1764,7 @@ export default function ServiceFormScreen() {
               style={[
                 styles.readonlyField,
                 {
-                  backgroundColor: colors.inputBackground || "#FFFFFF",
+                  backgroundColor: colors.inputBackground || staticColors.hex_ffffff_5c2ocm,
                   borderColor: colors.inputBorder || colors.border || COLORS.border,
                 },
               ]}
@@ -1852,7 +1788,7 @@ export default function ServiceFormScreen() {
               style={[
                 styles.readonlyField,
                 {
-                  backgroundColor: colors.inputBackground || "#FFFFFF",
+                  backgroundColor: colors.inputBackground || staticColors.hex_ffffff_5c2ocm,
                   borderColor: colors.inputBorder || colors.border || COLORS.border,
                 },
               ]}
@@ -1884,7 +1820,7 @@ export default function ServiceFormScreen() {
               style={[
                 styles.dropdownHeader,
                 {
-                  backgroundColor: colors.inputBackground || "#FFFFFF",
+                  backgroundColor: colors.inputBackground || staticColors.hex_ffffff_5c2ocm,
                   borderColor: colors.inputBorder || colors.border || COLORS.border,
                 },
               ]}
@@ -1905,7 +1841,7 @@ export default function ServiceFormScreen() {
                 style={[
                   styles.dropdownList,
                   {
-                    backgroundColor: colors.inputBackground || "#FFFFFF",
+                    backgroundColor: colors.inputBackground || staticColors.hex_ffffff_5c2ocm,
                     borderColor: colors.border || COLORS.border,
                   },
                 ]}
@@ -1954,7 +1890,7 @@ export default function ServiceFormScreen() {
               style={[
                 styles.readonlyField,
                 {
-                  backgroundColor: colors.inputBackground || "#FFFFFF",
+                  backgroundColor: colors.inputBackground || staticColors.hex_ffffff_5c2ocm,
                   borderColor: colors.inputBorder || colors.border || COLORS.border,
                 },
               ]}
@@ -2103,7 +2039,7 @@ export default function ServiceFormScreen() {
             value={signedBy}
             onChangeText={setSignedBy}
           />
-          <View style={{ marginTop: 6 }}>
+          <View style={{ marginTop: t.spacing.xxs }}>
             <Text style={[styles.signatureInfo, { color: colors.textMuted || COLORS.textMid }]}>
               By entering your name you confirm the checks above have been
               carried out to the best of your ability.
@@ -2150,7 +2086,7 @@ export default function ServiceFormScreen() {
                 name="image"
                 size={18}
                 color={COLORS.textHigh}
-                style={{ marginRight: 6 }}
+                style={{ marginRight: t.spacing.xxs }}
               />
               <Text style={styles.photoAddText}>Add from library</Text>
             </TouchableOpacity>
@@ -2160,7 +2096,7 @@ export default function ServiceFormScreen() {
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
-              style={{ marginTop: 10 }}
+              style={{ marginTop: t.spacing.xs }}
             >
               {photos.map((p) => (
                 <View key={p.uri} style={styles.photoThumbWrapper}>
@@ -2201,7 +2137,7 @@ export default function ServiceFormScreen() {
                 name="save"
                 size={18}
                 color={COLORS.textHigh}
-                style={{ marginRight: 6 }}
+                style={{ marginRight: t.spacing.xxs }}
               />
               <Text style={styles.submitText}>
                 {isEditingRecord ? "Save changes" : "Save service & update vehicle"}
@@ -2220,61 +2156,37 @@ export default function ServiceFormScreen() {
             name="trash-2"
             size={18}
             color={COLORS.textHigh}
-            style={{ marginRight: 6 }}
+            style={{ marginRight: t.spacing.xxs }}
           />
           <Text style={styles.deleteText}>Delete service form</Text>
         </TouchableOpacity>
 
         <View style={{ height: 40 }} />
-      </ScrollView>
+      </>
 
       {/* PER-CHECK PHOTO PICKER MODAL */}
-      <Modal
+      <AppModal
         visible={photoPickerVisible}
-        transparent
-        animationType="fade"
+        title="Add photo for check"
         onRequestClose={() => {
           setPhotoPickerVisible(false);
           setPhotoPickerLabel(null);
         }}
+        presentation="adaptive"
+        actions={
+          <AppButton
+            label="Cancel"
+            variant="secondary"
+            onPress={() => {
+              setPhotoPickerVisible(false);
+              setPhotoPickerLabel(null);
+            }}
+          />
+        }
       >
-        <TouchableOpacity
-          style={styles.modalBackdrop}
-          activeOpacity={1}
-          onPress={() => {
-            setPhotoPickerVisible(false);
-            setPhotoPickerLabel(null);
-          }}
-        >
-          <View style={styles.modalSheet}>
-            <Text style={styles.modalTitle}>Add photo for check</Text>
-            <TouchableOpacity
-              style={styles.modalOption}
-              onPress={handleAddCheckPhotoFromLibrary}
-            >
-              <Icon
-                name="image"
-                size={18}
-                color={COLORS.textHigh}
-                style={{ marginRight: 8 }}
-              />
-              <Text style={styles.modalOptionText}>Add from library</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.modalOption, { borderTopWidth: 0, marginTop: 4 }]}
-              onPress={() => {
-                setPhotoPickerVisible(false);
-                setPhotoPickerLabel(null);
-              }}
-            >
-              <Text style={[styles.modalOptionText, { color: COLORS.textMid }]}>
-                Cancel
-              </Text>
-            </TouchableOpacity>
-          </View>
-        </TouchableOpacity>
-      </Modal>
-    </SafeAreaView>
+        <AppButton label="Add from library" icon="image" variant="secondary" onPress={handleAddCheckPhotoFromLibrary} />
+      </AppModal>
+    </PageShell>
   );
 }
 
@@ -2288,35 +2200,19 @@ function FormField({
   multiline = false,
   keyboardType = "default",
 }) {
-  const { colors } = useTheme();
-
   return (
     <View style={styles.fieldGroup}>
-      <Text
-        style={[
-          styles.fieldLabel,
-          { color: colors.textMuted || COLORS.textMid },
-        ]}
-      >
-        {label}
-      </Text>
-      <TextInput
-        style={[
-          styles.input,
-          {
-            backgroundColor: colors.inputBackground || "#FFFFFF",
-            borderColor: colors.inputBorder || colors.border || COLORS.border,
-            color: colors.text || COLORS.textHigh,
-          },
-          multiline && styles.inputMultiline,
-        ]}
-        placeholder={placeholder}
-        placeholderTextColor={colors.textMuted || COLORS.textLow}
-        value={value}
-        onChangeText={onChangeText}
-        multiline={multiline}
-        keyboardType={keyboardType}
-      />
+      {multiline ? (
+        <TextArea label={label} placeholder={placeholder} value={value} onChangeText={onChangeText} />
+      ) : (
+        <SharedFormField
+          label={label}
+          placeholder={placeholder}
+          value={value}
+          onChangeText={onChangeText}
+          inputProps={{ keyboardType }}
+        />
+      )}
     </View>
   );
 }
@@ -2367,20 +2263,11 @@ function WheelFootprintSection({ wheelInspection, updateWheelInspection }) {
           status={getBrakeWearStatus(item.brakeWear)}
           onChangeText={(text) => updateWheelInspection(wheel.key, "brakeWear", text)}
         />
-        <TextInput
-          style={[
-            styles.wheelNoteInput,
-            {
-              backgroundColor: colors.inputBackground || COLORS.inputBg,
-              borderColor: colors.inputBorder || COLORS.lightGray,
-              color: colors.text || COLORS.textHigh,
-            },
-          ]}
+        <TextArea
+          label={`${wheel.label} wheel note`}
           value={item.note}
           onChangeText={(text) => updateWheelInspection(wheel.key, "note", text)}
           placeholder="Wheel note..."
-          placeholderTextColor={colors.textMuted || COLORS.textLow}
-          multiline
         />
       </View>
     );
@@ -2439,40 +2326,18 @@ function WheelFootprintSection({ wheelInspection, updateWheelInspection }) {
 }
 
 function WheelMetricInput({ label, suffix, value, status, onChangeText }) {
-  const { colors } = useTheme();
   const statusOption = getCheckStatusOption(status);
 
   return (
     <View style={styles.wheelMetricRow}>
-      <View style={styles.wheelMetricHeader}>
-        <Text style={[styles.wheelMetricLabel, { color: colors.textMuted || COLORS.textLow }]}>
-          {label}
-        </Text>
-        {statusOption ? (
-          <View style={[styles.wheelStatusDot, { backgroundColor: statusOption.color }]} />
-        ) : null}
-      </View>
-      <View
-        style={[
-          styles.wheelMetricInputWrap,
-          {
-            backgroundColor: colors.inputBackground || COLORS.inputBg,
-            borderColor: statusOption?.color || colors.inputBorder || COLORS.lightGray,
-          },
-        ]}
-      >
-        <TextInput
-          style={[styles.wheelMetricInput, { color: colors.text || COLORS.textHigh }]}
+        <SharedFormField
+          label={label}
+          hint={statusOption ? `${suffix} · ${statusOption.label}` : suffix}
           value={value}
           onChangeText={onChangeText}
-          keyboardType="decimal-pad"
           placeholder="--"
-          placeholderTextColor={colors.textMuted || COLORS.textLow}
+          inputProps={{ keyboardType: "decimal-pad" }}
         />
-        <Text style={[styles.wheelMetricSuffix, { color: colors.textMuted || COLORS.textLow }]}>
-          {suffix}
-        </Text>
-      </View>
     </View>
   );
 }
@@ -2507,7 +2372,7 @@ function MonitorReportSection({ monitorItems }) {
           styles.card,
           {
             backgroundColor: colors.surfaceAlt || COLORS.card,
-            borderColor: "#F59E0B",
+            borderColor: staticColors.hex_f59e0b_4zbh7f,
           },
         ]}
       >
@@ -2609,7 +2474,7 @@ function RedDefectReportSection({ redDefects, actions, updateAction }) {
                         {
                           borderColor: active ? COLORS.primaryAction : COLORS.lightGray,
                           backgroundColor: active
-                            ? "rgba(237,28,37,0.16)"
+                            ? staticColors.rgba_qyx9wf
                             : "transparent",
                         },
                       ]}
@@ -2819,23 +2684,12 @@ function ChecklistRow({
       </View>
 
       {/* Notes for this check */}
-      <TextInput
-        style={[
-          styles.checkNoteInput,
-          noteMissing && styles.checkNoteInputRequired,
-          {
-            backgroundColor: colors.inputBackground || COLORS.inputBg,
-            borderColor: noteMissing
-              ? selectedStatusOption?.color || COLORS.primaryAction
-              : colors.inputBorder || COLORS.lightGray,
-            color: colors.text || COLORS.textHigh,
-          },
-        ]}
+      <TextArea
+        label="Check notes"
+        error={noteMissing ? "Notes are required for this status." : undefined}
         placeholder={requiresNote ? "Notes required for amber/red..." : "Notes for this check..."}
-        placeholderTextColor={colors.textMuted || COLORS.textLow}
         value={note}
         onChangeText={onChangeNote}
-        multiline
       />
 
       {/* Photos for this check */}
@@ -2843,7 +2697,7 @@ function ChecklistRow({
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
-          style={{ marginTop: 6 }}
+          style={{ marginTop: t.spacing.xxs }}
         >
           {photos.map((p) => (
             <View key={p.uri} style={styles.photoThumbWrapper}>
@@ -2873,74 +2727,74 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingHorizontal: t.spacing.md,
+    paddingVertical: t.spacing.sm,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
   },
   backButton: {
-    paddingRight: 10,
+    paddingRight: t.spacing.xs,
   },
   pageTitle: {
-    fontSize: 22,
+    fontSize: t.typography.titleSmall.fontSize,
     fontWeight: "800",
     color: COLORS.textHigh,
   },
   pageSubtitle: {
-    marginTop: 2,
-    fontSize: 13,
+    marginTop: t.spacing.none,
+    fontSize: t.typography.bodySmall.fontSize,
     color: COLORS.textMid,
   },
   scrollContent: {
-    padding: 16,
-    paddingTop: 8,
+    padding: t.spacing.md,
+    paddingTop: t.spacing.xs,
     paddingBottom: 110,
   },
   sectionHeaderRow: {
-    marginTop: 4,
-    marginBottom: 6,
+    marginTop: t.spacing.xxs,
+    marginBottom: t.spacing.xxs,
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "flex-end",
   },
   sectionTitle: {
-    fontSize: 16,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "700",
     color: COLORS.textHigh,
   },
   sectionHint: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textMid,
   },
   card: {
     backgroundColor: COLORS.card,
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 10,
+    borderRadius: t.radius.md,
+    padding: t.spacing.sm,
+    marginBottom: t.spacing.xs,
     borderWidth: 1,
     borderColor: COLORS.border,
   },
   flatSectionContent: {
-    marginBottom: 10,
+    marginBottom: t.spacing.xs,
   },
   fieldGroup: {
-    marginBottom: 12,
+    marginBottom: t.spacing.sm,
   },
   fieldLabel: {
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
     fontWeight: "600",
     color: COLORS.textMid,
-    marginBottom: 4,
+    marginBottom: t.spacing.xxs,
   },
   input: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 8,
+    backgroundColor: staticColors.hex_ffffff_5c2ocm,
+    borderRadius: t.radius.sm,
     borderWidth: 1,
     borderColor: COLORS.border,
     color: COLORS.textHigh,
-    paddingHorizontal: 10,
-    paddingVertical: 10,
-    fontSize: 15,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xs,
+    fontSize: t.typography.bodyLarge.fontSize,
   },
   inputMultiline: {
     minHeight: 110,
@@ -2949,92 +2803,92 @@ const styles = StyleSheet.create({
   searchBox: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#FFFFFF",
-    borderRadius: 8,
+    backgroundColor: staticColors.hex_ffffff_5c2ocm,
+    borderRadius: t.radius.sm,
     borderWidth: 1,
     borderColor: COLORS.border,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xs,
   },
   searchInput: {
     flex: 1,
     color: COLORS.textHigh,
-    fontSize: 15,
+    fontSize: t.typography.bodyLarge.fontSize,
   },
   centerRow: {
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 10,
+    paddingVertical: t.spacing.xs,
   },
   emptyText: {
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
     color: COLORS.textMid,
   },
   vehicleRow: {
     flexDirection: "row",
     alignItems: "center",
-    paddingVertical: 8,
+    paddingVertical: t.spacing.xs,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
   },
   vehicleRowActive: {
-    backgroundColor: "rgba(255,59,48,0.12)",
+    backgroundColor: staticColors.rgba_mxgb69,
   },
   vehicleName: {
-    fontSize: 15,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "600",
     color: COLORS.textHigh,
   },
   vehicleReg: {
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
     color: COLORS.textMid,
   },
   vehicleMetaRow: {
-    marginTop: 8,
+    marginTop: t.spacing.xs,
   },
   vehicleMeta: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textMid,
   },
   selectedVehicleRow: {
     flexDirection: "row",
     alignItems: "center",
-    paddingVertical: 4,
+    paddingVertical: t.spacing.xxs,
   },
   readonlyField: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 8,
+    backgroundColor: staticColors.hex_ffffff_5c2ocm,
+    borderRadius: t.radius.sm,
     borderWidth: 1,
     borderColor: COLORS.border,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xs,
   },
   readonlyText: {
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     color: COLORS.textHigh,
   },
   vehicleFootprint: {
     flexDirection: "row",
-    gap: 14,
+    gap: t.spacing.sm,
     alignItems: "stretch",
     justifyContent: "space-between",
   },
   wheelColumn: {
     flex: 1,
-    gap: 14,
+    gap: t.spacing.sm,
     minWidth: 0,
   },
   vehicleBody: {
     width: 74,
     minHeight: 520,
     alignSelf: "center",
-    borderRadius: 28,
+    borderRadius: t.radius.pill,
     borderWidth: 1,
     borderColor: COLORS.lightGray,
-    backgroundColor: "rgba(255,255,255,0.03)",
+    backgroundColor: staticColors.rgba_5ns8wh,
     alignItems: "center",
     justifyContent: "space-between",
-    paddingVertical: 18,
+    paddingVertical: t.spacing.md,
     ...Platform.select({
       ios: { display: "none" },
       android: { display: "none" },
@@ -3042,19 +2896,19 @@ const styles = StyleSheet.create({
   },
   vehicleBodyText: {
     color: COLORS.textLow,
-    fontSize: 10,
+    fontSize: t.typography.micro.fontSize,
     fontWeight: "800",
   },
   vehicleBodyLine: {
     width: 1,
     flex: 1,
-    marginVertical: 12,
+    marginVertical: t.spacing.sm,
     backgroundColor: COLORS.border,
   },
   wheelCard: {
-    borderRadius: 12,
+    borderRadius: t.radius.md,
     borderWidth: 1,
-    padding: 10,
+    padding: t.spacing.xs,
     ...Platform.select({
       ios: { minWidth: "100%" },
       android: { minWidth: "100%" },
@@ -3063,153 +2917,153 @@ const styles = StyleSheet.create({
   wheelCardHeader: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 7,
-    marginBottom: 8,
+    gap: t.spacing.xs,
+    marginBottom: t.spacing.xs,
   },
   wheelBadge: {
     width: 28,
     height: 28,
-    borderRadius: 14,
+    borderRadius: t.radius.pill,
     backgroundColor: COLORS.primaryAction,
     alignItems: "center",
     justifyContent: "center",
   },
   wheelBadgeText: {
     color: COLORS.textHigh,
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     fontWeight: "900",
   },
   wheelTitle: {
     flex: 1,
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "800",
   },
   wheelMetricRow: {
-    marginTop: 7,
+    marginTop: t.spacing.xs,
   },
   wheelMetricHeader: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: 3,
+    marginBottom: t.spacing.xxs,
   },
   wheelMetricLabel: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     fontWeight: "700",
   },
   wheelStatusDot: {
     width: 9,
     height: 9,
-    borderRadius: 5,
+    borderRadius: t.radius.sm,
   },
   wheelMetricInputWrap: {
     minHeight: 34,
-    borderRadius: 8,
+    borderRadius: t.radius.sm,
     borderWidth: 1,
-    paddingHorizontal: 8,
+    paddingHorizontal: t.spacing.xs,
     flexDirection: "row",
     alignItems: "center",
   },
   wheelMetricInput: {
     flex: 1,
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     fontWeight: "800",
-    paddingVertical: 6,
+    paddingVertical: t.spacing.xxs,
     minWidth: 0,
   },
   wheelMetricSuffix: {
-    marginLeft: 4,
-    fontSize: 11,
+    marginLeft: t.spacing.xxs,
+    fontSize: t.typography.caption.fontSize,
     fontWeight: "700",
   },
   wheelNoteInput: {
-    marginTop: 8,
+    marginTop: t.spacing.xs,
     minHeight: 48,
-    borderRadius: 8,
+    borderRadius: t.radius.sm,
     borderWidth: 1,
-    paddingHorizontal: 8,
-    paddingVertical: 7,
-    fontSize: 13,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xs,
+    fontSize: t.typography.bodySmall.fontSize,
     textAlignVertical: "top",
   },
   redDefectRow: {
-    paddingVertical: 10,
+    paddingVertical: t.spacing.xs,
     borderBottomWidth: 1,
-    borderBottomColor: "rgba(255,255,255,0.06)",
+    borderBottomColor: staticColors.rgba_5ns92s,
   },
   redDefectHeader: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 9,
+    gap: t.spacing.xs,
   },
   redDefectIcon: {
     width: 28,
     height: 28,
-    borderRadius: 14,
+    borderRadius: t.radius.pill,
     backgroundColor: COLORS.primaryAction,
     alignItems: "center",
     justifyContent: "center",
   },
   redDefectTitle: {
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
     fontWeight: "900",
   },
   redDefectMeta: {
-    marginTop: 2,
-    fontSize: 12,
+    marginTop: t.spacing.none,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "600",
   },
   defectActionRow: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 8,
-    marginTop: 10,
+    gap: t.spacing.xs,
+    marginTop: t.spacing.xs,
   },
   defectActionPill: {
     minHeight: 34,
-    borderRadius: 999,
+    borderRadius: t.radius.pill,
     borderWidth: 1.5,
-    paddingHorizontal: 11,
+    paddingHorizontal: t.spacing.sm,
     alignItems: "center",
     justifyContent: "center",
   },
   defectActionText: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "800",
   },
   monitorReportRow: {
     flexDirection: "row",
     alignItems: "flex-start",
-    gap: 10,
-    paddingVertical: 9,
+    gap: t.spacing.xs,
+    paddingVertical: t.spacing.xs,
     borderBottomWidth: 1,
-    borderBottomColor: "rgba(255,255,255,0.06)",
+    borderBottomColor: staticColors.rgba_5ns92s,
   },
   monitorReportBadge: {
     width: 28,
     height: 28,
-    borderRadius: 14,
-    backgroundColor: "#F59E0B",
+    borderRadius: t.radius.pill,
+    backgroundColor: staticColors.hex_f59e0b_4zbh7f,
     alignItems: "center",
     justifyContent: "center",
   },
   monitorReportBadgeText: {
     color: COLORS.textHigh,
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "900",
   },
   monitorReportTitle: {
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
     fontWeight: "900",
   },
   monitorReportDetails: {
-    marginTop: 2,
-    fontSize: 12,
+    marginTop: t.spacing.none,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "600",
-    lineHeight: 17,
+    lineHeight: t.typography.metadata.lineHeight,
   },
   checkRowWrapper: {
-    paddingVertical: 10,
+    paddingVertical: t.spacing.xs,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
   },
@@ -3217,68 +3071,68 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     flex: 1,
-    paddingRight: 6,
-    marginBottom: 6,
+    paddingRight: t.spacing.xxs,
+    marginBottom: t.spacing.xxs,
   },
   checkIconWrap: {
-    paddingRight: 8,
+    paddingRight: t.spacing.xs,
   },
   checkIconEmpty: {
     width: 30,
     height: 30,
-    borderRadius: 15,
+    borderRadius: t.radius.pill,
     borderWidth: 2.5,
     borderColor: COLORS.textMid,
   },
   checkIconFilled: {
     width: 30,
     height: 30,
-    borderRadius: 15,
+    borderRadius: t.radius.pill,
     backgroundColor: COLORS.primaryAction,
     alignItems: "center",
     justifyContent: "center",
   },
   checkLabel: {
     flex: 1,
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     color: COLORS.textLow,
   },
   ratingRow: {
     flexDirection: "row",
     alignItems: "center",
     flexWrap: "wrap",
-    gap: 6,
-    marginBottom: 6,
+    gap: t.spacing.xxs,
+    marginBottom: t.spacing.xxs,
   },
   conditionPill: {
     minHeight: 32,
-    borderRadius: 999,
+    borderRadius: t.radius.pill,
     borderWidth: 2,
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 10,
-    paddingVertical: 5,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
   },
   conditionText: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "800",
   },
   conditionTextActive: {
     color: COLORS.textHigh,
   },
   naPill: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 999,
+    paddingHorizontal: t.spacing.sm,
+    paddingVertical: t.spacing.xxs,
+    borderRadius: t.radius.pill,
     borderWidth: 2,
     borderColor: COLORS.lightGray,
   },
   naPillActive: {
-    backgroundColor: "rgba(142,142,147,0.2)",
+    backgroundColor: staticColors.rgba_1tlzw3k,
     borderColor: COLORS.textMid,
   },
   naText: {
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
     color: COLORS.textLow,
   },
   naTextActive: {
@@ -3286,24 +3140,24 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
   photoIconButton: {
-    marginLeft: 6,
+    marginLeft: t.spacing.xxs,
     width: 30,
     height: 30,
-    borderRadius: 15,
+    borderRadius: t.radius.pill,
     borderWidth: 1.5,
     borderColor: COLORS.lightGray,
     alignItems: "center",
     justifyContent: "center",
   },
   checkNoteInput: {
-    marginTop: 4,
-    backgroundColor: "#FFFFFF",
-    borderRadius: 8,
+    marginTop: t.spacing.xxs,
+    backgroundColor: staticColors.hex_ffffff_5c2ocm,
+    borderRadius: t.radius.sm,
     borderWidth: 1,
     borderColor: COLORS.border,
-    paddingHorizontal: 8,
-    paddingVertical: 8,
-    fontSize: 14,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xs,
+    fontSize: t.typography.body.fontSize,
     color: COLORS.textHigh,
     textAlignVertical: "top",
     minHeight: 48,
@@ -3314,66 +3168,66 @@ const styles = StyleSheet.create({
   dropdownHeader: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#FFFFFF",
-    borderRadius: 8,
+    backgroundColor: staticColors.hex_ffffff_5c2ocm,
+    borderRadius: t.radius.sm,
     borderWidth: 1,
     borderColor: COLORS.border,
-    paddingHorizontal: 10,
-    paddingVertical: 10,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xs,
     justifyContent: "space-between",
   },
   dropdownText: {
     color: COLORS.textHigh,
-    fontSize: 15,
+    fontSize: t.typography.bodyLarge.fontSize,
     flex: 1,
-    marginRight: 8,
+    marginRight: t.spacing.xs,
   },
   dropdownList: {
-    marginTop: 6,
-    borderRadius: 8,
+    marginTop: t.spacing.xxs,
+    borderRadius: t.radius.sm,
     borderWidth: 1,
     borderColor: COLORS.border,
-    backgroundColor: "#FFFFFF",
+    backgroundColor: staticColors.hex_ffffff_5c2ocm,
     overflow: "hidden",
   },
   dropdownItem: {
-    paddingHorizontal: 10,
-    paddingVertical: 10,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xs,
   },
   dropdownItemActive: {
-    backgroundColor: "rgba(255,59,48,0.12)",
+    backgroundColor: staticColors.rgba_mxgb69,
   },
   dropdownItemText: {
-    fontSize: 15,
+    fontSize: t.typography.bodyLarge.fontSize,
     color: COLORS.textHigh,
   },
   photoButtonsRow: {
     flexDirection: "row",
-    gap: 8,
+    gap: t.spacing.xs,
   },
   photoButton: {
     flex: 1,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: 8,
+    borderRadius: t.radius.sm,
     borderWidth: 1,
     borderColor: COLORS.border,
-    paddingVertical: 10,
-    backgroundColor: "#FFFFFF",
+    paddingVertical: t.spacing.xs,
+    backgroundColor: staticColors.hex_ffffff_5c2ocm,
   },
   photoAddText: {
     color: COLORS.textHigh,
     fontWeight: "600",
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
   },
   photoThumbWrapper: {
-    marginRight: 10,
+    marginRight: t.spacing.xs,
   },
   photoThumb: {
     width: 70,
     height: 70,
-    borderRadius: 8,
+    borderRadius: t.radius.sm,
   },
   photoRemoveBadge: {
     position: "absolute",
@@ -3381,20 +3235,20 @@ const styles = StyleSheet.create({
     right: -4,
     width: 18,
     height: 18,
-    borderRadius: 9,
-    backgroundColor: "rgba(0,0,0,0.75)",
+    borderRadius: t.radius.pill,
+    backgroundColor: staticColors.rgba_18a7ub6,
     alignItems: "center",
     justifyContent: "center",
   },
   signatureInfo: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     color: COLORS.textMid,
   },
   submitButton: {
-    marginTop: 10,
+    marginTop: t.spacing.xs,
     backgroundColor: COLORS.primaryAction,
-    borderRadius: 10,
-    paddingVertical: 16,
+    borderRadius: t.radius.md,
+    paddingVertical: t.spacing.md,
     alignItems: "center",
     flexDirection: "row",
     justifyContent: "center",
@@ -3402,54 +3256,54 @@ const styles = StyleSheet.create({
   submitText: {
     color: COLORS.textHigh,
     fontWeight: "700",
-    fontSize: 15,
+    fontSize: t.typography.bodyLarge.fontSize,
   },
   deleteButton: {
-    marginTop: 10,
-    borderRadius: 10,
-    paddingVertical: 12,
+    marginTop: t.spacing.xs,
+    borderRadius: t.radius.md,
+    paddingVertical: t.spacing.sm,
     alignItems: "center",
     flexDirection: "row",
     justifyContent: "center",
     borderWidth: 1,
     borderColor: COLORS.primaryAction,
-    backgroundColor: "rgba(255,59,48,0.08)",
+    backgroundColor: staticColors.rgba_mxga8q,
   },
   deleteText: {
     color: COLORS.textHigh,
     fontWeight: "600",
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
   },
   modalBackdrop: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.5)",
+    backgroundColor: staticColors.rgba_11xlylh,
     justifyContent: "flex-end",
   },
   modalSheet: {
-    backgroundColor: "#111111",
-    paddingHorizontal: 16,
-    paddingTop: 14,
-    paddingBottom: 24,
+    backgroundColor: staticColors.hex_111111_a7aqp2,
+    paddingHorizontal: t.spacing.md,
+    paddingTop: t.spacing.sm,
+    paddingBottom: t.spacing.xl,
     borderTopLeftRadius: 16,
     borderTopRightRadius: 16,
     borderTopWidth: 1,
     borderColor: COLORS.border,
   },
   modalTitle: {
-    fontSize: 15,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "700",
     color: COLORS.textHigh,
-    marginBottom: 10,
+    marginBottom: t.spacing.xs,
   },
   modalOption: {
     flexDirection: "row",
     alignItems: "center",
-    paddingVertical: 10,
+    paddingVertical: t.spacing.xs,
     borderTopWidth: 1,
     borderTopColor: COLORS.border,
   },
   modalOptionText: {
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     color: COLORS.textHigh,
   },
 });

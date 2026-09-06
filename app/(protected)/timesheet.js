@@ -1,20 +1,20 @@
+import { AppButton, AppModal, AppText as Text, AppPressable as TouchableOpacity, SelectField } from "../../components/ui/AppPrimitives";
 // app/(protected)/timesheet-overview.js
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useRouter } from "expo-router";
-import { doc, updateDoc } from "firebase/firestore";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  useRouter } from "expo-router";
+import { doc,
+  updateDoc } from "firebase/firestore";
+import { useCallback,
+  useEffect,
+  useMemo,
+  useState } from "react";
 import {
   Alert,
-  FlatList,
-  Modal,
-  RefreshControl,
-  ScrollView,
   StyleSheet,
-  Text,
-  TouchableOpacity,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+
 import Icon from "react-native-vector-icons/Feather";
 
 import { AsyncContentState, EmptyState } from "../../components/AsyncState";
@@ -24,10 +24,13 @@ import {
   useEmployeeTimesheets,
   useTimesheetQueries,
 } from "../../hooks/useOperationalData";
-import { useResponsiveLayout } from "../../hooks/useResponsiveLayout";
 import { formatDateDDMMYYYY } from "../../lib/dateFormat";
 import { useAuth } from "../../providers/AuthProvider";
-import { useTheme } from "../../providers/ThemeProvider"; // 👈 theme
+import { useTheme } from "../../providers/ThemeProvider";
+import { staticColors } from "../../lib/design/staticColors";
+import { withAlpha } from "../../lib/design/color";
+import { designTokens as t } from "../../lib/design/tokens";
+import PageShell from "../../components/layout/PageShell"; // 👈 theme
 
 /* helpers */
 const DEFAULT_YARD_START = "08:00";
@@ -97,16 +100,6 @@ function isTimesheetApproved(ts) {
   );
 }
 
-function withAlpha(hex, alpha) {
-  const safeAlpha = Math.max(0, Math.min(1, Number(alpha) || 0));
-  const raw = String(hex || "").replace("#", "");
-  if (!/^[0-9a-fA-F]{6}$/.test(raw)) return `rgba(255,255,255,${safeAlpha})`;
-  const r = parseInt(raw.slice(0, 2), 16);
-  const g = parseInt(raw.slice(2, 4), 16);
-  const b = parseInt(raw.slice(4, 6), 16);
-  return `rgba(${r},${g},${b},${safeAlpha})`;
-}
-
 function timesheetWeekKey(timesheet) {
   return timesheet?.weekStart || timesheet?.weekISO || "";
 }
@@ -115,7 +108,6 @@ export default function TimesheetOverview() {
   const router = useRouter();
   const { employee, isAuthed, loading, reloadSession } = useAuth();
   const { colors } = useTheme(); // 🎨
-  const responsive = useResponsiveLayout();
   const employeesResource = useEmployees();
   const timesheetsResource = useEmployeeTimesheets();
   const queriesResource = useTimesheetQueries();
@@ -453,22 +445,22 @@ export default function TimesheetOverview() {
 
     if (status === "approved") {
       bgStyle = styles.pillApproved;
-      textColor = "#022c22";
+      textColor = staticColors.hex_022c22_8bgm6t;
       iconName = "check-circle";
       label = "Approved";
     } else if (status === "submitted") {
       bgStyle = styles.pillSubmitted;
-      textColor = "#052e16";
+      textColor = staticColors.hex_052e16_89ayk3;
       iconName = "check-circle";
       label = "Submitted";
     } else if (status === "draft") {
       bgStyle = styles.pillDraft;
-      textColor = "#1e293b";
+      textColor = staticColors.hex_1e293b_95wh3c;
       iconName = "edit-3";
       label = "Draft saved";
     } else {
       bgStyle = styles.pillNotFilled;
-      textColor = "#7c2d12";
+      textColor = staticColors.hex_7c2d12_7wqog7;
       iconName = "alert-circle";
       label = "Not filled";
     }
@@ -479,7 +471,7 @@ export default function TimesheetOverview() {
           name={iconName}
           size={14}
           color={textColor}
-          style={{ marginRight: 6 }}
+          style={{ marginRight: t.spacing.xxs }}
         />
         <Text style={[styles.pillText, { color: textColor }]}>{label}</Text>
       </View>
@@ -513,7 +505,7 @@ export default function TimesheetOverview() {
 
         {hasQuery && (
           <View style={styles.queryRow}>
-            <Icon name="alert-circle" size={13} color="#f97316" />
+            <Icon name="alert-circle" size={13} color={staticColors.hex_f97316_oh807u} />
             <Text style={styles.queryRowText}>Manager query pending</Text>
           </View>
         )}
@@ -524,7 +516,7 @@ export default function TimesheetOverview() {
           name="chevron-right"
           size={20}
           color={colors.textMuted}
-          style={{ marginTop: 6 }}
+          style={{ marginTop: t.spacing.xxs }}
         />
       </View>
     </TouchableOpacity>
@@ -534,41 +526,13 @@ export default function TimesheetOverview() {
   if (loading || !isAuthed) return null;
 
   return (
-    <SafeAreaView
-      edges={["top", "left", "right"]}
-      style={[styles.container, { backgroundColor: colors.background }]}
-    >
-      {/* Hero */}
-      <View style={styles.heroCard}>
-        <View style={styles.heroContent}>
-          <View style={styles.heroTopRow}>
-            <TouchableOpacity
-              onPress={() => router.back()}
-              accessibilityRole="button"
-              accessibilityLabel="Go back"
-              activeOpacity={0.85}
-              style={[
-                styles.backBtn,
-                {
-                  backgroundColor: withAlpha(colors.surfaceAlt, 0.75),
-                  borderColor: withAlpha(colors.border, 0.75),
-                },
-              ]}
-            >
-              <Icon name="arrow-left" size={15} color={colors.text} />
-            </TouchableOpacity>
-
-            <View style={styles.heroTitleWrap}>
-              <Text style={[styles.heroEyebrow, { color: colors.textMuted }]}>
-                Payroll
-              </Text>
-              <Text style={[styles.heroTitle, { color: colors.text }]}>Timesheets</Text>
-            </View>
-
-            <View style={styles.heroSpacer} />
-          </View>
-
-          <View style={styles.heroMetaRow}>
+    <PageShell
+      header={{
+        variant: "compact",
+        eyebrow: "Payroll",
+        title: "Timesheets",
+        onBack: router.back,
+        metadata: <View style={styles.heroMetaRow}>
             <View
               style={[
                 styles.heroMetaChip,
@@ -598,9 +562,11 @@ export default function TimesheetOverview() {
                 Submitted: {submittedSheets.length}
               </Text>
             </View>
-          </View>
-        </View>
-      </View>
+          </View>,
+      }}
+      refresh={{ refreshing, onRefresh }}
+    >
+      
 
       <View
         style={[
@@ -639,7 +605,7 @@ export default function TimesheetOverview() {
         </View>
 
         {settingsBusy ? (
-          <View style={{ marginTop: 8 }}>
+          <View style={{ marginTop: t.spacing.xs }}>
             <ShimmerLine />
           </View>
         ) : (
@@ -654,41 +620,26 @@ export default function TimesheetOverview() {
         )}
       </View>
 
-      <Modal
+      <AppModal
         visible={settingsOpen}
-        transparent
-        animationType="fade"
+        title="Autofill Settings"
         onRequestClose={() => setSettingsOpen(false)}
-        accessibilityViewIsModal
-        onAccessibilityEscape={() => setSettingsOpen(false)}
+        busy={settingsSaving}
+        actions={
+          <>
+            <AppButton label="Cancel" variant="secondary" onPress={() => setSettingsOpen(false)} disabled={settingsSaving} />
+            <AppButton
+              label={settingsSaving ? "Saving..." : "Save"}
+              loading={settingsSaving}
+              onPress={async () => {
+                const ok = await saveAutofillDefaults();
+                if (ok) setSettingsOpen(false);
+              }}
+            />
+          </>
+        }
       >
-        <View style={styles.modalOverlay}>
-          <View
-            style={[
-              styles.modalCard,
-              { backgroundColor: colors.surface, borderColor: colors.border },
-            ]}
-          >
-            <View style={styles.modalHead}>
-              <Text style={[styles.modalTitle, { color: colors.text }]}>
-                Autofill Settings
-              </Text>
-              <TouchableOpacity
-                style={[
-                  styles.modalCloseIcon,
-                  { borderColor: colors.border, backgroundColor: colors.surfaceAlt },
-                ]}
-                onPress={() => setSettingsOpen(false)}
-                disabled={settingsSaving}
-                accessibilityRole="button"
-                accessibilityLabel="Close autofill settings"
-                accessibilityState={{ disabled: settingsSaving }}
-              >
-                <Icon name="x" size={14} color={colors.text} />
-              </TouchableOpacity>
-            </View>
-
-            <Text style={[styles.defaultsHelp, { color: colors.textMuted }]}>
+            <Text style={[styles.defaultsHelp, { color: colors.textMuted }]}> 
               Choose one default type and set its times.
             </Text>
 
@@ -775,63 +726,9 @@ export default function TimesheetOverview() {
               />
             </View>
 
-            <View style={styles.modalActions}>
-              <TouchableOpacity
-                style={[
-                  styles.modalButton,
-                  { borderColor: colors.border, backgroundColor: colors.surfaceAlt },
-                ]}
-                onPress={() => setSettingsOpen(false)}
-                disabled={settingsSaving}
-                accessibilityRole="button"
-                accessibilityLabel="Cancel autofill changes"
-                accessibilityState={{ disabled: settingsSaving }}
-              >
-                <Text style={[styles.modalButtonText, { color: colors.text }]}>
-                  Cancel
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[
-                  styles.modalButton,
-                  {
-                    borderColor: colors.border,
-                    backgroundColor: colors.accentSoft,
-                    opacity: settingsSaving ? 0.7 : 1,
-                  },
-                ]}
-                onPress={async () => {
-                  const ok = await saveAutofillDefaults();
-                  if (ok) setSettingsOpen(false);
-                }}
-                disabled={settingsSaving}
-                accessibilityRole="button"
-                accessibilityLabel="Save autofill settings"
-                accessibilityState={{ disabled: settingsSaving, busy: settingsSaving }}
-              >
-                <Text style={[styles.modalButtonText, { color: colors.text }]}>
-                  {settingsSaving ? "Saving..." : "Save"}
-                </Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
+      </AppModal>
 
-      <ScrollView
-        contentContainerStyle={[
-          styles.pageContent,
-          { width: "100%", maxWidth: responsive.maxContentWidth, alignSelf: "center" },
-        ]}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={onRefresh}
-            tintColor={colors.accent}
-          />
-        }
-        showsVerticalScrollIndicator={false}
-      >
+      <>
         <AsyncContentState
           resources={[timesheetsResource, queriesResource, employeesResource]}
           hasContent={timesheets.length > 0}
@@ -841,26 +738,26 @@ export default function TimesheetOverview() {
         {/* Legend row */}
         <View style={styles.legendRow}>
           <LegendSwatch
-            color="#22c55e"
-            border="#16a34a"
+            color={staticColors.hex_22c55e_74qlvk}
+            border={staticColors.hex_16a34a_a655dy}
             label="Approved"
             textColor={colors.text}
           />
           <LegendSwatch
-            color="#bbf7d0"
-            border="#86efac"
+            color={staticColors.hex_bbf7d0_ry6j9f}
+            border={staticColors.hex_86efac_dg95e1}
             label="Submitted"
             textColor={colors.text}
           />
           <LegendSwatch
-            color="#fee2b3"
-            border="#fed7aa"
+            color={staticColors.hex_fee2b3_pb1qcj}
+            border={staticColors.hex_fed7aa_pb14l2}
             label="Draft saved"
             textColor={colors.text}
           />
           <LegendSwatch
-            color="#fed7aa"
-            border="#fdba74"
+            color={staticColors.hex_fed7aa_pb14l2}
+            border={staticColors.hex_fdba74_pbro4k}
             label="Not filled"
             textColor={colors.text}
           />
@@ -874,11 +771,11 @@ export default function TimesheetOverview() {
         </View>
         <View
           style={{
-            borderRadius: 14,
+            borderRadius: t.radius.lg,
             overflow: "hidden",
             borderColor: colors.border,
             borderWidth: 1,
-            marginBottom: 12,
+            marginBottom: t.spacing.sm,
             backgroundColor: colors.surface,
           }}
         >
@@ -965,7 +862,7 @@ export default function TimesheetOverview() {
               const isLast = idx === submittedSheets.length - 1;
 
               return (
-                <View key={item.id} style={!isLast ? { marginBottom: 8 } : null}>
+                <View key={item.id} style={!isLast ? { marginBottom: t.spacing.xs } : null}>
                   {renderWeekCard(
                     weekKey,
                     formatWeekRange(new Date(weekKey)),
@@ -978,97 +875,23 @@ export default function TimesheetOverview() {
           </View>
         )}
         </AsyncContentState>
-      </ScrollView>
-    </SafeAreaView>
+      </>
+    </PageShell>
   );
 }
 
 /* tiny components */
 function TimePickerField({ label, value, onSelect, options, disabled }) {
-  const { colors } = useTheme();
-  const [open, setOpen] = useState(false);
-
   return (
     <View style={{ flex: 1 }}>
-      <Text style={[styles.defaultsFieldLabel, { color: colors.textMuted }]}>
-        {label}
-      </Text>
-      <TouchableOpacity
-        style={[
-          styles.defaultsField,
-          {
-            backgroundColor: colors.inputBackground,
-            borderColor: colors.inputBorder,
-            opacity: disabled ? 0.65 : 1,
-          },
-        ]}
-        onPress={() => setOpen(true)}
+      <SelectField
+        label={label}
+        value={value}
+        onChange={onSelect}
+        options={options.map((time) => ({ label: time, value: time }))}
+        placeholder="Select"
         disabled={disabled}
-        accessibilityRole="button"
-        accessibilityLabel={`${label} time, ${value || "not selected"}`}
-        accessibilityHint="Opens the time choices"
-        accessibilityState={{ disabled }}
-      >
-        <Text style={{ color: value ? colors.text : colors.textMuted }}>
-          {value || "Select"}
-        </Text>
-        <Icon name="chevron-down" size={14} color={colors.textMuted} />
-      </TouchableOpacity>
-
-      <Modal
-        visible={open}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setOpen(false)}
-        accessibilityViewIsModal
-        onAccessibilityEscape={() => setOpen(false)}
-      >
-        <View style={styles.pickerModalOverlay}>
-          <View
-            style={[
-              styles.pickerModalCard,
-              { backgroundColor: colors.surface, borderColor: colors.border },
-            ]}
-          >
-            <FlatList
-              data={options}
-              keyExtractor={(item) => item}
-              renderItem={({ item }) => (
-                <TouchableOpacity
-                  style={[
-                    styles.pickerModalItem,
-                    { borderBottomColor: colors.border },
-                  ]}
-                  onPress={() => {
-                    onSelect(item);
-                    setOpen(false);
-                  }}
-                  accessibilityRole="radio"
-                  accessibilityLabel={`${label} time ${item}`}
-                  accessibilityState={{ checked: item === value }}
-                >
-                  <Text style={{ color: colors.text }}>{item}</Text>
-                </TouchableOpacity>
-              )}
-              keyboardShouldPersistTaps="handled"
-            />
-
-            <TouchableOpacity
-              style={[
-                styles.pickerModalClose,
-                { backgroundColor: colors.surfaceAlt },
-              ]}
-              onPress={() => setOpen(false)}
-              accessibilityRole="button"
-              accessibilityLabel={`Close ${label.toLowerCase()} time choices`}
-            >
-              <Text style={{ color: colors.text, fontWeight: "700" }}>
-                Close
-              </Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
+      />
     </View>
   );
 }
@@ -1092,34 +915,34 @@ function ShimmerLine({ width = "100%" }) {
 
 /* styles */
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#0b0b0b", padding: 12 },
-  pageContent: { paddingBottom: 0 },
-  pastList: { paddingBottom: 6 },
+  container: { flex: 1, backgroundColor: staticColors.hex_0b0b0b_9v81ck, padding: t.spacing.sm },
+  pageContent: { paddingBottom: t.spacing.none },
+  pastList: { paddingBottom: t.spacing.xxs },
 
   heroCard: {
     position: "relative",
-    marginBottom: 8,
+    marginBottom: t.spacing.xs,
   },
   heroContent: {
-    paddingHorizontal: 14,
-    paddingVertical: 14,
+    paddingHorizontal: t.spacing.sm,
+    paddingVertical: t.spacing.sm,
   },
   heroTopRow: {
     flexDirection: "row",
     alignItems: "flex-start",
-    gap: 10,
+    gap: t.spacing.xs,
   },
   backBtn: {
     width: 44,
     height: 44,
-    borderRadius: 22,
+    borderRadius: t.radius.pill,
     borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
   },
   heroTitleWrap: {
     flex: 1,
-    paddingTop: 1,
+    paddingTop: t.spacing.none,
     alignItems: "center",
   },
   heroSpacer: {
@@ -1127,174 +950,174 @@ const styles = StyleSheet.create({
     height: 34,
   },
   heroEyebrow: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     letterSpacing: 0.6,
     textTransform: "uppercase",
     fontWeight: "800",
     textAlign: "center",
   },
   heroTitle: {
-    marginTop: 2,
-    fontSize: 24,
+    marginTop: t.spacing.none,
+    fontSize: t.typography.pageTitle.fontSize,
     fontWeight: "900",
     letterSpacing: 0.2,
     textAlign: "center",
   },
   heroSubTitle: {
-    marginTop: 2,
-    fontSize: 13,
-    lineHeight: 18,
+    marginTop: t.spacing.none,
+    fontSize: t.typography.bodySmall.fontSize,
+    lineHeight: t.typography.bodySmall.lineHeight,
     fontWeight: "600",
     textAlign: "center",
   },
   heroMetaRow: {
-    marginTop: 10,
+    marginTop: t.spacing.xs,
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 8,
+    gap: t.spacing.xs,
     justifyContent: "center",
   },
   heroMetaChip: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
+    gap: t.spacing.xxs,
     borderWidth: 1,
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+    borderRadius: t.radius.pill,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
   },
   heroMetaText: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     fontWeight: "700",
   },
   defaultsCard: {
-    borderRadius: 14,
+    borderRadius: t.radius.lg,
     borderWidth: 1,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    marginBottom: 10,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xs,
+    marginBottom: t.spacing.none,
   },
   defaultsHeaderCompact: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: 2,
+    marginBottom: t.spacing.none,
   },
   defaultsHeader: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 5,
+    gap: t.spacing.xxs,
   },
   defaultsTitle: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "800",
   },
   defaultsEditButton: {
     borderWidth: 1,
-    borderRadius: 999,
-    paddingVertical: 4,
-    paddingHorizontal: 8,
+    borderRadius: t.radius.pill,
+    paddingVertical: t.spacing.xxs,
+    paddingHorizontal: t.spacing.xs,
     flexDirection: "row",
     alignItems: "center",
-    gap: 5,
+    gap: t.spacing.xxs,
   },
   defaultsEditText: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     fontWeight: "800",
   },
   defaultsSummary: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "800",
-    marginTop: 2,
+    marginTop: t.spacing.none,
   },
   defaultsHelp: {
-    fontSize: 11,
-    lineHeight: 15,
-    marginTop: 1,
-    marginBottom: 2,
+    fontSize: t.typography.caption.fontSize,
+    lineHeight: t.typography.caption.lineHeight,
+    marginTop: t.spacing.none,
+    marginBottom: t.spacing.none,
   },
   defaultsRow: {
     flexDirection: "row",
     alignItems: "flex-end",
-    marginBottom: 10,
+    marginBottom: t.spacing.xs,
   },
   defaultsFieldLabel: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     fontWeight: "700",
-    marginBottom: 4,
+    marginBottom: t.spacing.xxs,
   },
   defaultsField: {
     borderWidth: 1,
-    borderRadius: 9,
+    borderRadius: t.radius.md,
     minHeight: 40,
-    paddingHorizontal: 10,
-    paddingVertical: 9,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xs,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
   },
   typeRow: {
     flexDirection: "row",
-    marginBottom: 10,
+    marginBottom: t.spacing.xs,
     justifyContent: "center",
-    gap: 8,
+    gap: t.spacing.xs,
   },
   typeButton: {
     flex: 1,
     borderWidth: 1,
-    borderRadius: 999,
-    paddingVertical: 8,
-    paddingHorizontal: 10,
+    borderRadius: t.radius.pill,
+    paddingVertical: t.spacing.xs,
+    paddingHorizontal: t.spacing.xs,
     alignItems: "center",
   },
   typeButtonText: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "800",
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.5)",
+    backgroundColor: staticColors.rgba_11xlylh,
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 18,
+    paddingHorizontal: t.spacing.md,
   },
   modalCard: {
     width: "100%",
-    borderRadius: 14,
+    borderRadius: t.radius.lg,
     borderWidth: 1,
-    padding: 12,
+    padding: t.spacing.sm,
   },
   modalHead: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: 4,
+    marginBottom: t.spacing.xxs,
   },
   modalTitle: {
-    fontSize: 15,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "900",
   },
   modalCloseIcon: {
     borderWidth: 1,
     width: 30,
     height: 30,
-    borderRadius: 15,
+    borderRadius: t.radius.pill,
     alignItems: "center",
     justifyContent: "center",
   },
   modalActions: {
     flexDirection: "row",
     justifyContent: "flex-end",
-    gap: 8,
+    gap: t.spacing.xs,
   },
   modalButton: {
     borderWidth: 1,
-    borderRadius: 999,
-    paddingVertical: 8,
-    paddingHorizontal: 14,
+    borderRadius: t.radius.pill,
+    paddingVertical: t.spacing.xs,
+    paddingHorizontal: t.spacing.sm,
   },
   modalButtonText: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "800",
   },
 
@@ -1302,112 +1125,112 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     flexWrap: "wrap",
-    gap: 10,
-    marginBottom: 12,
+    gap: t.spacing.xs,
+    marginBottom: t.spacing.sm,
   },
-  legendItem: { flexDirection: "row", alignItems: "center", gap: 6 },
-  legendDot: { width: 12, height: 12, borderRadius: 6, borderWidth: 1 },
-  legendText: { color: "#cfcfcf", fontSize: 11 },
+  legendItem: { flexDirection: "row", alignItems: "center", gap: t.spacing.xxs },
+  legendDot: { width: 12, height: 12, borderRadius: t.radius.pill, borderWidth: 1 },
+  legendText: { color: staticColors.hex_cfcfcf_r9h9nn, fontSize: t.typography.caption.fontSize },
 
   sectionHeaderRow: {
-    marginTop: 2,
-    marginBottom: 8,
+    marginTop: t.spacing.none,
+    marginBottom: t.spacing.xs,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
   },
   sectionHeader: {
-    fontSize: 15,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "800",
-    color: "#ffffff",
-    marginBottom: 0,
+    color: staticColors.hex_ffffff_pfr1l2,
+    marginBottom: t.spacing.none,
   },
 
   refreshBtn: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
-    backgroundColor: "#1f2937",
-    borderColor: "#374151",
+    gap: t.spacing.xxs,
+    backgroundColor: staticColors.hex_1f2937_96ncbi,
+    borderColor: staticColors.hex_374151_8ve4w3,
     borderWidth: 1,
-    borderRadius: 999,
-    paddingVertical: 6,
-    paddingHorizontal: 10,
+    borderRadius: t.radius.pill,
+    paddingVertical: t.spacing.xxs,
+    paddingHorizontal: t.spacing.xs,
   },
-  refreshText: { color: "#fff", fontSize: 12 },
+  refreshText: { color: staticColors.hex_fff_yhjmu8, fontSize: t.typography.metadata.fontSize },
 
   weekCard: {
-    backgroundColor: "#111111",
-    paddingVertical: 12,
-    paddingHorizontal: 14,
+    backgroundColor: staticColors.hex_111111_a7aqp2,
+    paddingVertical: t.spacing.sm,
+    paddingHorizontal: t.spacing.sm,
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
   },
-  submittedCard: { borderLeftWidth: 3, borderLeftColor: "#22c55e" },
-  approvedCard: { borderLeftWidth: 3, borderLeftColor: "#16a34a" },
+  submittedCard: { borderLeftWidth: 3, borderLeftColor: staticColors.hex_22c55e_74qlvk },
+  approvedCard: { borderLeftWidth: 3, borderLeftColor: staticColors.hex_16a34a_a655dy },
 
-  weekLabel: { color: "#fff", fontSize: 15, fontWeight: "700" },
-  weekSubLabel: { color: "#9ca3af", fontSize: 12, marginTop: 2 },
+  weekLabel: { color: staticColors.hex_fff_yhjmu8, fontSize: t.typography.bodyLarge.fontSize, fontWeight: "700" },
+  weekSubLabel: { color: staticColors.hex_9ca3af_effbxl, fontSize: t.typography.metadata.fontSize, marginTop: t.spacing.none },
 
   pill: {
     flexDirection: "row",
     alignItems: "center",
-    paddingVertical: 4,
-    paddingHorizontal: 10,
-    borderRadius: 999,
+    paddingVertical: t.spacing.xxs,
+    paddingHorizontal: t.spacing.xs,
+    borderRadius: t.radius.pill,
     borderWidth: 1,
   },
-  pillApproved: { backgroundColor: "#22c55e", borderColor: "#16a34a" },
-  pillSubmitted: { backgroundColor: "#bbf7d0", borderColor: "#86efac" },
-  pillDraft: { backgroundColor: "#fee2b3", borderColor: "#fed7aa" },
-  pillNotFilled: { backgroundColor: "#fed7aa", borderColor: "#fdba74" },
-  pillText: { fontSize: 12, fontWeight: "800" },
+  pillApproved: { backgroundColor: staticColors.hex_22c55e_74qlvk, borderColor: staticColors.hex_16a34a_a655dy },
+  pillSubmitted: { backgroundColor: staticColors.hex_bbf7d0_ry6j9f, borderColor: staticColors.hex_86efac_dg95e1 },
+  pillDraft: { backgroundColor: staticColors.hex_fee2b3_pb1qcj, borderColor: staticColors.hex_fed7aa_pb14l2 },
+  pillNotFilled: { backgroundColor: staticColors.hex_fed7aa_pb14l2, borderColor: staticColors.hex_fdba74_pbro4k },
+  pillText: { fontSize: t.typography.metadata.fontSize, fontWeight: "800" },
 
   queryRow: {
     flexDirection: "row",
     alignItems: "center",
-    marginTop: 4,
-    gap: 4,
+    marginTop: t.spacing.xxs,
+    gap: t.spacing.xxs,
   },
   queryRowText: {
-    fontSize: 11,
-    color: "#f97316",
+    fontSize: t.typography.caption.fontSize,
+    color: staticColors.hex_f97316_oh807u,
     fontWeight: "600",
   },
 
-  emptyText: { color: "#9ca3af", fontStyle: "italic", marginTop: 6 },
+  emptyText: { color: staticColors.hex_9ca3af_effbxl, fontStyle: "italic", marginTop: t.spacing.xxs },
 
   pickerModalOverlay: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.5)",
+    backgroundColor: staticColors.rgba_11xlylh,
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 20,
+    paddingHorizontal: t.spacing.lg,
   },
   pickerModalCard: {
     width: "100%",
     maxHeight: "62%",
-    borderRadius: 12,
+    borderRadius: t.radius.md,
     borderWidth: 1,
     overflow: "hidden",
   },
   pickerModalItem: {
-    paddingVertical: 11,
-    paddingHorizontal: 12,
+    paddingVertical: t.spacing.sm,
+    paddingHorizontal: t.spacing.sm,
     borderBottomWidth: 1,
   },
   pickerModalClose: {
-    margin: 10,
-    borderRadius: 8,
-    paddingVertical: 10,
+    margin: t.spacing.xs,
+    borderRadius: t.radius.sm,
+    paddingVertical: t.spacing.xs,
     alignItems: "center",
   },
 
   shimmer: {
     height: 12,
-    borderRadius: 6,
-    backgroundColor: "#1f1f1f",
-    marginBottom: 10,
+    borderRadius: t.radius.sm,
+    backgroundColor: staticColors.hex_1f1f1f_96hprl,
+    marginBottom: t.spacing.xs,
   },
 });

@@ -1,22 +1,24 @@
+import { AppButton, AppText as Text, AppPressable as TouchableOpacity, FormField } from "../../../components/ui/AppPrimitives";
+import {
+  servicePalette as COLORS } from "../../../lib/design/semantics";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useRouter } from "expo-router";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect,
+  useMemo,
+  useState } from "react";
 import {
   ActivityIndicator,
-  ScrollView,
   StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
-import PageHeaderCard from "../../../components/PageHeaderCard";
+import PageShell from "../../../components/layout/PageShell";
 
 import { designTokens as t } from "../../../lib/design/tokens";
 import {
+  findVehicleRecord,
+  getBookingVehicleReferences,
   getVehicleManufacturer,
   getVehicleName,
   getVehicleNextService,
@@ -24,19 +26,7 @@ import {
 } from "../../../lib/fleetSchema";
 import { useServiceCollectionReader } from "../../../hooks/useServiceData";
 import { useTheme } from "../../../providers/ThemeProvider";
-
-const COLORS = {
-  background: "#0D0D0D",
-  card: "#1A1A1A",
-  border: "#333333",
-  textHigh: "#FFFFFF",
-  textMid: "#E0E0E0",
-  textLow: "#888888",
-  primaryAction: "#ED1C25", // 🔴 align with service home
-  recceAction: "#ED1C25",
-  inputBg: "#2a2a2a",
-  lightGray: "#4a4a4a",
-};
+import { staticColors } from "../../../lib/design/staticColors";
 
 const FILTERS = [
   { key: "open", label: "Open" },
@@ -220,33 +210,18 @@ function normalizeMaintenanceBookingForPrep(docData) {
 // normalise vehicles on booking to attach full DB record where possible
 function normalizeVehicles(list, vehiclesData) {
   if (!Array.isArray(list)) return [];
-  return list.map((vRaw) => {
-    if (
-      vRaw &&
-      typeof vRaw === "object" &&
-      (getVehicleName(vRaw) || getVehicleRegistration(vRaw) || vRaw.id)
-    ) {
-      return vRaw;
-    }
-    const needle = String(vRaw ?? "").trim();
-    const match =
-      vehiclesData.find((x) => x.id === needle) ||
-      vehiclesData.find(
-        (x) =>
-          String(getVehicleRegistration(x) ?? "").trim().toUpperCase() ===
-          needle.toUpperCase()
-      ) ||
-      vehiclesData.find(
-        (x) =>
-          String(getVehicleName(x) ?? "").trim().toLowerCase() === needle.toLowerCase()
-      );
-    return match || { name: needle };
-  });
+  return list
+    .map((vehicleRef) => {
+      const match = findVehicleRecord(vehicleRef, vehiclesData);
+      if (match) return match;
+      return vehicleRef && typeof vehicleRef === "object" ? vehicleRef : null;
+    })
+    .filter(Boolean);
 }
 
 export default function BookWorkScreen() {
   const router = useRouter();
-  const { colors, colorScheme } = useTheme();
+  const { colors } = useTheme();
   const readServiceCollection = useServiceCollectionReader();
 
   const [tasks, setTasks] = useState(INITIAL_TASKS);
@@ -505,7 +480,10 @@ export default function BookWorkScreen() {
       const days = getBookingDaysWithinWindow(b, windowStart, windowEnd);
       if (!days.length) return;
 
-      const normVehicles = normalizeVehicles(b.vehicles || [], vehiclesData);
+      const normVehicles = normalizeVehicles(
+        getBookingVehicleReferences(b),
+        vehiclesData
+      );
       if (!normVehicles.length) return;
 
       days.forEach((day) => {
@@ -649,24 +627,14 @@ export default function BookWorkScreen() {
   };
 
   return (
-    <SafeAreaView
-      edges={["left", "right"]}
-      style={[
-        styles.container,
-        {
-          backgroundColor:
-            colorScheme === "light" ? "#FFFFFF" : colors.background || COLORS.background,
-        },
-      ]}
+    <PageShell
+      header={{
+        variant: "hero",
+        eyebrow: "Workshop",
+        title: "Workshop To-Do",
+        subtitle: "The system suggests where to start. Tap a row to open the right form.",
+      }}
     >
-      <PageHeaderCard
-        eyebrow="Workshop"
-        title="Workshop To-Do"
-        subtitle="The system suggests where to start. Tap a row to open the right form."
-        style={styles.headerCard}
-      />
-
-      <ScrollView contentContainerStyle={styles.scrollContent}>
         {/* INFO CARD – SMART SUGGESTION */}
         <View
           style={[
@@ -775,7 +743,7 @@ export default function BookWorkScreen() {
               });
 
               return (
-                <View key={group.date} style={{ marginBottom: 10 }}>
+                <View key={group.date} style={{ marginBottom: t.spacing.xs }}>
                   <Text
                     style={[
                       styles.prepDateLabel,
@@ -858,7 +826,7 @@ export default function BookWorkScreen() {
           ) : (
             <>
               {overdueServices.length > 0 && (
-                <View style={{ marginBottom: 10 }}>
+                <View style={{ marginBottom: t.spacing.xs }}>
                   <Text
                     style={[
                       styles.serviceGroupTitle,
@@ -931,12 +899,6 @@ export default function BookWorkScreen() {
                             {isDraftVehicle ? "In progress" : "Service"}
                           </Text>
                         </View>
-                        <Icon
-                          name="chevron-right"
-                          size={18}
-                          color={colors.textMuted || COLORS.textMid}
-                          style={{ marginLeft: 6 }}
-                        />
                       </TouchableOpacity>
                     );
                   })}
@@ -1006,12 +968,6 @@ export default function BookWorkScreen() {
                             {isDraftVehicle ? "In progress" : "Service"}
                           </Text>
                         </View>
-                        <Icon
-                          name="chevron-right"
-                          size={18}
-                          color={colors.textMuted || COLORS.textMid}
-                          style={{ marginLeft: 6 }}
-                        />
                       </TouchableOpacity>
                     );
                   })}
@@ -1039,7 +995,7 @@ export default function BookWorkScreen() {
                   { color: colors.textMuted || COLORS.textMid },
                 ]}
               >
-                Tap to jump back into a saved job.
+                Continue a saved workshop record.
               </Text>
             </View>
 
@@ -1080,21 +1036,7 @@ export default function BookWorkScreen() {
                       " · " +
                       (draft.serviceDate || "In progress")}
                   </Text>
-                  <Text
-                    style={[
-                      styles.draftHint,
-                      { color: colors.textMuted || COLORS.textLow },
-                    ]}
-                  >
-                    Finish this record so the vehicle’s history is complete.
-                  </Text>
                 </View>
-                <Icon
-                  name="chevron-right"
-                  size={18}
-                  color={colors.textMuted || COLORS.textMid}
-                  style={{ marginLeft: 8 }}
-                />
               </TouchableOpacity>
             ))}
           </>
@@ -1114,7 +1056,7 @@ export default function BookWorkScreen() {
                       ? colors.accent || COLORS.primaryAction
                       : colors.border || COLORS.border,
                     backgroundColor: active
-                      ? colors.accentSoft || "rgba(255,59,48,0.16)"
+                      ? colors.accentSoft || staticColors.rgba_mxgb9x
                       : colors.surfaceAlt || COLORS.card,
                   },
                 ]}
@@ -1167,73 +1109,28 @@ export default function BookWorkScreen() {
             },
           ]}
         >
-          <Text
-            style={[
-              styles.addLabel,
-              { color: colors.textMuted || COLORS.textMid },
-            ]}
-          >
-            Task title
-          </Text>
-          <TextInput
-            style={[
-              styles.input,
-              {
-                backgroundColor:
-                  colors.inputBackground || COLORS.inputBg,
-                borderColor:
-                  colors.inputBorder || COLORS.lightGray,
-                color: colors.text || COLORS.textHigh,
-              },
-            ]}
+          <FormField
+            label="Task title"
             placeholder="e.g. Investigate noise on Amarok"
-            placeholderTextColor={colors.textMuted || COLORS.textLow}
             value={newTitle}
             onChangeText={setNewTitle}
           />
 
-          <Text
-            style={[
-              styles.addLabel,
-              { marginTop: 10, color: colors.textMuted || COLORS.textMid },
-            ]}
-          >
-            Category
-          </Text>
-          <TextInput
-            style={[
-              styles.input,
-              {
-                backgroundColor:
-                  colors.inputBackground || COLORS.inputBg,
-                borderColor:
-                  colors.inputBorder || COLORS.lightGray,
-                color: colors.text || COLORS.textHigh,
-              },
-            ]}
+          <FormField
+            label="Category"
+            style={{ marginTop: t.spacing.xs }}
             placeholder="e.g. MOT, Service, Tyres, Defect…"
-            placeholderTextColor={colors.textMuted || COLORS.textLow}
             value={newType}
             onChangeText={setNewType}
           />
 
-          <TouchableOpacity
-            style={[
-              styles.addButton,
-              {
-                backgroundColor:
-                  newTitle.trim().length === 0
-                    ? COLORS.lightGray
-                    : colors.danger || COLORS.primaryAction,
-              },
-            ]}
+          <AppButton
+            label="Add to list"
+            icon="plus"
             onPress={addTask}
             disabled={newTitle.trim().length === 0}
-            activeOpacity={0.9}
-          >
-            <Icon name="plus" size={16} color={COLORS.textHigh} />
-            <Text style={styles.addButtonText}>Add to list</Text>
-          </TouchableOpacity>
+            fullWidth
+          />
         </View>
 
         {/* TASK LIST */}
@@ -1252,7 +1149,7 @@ export default function BookWorkScreen() {
               { color: colors.textMuted || COLORS.textMid },
             ]}
           >
-            Tap a row to mark complete / reopen.
+            Select a row to mark it complete or reopen it.
           </Text>
         </View>
 
@@ -1286,9 +1183,7 @@ export default function BookWorkScreen() {
           ))
         )}
 
-        <View style={{ height: 40 }} />
-      </ScrollView>
-    </SafeAreaView>
+    </PageShell>
   );
 }
 
@@ -1349,23 +1244,17 @@ function VehiclePrepRow({ item }) {
         <View style={styles.prepBadgeRow}>
           {showComplianceWarning ? (
             <View style={styles.prepComplianceBad}>
-              <Icon name="alert-triangle" size={12} color="#fff" />
+              <Icon name="alert-triangle" size={12} color={staticColors.hex_fff_yhjmu8} />
               <Text style={styles.prepComplianceText}>CHECK TAX / INS</Text>
             </View>
           ) : (
             <View style={styles.prepComplianceOk}>
-              <Icon name="check" size={12} color="#0b0b0b" />
+              <Icon name="check" size={12} color={staticColors.hex_0b0b0b_9v81ck} />
               <Text style={styles.prepComplianceOkText}>Compliance OK</Text>
             </View>
           )}
         </View>
       </View>
-      <Icon
-        name="chevron-right"
-        size={18}
-        color={colors.textMuted || COLORS.textMid}
-        style={{ marginLeft: 6 }}
-      />
     </TouchableOpacity>
   );
 }
@@ -1374,14 +1263,14 @@ function TaskRow({ task, onToggle }) {
   const { colors } = useTheme();
   const completed = task.completed;
 
-  let typeColour = colors.textMuted || "#999";
+  let typeColour = colors.textMuted || staticColors.hex_999_yhltsv;
   const typeLower = task.type.toLowerCase();
-  if (typeLower.includes("mot")) typeColour = colors.danger || "#ED1C25";
+  if (typeLower.includes("mot")) typeColour = colors.danger || staticColors.hex_ed1c25_4py4qa;
   else if (typeLower.includes("service"))
-    typeColour = colors.success || "#34C759";
-  else if (typeLower.includes("defect")) typeColour = "#FF9500";
-  else if (typeLower.includes("tyre")) typeColour = "#FFCC00";
-  else if (typeLower.includes("loler")) typeColour = "#5AC8FA";
+    typeColour = colors.success || staticColors.hex_34c759_8tm7fd;
+  else if (typeLower.includes("defect")) typeColour = staticColors.hex_ff9500_5c3jxm;
+  else if (typeLower.includes("tyre")) typeColour = staticColors.hex_ffcc00_5c6g4m;
+  else if (typeLower.includes("loler")) typeColour = staticColors.hex_5ac8fa_60jr0u;
 
   return (
     <TouchableOpacity
@@ -1431,7 +1320,7 @@ function TaskRow({ task, onToggle }) {
           {task.title}
         </Text>
         <View
-          style={{ flexDirection: "row", alignItems: "center", marginTop: 4 }}
+          style={{ flexDirection: "row", alignItems: "center", marginTop: t.spacing.xxs }}
         >
           <View
             style={[
@@ -1474,7 +1363,7 @@ const styles = StyleSheet.create({
   headerCard: {
     marginHorizontal: t.spacing.md,
     marginTop: t.spacing.xs,
-    marginBottom: 0,
+    marginBottom: t.spacing.none,
   },
   header: {
     flexDirection: "row",
@@ -1483,120 +1372,118 @@ const styles = StyleSheet.create({
     paddingVertical: t.spacing.sm,
   },
   backButton: {
-    paddingRight: 10,
+    paddingRight: t.spacing.xs,
   },
   pageTitle: {
-    fontSize: 20,
+    fontSize: t.typography.titleSmall.fontSize,
     fontWeight: "800",
   },
   pageSubtitle: {
-    fontSize: 12,
-    marginTop: 2,
+    fontSize: t.typography.metadata.fontSize,
+    marginTop: t.spacing.none,
     color: COLORS.textMid,
   },
   scrollContent: {
     padding: t.spacing.md,
-    paddingTop: 4,
+    paddingTop: t.spacing.xxs,
+    paddingBottom: 140,
   },
   infoCard: {
     backgroundColor: COLORS.card,
-    borderRadius: 10,
-    padding: 14,
-    marginBottom: t.spacing.sm,
+    borderRadius: t.radius.md,
+    padding: t.spacing.sm,
     borderWidth: 1,
   },
   infoTitle: {
-    fontSize: 16,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "700",
-    marginBottom: 4,
+    marginBottom: t.spacing.xxs,
   },
   infoSubtitle: {
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
     color: COLORS.textMid,
   },
   infoHint: {
-    marginTop: 6,
-    fontSize: 12,
+    marginTop: t.spacing.xxs,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textMid,
   },
 
   /* VEHICLE PREP */
   prepCard: {
     backgroundColor: COLORS.card,
-    borderRadius: 10,
-    padding: 14,
-    marginBottom: 16,
+    borderRadius: t.radius.md,
+    padding: t.spacing.sm,
     borderWidth: 1,
   },
   prepDateLabel: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "700",
     color: COLORS.textMid,
-    marginBottom: 4,
+    marginBottom: t.spacing.xxs,
   },
   prepRow: {
     flexDirection: "row",
     alignItems: "center",
-    paddingVertical: 10,
+    paddingVertical: t.spacing.xs,
     borderTopWidth: 1,
     borderTopColor: COLORS.border,
   },
   prepVehicleMain: {
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     fontWeight: "700",
     color: COLORS.textHigh,
   },
   prepGoingOutText: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textMid,
-    marginTop: 2,
+    marginTop: t.spacing.none,
   },
   prepBadgeRow: {
     flexDirection: "row",
     alignItems: "center",
     flexWrap: "wrap",
-    gap: 6,
-    marginTop: 6,
+    gap: t.spacing.xxs,
+    marginTop: t.spacing.xxs,
   },
   prepComplianceBad: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 999,
-    backgroundColor: "#e53935",
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
+    borderRadius: t.radius.pill,
+    backgroundColor: staticColors.hex_e53935_rjwrqy,
     borderWidth: 1,
-    borderColor: "#0b0b0b",
-    gap: 4,
+    borderColor: staticColors.hex_0b0b0b_9v81ck,
+    gap: t.spacing.xxs,
   },
   prepComplianceText: {
-    fontSize: 10,
+    fontSize: t.typography.micro.fontSize,
     fontWeight: "800",
-    color: "#fff",
+    color: staticColors.hex_fff_yhjmu8,
   },
   prepComplianceOk: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 999,
-    backgroundColor: "#7AFE6E",
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
+    borderRadius: t.radius.pill,
+    backgroundColor: staticColors.hex_7afe6e_78gdcw,
     borderWidth: 1,
-    borderColor: "#0b0b0b",
-    gap: 4,
+    borderColor: staticColors.hex_0b0b0b_9v81ck,
+    gap: t.spacing.xxs,
   },
   prepComplianceOkText: {
-    fontSize: 10,
+    fontSize: t.typography.micro.fontSize,
     fontWeight: "800",
-    color: "#0b0b0b",
+    color: staticColors.hex_0b0b0b_9v81ck,
   },
 
   /* SERVICE DUE */
   serviceCard: {
     backgroundColor: COLORS.card,
-    borderRadius: 10,
-    padding: 14,
-    marginBottom: 16,
+    borderRadius: t.radius.md,
+    padding: t.spacing.sm,
     borderWidth: 1,
   },
   serviceLoadingRow: {
@@ -1604,8 +1491,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   serviceLoadingText: {
-    marginLeft: 8,
-    fontSize: 13,
+    marginLeft: t.spacing.xs,
+    fontSize: t.typography.bodySmall.fontSize,
     color: COLORS.textMid,
   },
   emptyServiceState: {
@@ -1613,67 +1500,67 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   emptyServiceText: {
-    marginLeft: 6,
-    fontSize: 13,
+    marginLeft: t.spacing.xxs,
+    fontSize: t.typography.bodySmall.fontSize,
   },
   serviceGroupTitle: {
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
     fontWeight: "700",
     color: COLORS.textMid,
-    marginBottom: 4,
+    marginBottom: t.spacing.xxs,
   },
   serviceRow: {
     flexDirection: "row",
     alignItems: "center",
-    paddingVertical: 8,
+    paddingVertical: t.spacing.xs,
     borderTopWidth: 1,
     borderTopColor: COLORS.border,
   },
   serviceRowRecommended: {
-    backgroundColor: "rgba(255,59,48,0.10)",
+    backgroundColor: staticColors.rgba_mxgb83,
   },
   serviceVehicle: {
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     fontWeight: "600",
     color: COLORS.textHigh,
   },
   serviceMeta: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textMid,
-    marginTop: 2,
+    marginTop: t.spacing.none,
   },
   serviceBadgeOverdue: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,59,48,0.18)",
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
+    borderRadius: t.radius.pill,
+    backgroundColor: staticColors.rgba_mxgb17,
     borderWidth: 1,
     borderColor: COLORS.primaryAction,
   },
   serviceBadgeSoon: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,204,0,0.18)",
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
+    borderRadius: t.radius.pill,
+    backgroundColor: staticColors.rgba_1boderh,
     borderWidth: 1,
-    borderColor: "#FFCC00",
+    borderColor: staticColors.hex_ffcc00_5c6g4m,
   },
   serviceBadgeText: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     fontWeight: "700",
     color: COLORS.textHigh,
   },
   recommendedTag: {
-    marginLeft: 8,
-    fontSize: 11,
+    marginLeft: t.spacing.xs,
+    fontSize: t.typography.caption.fontSize,
     fontWeight: "700",
     color: COLORS.primaryAction,
   },
   nextPriorityTag: {
-    marginLeft: 8,
-    fontSize: 11,
+    marginLeft: t.spacing.xs,
+    fontSize: t.typography.caption.fontSize,
     fontWeight: "700",
-    color: "#FFCC00",
+    color: staticColors.hex_ffcc00_5c6g4m,
   },
 
   /* DRAFT CARD */
@@ -1681,168 +1568,163 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: COLORS.card,
-    borderRadius: 10,
+    borderRadius: t.radius.md,
     minHeight: 72,
-    padding: 14,
-    marginBottom: 14,
+    padding: t.spacing.sm,
+    marginBottom: t.spacing.sm,
     borderWidth: 1,
     borderColor: COLORS.primaryAction,
   },
   draftIconWrap: {
     width: 32,
     height: 32,
-    borderRadius: 16,
-    backgroundColor: "rgba(255,59,48,0.16)",
+    borderRadius: t.radius.pill,
+    backgroundColor: staticColors.rgba_mxgb9x,
     alignItems: "center",
     justifyContent: "center",
-    marginRight: 10,
+    marginRight: t.spacing.xs,
   },
   draftTitle: {
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     fontWeight: "700",
     color: COLORS.textHigh,
   },
   draftMeta: {
-    marginTop: 2,
-    fontSize: 12,
+    marginTop: t.spacing.none,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textMid,
   },
   draftHint: {
-    marginTop: 2,
-    fontSize: 11,
+    marginTop: t.spacing.none,
+    fontSize: t.typography.caption.fontSize,
     color: COLORS.textLow,
   },
-
   filterRow: {
     flexDirection: "row",
-    marginBottom: 10,
+    marginBottom: t.spacing.xs,
   },
   filterChip: {
     minHeight: t.controls.chipMinHeight,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
+    borderRadius: t.radius.pill,
     borderWidth: 1,
-    marginRight: 8,
+    marginRight: t.spacing.xs,
   },
   filterText: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "600",
   },
   sectionHeaderRow: {
-    marginTop: 6,
-    marginBottom: 6,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "flex-end",
+    alignItems: "flex-start",
+    gap: t.spacing.xxs,
   },
   sectionTitle: {
-    fontSize: 17,
+    fontSize: t.typography.sectionTitle.fontSize,
     fontWeight: "800",
   },
   sectionSubtitle: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textMid,
   },
   addTaskCard: {
     backgroundColor: COLORS.card,
-    borderRadius: 10,
-    padding: 14,
-    marginBottom: 16,
+    borderRadius: t.radius.md,
+    padding: t.spacing.sm,
     borderWidth: 1,
     borderColor: COLORS.border,
   },
   addLabel: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "600",
     color: COLORS.textMid,
-    marginBottom: 4,
+    marginBottom: t.spacing.xxs,
   },
   input: {
     backgroundColor: COLORS.inputBg,
-    borderRadius: 8,
+    borderRadius: t.radius.sm,
     borderWidth: 1,
     borderColor: COLORS.lightGray,
     color: COLORS.textHigh,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    fontSize: 14,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xs,
+    fontSize: t.typography.body.fontSize,
   },
   addButton: {
-    marginTop: 12,
-    borderRadius: 999,
+    marginTop: t.spacing.sm,
+    borderRadius: t.radius.pill,
     minHeight: t.controls.buttonHeight,
-    paddingVertical: 8,
+    paddingVertical: t.spacing.xs,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 6,
+    gap: t.spacing.xxs,
   },
   addButtonText: {
     color: COLORS.textHigh,
     fontWeight: "700",
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
   },
   taskRow: {
     flexDirection: "row",
     alignItems: "flex-start",
-    paddingVertical: 10,
+    paddingVertical: t.spacing.xs,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
   },
   taskCheckWrap: {
-    paddingRight: 10,
-    paddingTop: 4,
+    paddingRight: t.spacing.xs,
+    paddingTop: t.spacing.xxs,
   },
   taskCheckEmpty: {
     width: 20,
     height: 20,
-    borderRadius: 10,
+    borderRadius: t.radius.pill,
     borderWidth: 1.5,
     borderColor: COLORS.textMid,
   },
   taskCheckFilled: {
     width: 20,
     height: 20,
-    borderRadius: 10,
+    borderRadius: t.radius.pill,
     backgroundColor: COLORS.primaryAction,
     alignItems: "center",
     justifyContent: "center",
   },
   taskTitle: {
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     color: COLORS.textHigh,
     fontWeight: "600",
   },
   taskTypePill: {
-    borderRadius: 999,
+    borderRadius: t.radius.pill,
     borderWidth: 1,
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    marginRight: 8,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.none,
+    marginRight: t.spacing.xs,
   },
   taskTypeText: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     fontWeight: "700",
   },
   taskHint: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     color: COLORS.textLow,
   },
   emptyState: {
     alignItems: "center",
     justifyContent: "center",
-    marginTop: 24,
-    paddingHorizontal: 24,
+    marginTop: t.spacing.xl,
+    paddingHorizontal: t.spacing.xl,
   },
   emptyTitle: {
-    marginTop: 10,
-    fontSize: 16,
+    marginTop: t.spacing.xs,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "700",
   },
   emptySubtitle: {
-    marginTop: 6,
-    fontSize: 13,
+    marginTop: t.spacing.xxs,
+    fontSize: t.typography.bodySmall.fontSize,
     textAlign: "center",
     color: COLORS.textMid,
   },

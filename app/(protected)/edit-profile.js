@@ -1,19 +1,23 @@
+import { AppButton, AppText as Text, AppPressable as TouchableOpacity, FormField } from "../../components/ui/AppPrimitives";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as ImagePicker from "expo-image-picker";
-import { useRouter } from "expo-router";
+import {
+  useRouter } from "expo-router";
 import { signOut } from "firebase/auth";
-import { doc, getDoc, updateDoc } from "firebase/firestore";
-import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
-import { useEffect, useMemo, useState } from "react";
+import { doc,
+  getDoc,
+  updateDoc } from "firebase/firestore";
+import { getDownloadURL,
+  ref,
+  uploadBytes } from "firebase/storage";
+import { useEffect,
+  useMemo,
+  useState } from "react";
 import {
   ActivityIndicator,
   Alert,
   Image,
-  SafeAreaView,
   StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
   View,
 } from "react-native";
 import Icon from "react-native-vector-icons/Feather";
@@ -22,21 +26,11 @@ import { auth, db, storage } from "../../firebaseConfig";
 import { useAuth } from "../../providers/AuthProvider";
 import { useDataCache } from "../../providers/DataCacheProvider";
 import { useTheme } from "../../providers/ThemeProvider";
+import { staticColors } from "../../lib/design/staticColors";
+import { designTokens as t } from "../../lib/design/tokens";
+import PageShell from "../../components/layout/PageShell";
 
-function withAlpha(hex, alpha) {
-  const safeAlpha = Math.max(0, Math.min(1, Number(alpha) || 0));
-  const raw = String(hex || "").replace("#", "");
 
-  if (!/^[0-9a-fA-F]{6}$/.test(raw)) {
-    return `rgba(255,255,255,${safeAlpha})`;
-  }
-
-  const r = parseInt(raw.slice(0, 2), 16);
-  const g = parseInt(raw.slice(2, 4), 16);
-  const b = parseInt(raw.slice(4, 6), 16);
-
-  return `rgba(${r},${g},${b},${safeAlpha})`;
-}
 
 export default function ProfilePage() {
   const router = useRouter();
@@ -47,6 +41,7 @@ export default function ProfilePage() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
+  const [initialPhone, setInitialPhone] = useState("");
   const [userCode, setUserCode] = useState("");
   const [role, setRole] = useState("");
   const [avatarUrl, setAvatarUrl] = useState("");
@@ -68,6 +63,12 @@ export default function ProfilePage() {
     if (!name) return "U";
     return name.trim().charAt(0).toUpperCase();
   }, [name]);
+  const displayRole = useMemo(() => {
+    const value = String(role || "").trim();
+    if (!value || ["user", "employee"].includes(value.toLowerCase())) return "Employee";
+    return value;
+  }, [role]);
+  const hasChanges = phone.trim() !== initialPhone.trim();
 
   const loadProfile = async () => {
     try {
@@ -81,7 +82,9 @@ export default function ProfilePage() {
           const data = snap.data();
 
           setName(data.name || employee?.displayName || "");
-          setPhone(data.phone || "");
+          const contactNumber = data.mobile || data.phone || "";
+          setPhone(contactNumber);
+          setInitialPhone(contactNumber);
           setUserCode(data.userCode || employee?.userCode || "");
           setRole(data.role || employee?.role || "");
           setEmail(user?.email ?? data.email ?? employee?.email ?? "");
@@ -117,11 +120,13 @@ export default function ProfilePage() {
 
       await updateDoc(docRef, {
         phone: phone.trim() || "",
+        mobile: phone.trim() || "",
       });
       await Promise.all([
         invalidate("collection:employees"),
         invalidate("me-dashboard:"),
       ]);
+      setInitialPhone(phone.trim());
 
       Alert.alert("Saved", "Your profile has been updated.");
     } catch (err) {
@@ -205,34 +210,42 @@ export default function ProfilePage() {
         "sessionIsService",
         "sessionUserAccess",
         "sessionServiceAccess",
+        "sessionCompanyId",
         "displayName",
         "employeeId",
         "employeeEmail",
         "employeeUserCode",
+        "userCode",
         "timesheetYardStart",
         "timesheetYardEnd",
         "timesheetOfficeStart",
         "timesheetOfficeEnd",
+        "timesheetWorkshopStart",
+        "timesheetWorkshopEnd",
         "timesheetDefaultType",
       ]);
 
-      if (reloadSession) {
-        await reloadSession();
-      }
-
-      await signOut(auth).catch(() => {});
-
-      router.replace("/");
+      global.employee = null;
+      await signOut(auth);
+      if (reloadSession) await reloadSession();
+      router.replace("/(auth)/login");
     } catch (err) {
       console.error("Error logging out:", err);
       Alert.alert("Error", "There was a problem logging you out.");
     }
   };
 
+  const confirmLogout = () => {
+    Alert.alert("Log out?", "You will need to sign in again to use the app.", [
+      { text: "Cancel", style: "cancel" },
+      { text: "Log out", style: "destructive", onPress: handleLogout },
+    ]);
+  };
+
   const stillLoading = authLoading || loading;
 
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>
+    <PageShell mode="form" width="form" header={{ variant: "compact", title: "Edit Profile", subtitle: "Manage your profile details.", onBack: router.back }}>
       {stillLoading ? (
         <View style={styles.loadingWrap}>
           <ActivityIndicator size="large" color={colors.accent} />
@@ -242,29 +255,6 @@ export default function ProfilePage() {
         </View>
       ) : (
         <View style={styles.content}>
-          <View style={styles.header}>
-            <TouchableOpacity
-              style={[
-                styles.backButton,
-                {
-                  backgroundColor: withAlpha(colors.surfaceAlt, 0.6),
-                },
-              ]}
-              onPress={() => router.back()}
-            >
-              <Icon name="arrow-left" size={18} color={colors.text} />
-            </TouchableOpacity>
-
-            <View style={styles.headerTextWrap}>
-              <Text style={[styles.pageTitle, { color: colors.text }]}>
-                Edit Profile
-              </Text>
-              <Text style={[styles.pageSubtitle, { color: colors.textMuted }]}>
-                Manage your profile details.
-              </Text>
-            </View>
-          </View>
-
           <View style={styles.profileTop}>
             <TouchableOpacity
               style={[
@@ -276,6 +266,9 @@ export default function ProfilePage() {
               onPress={handleChangePhoto}
               disabled={uploadingAvatar}
               activeOpacity={0.85}
+              accessibilityRole="button"
+              accessibilityLabel="Change profile photo"
+              accessibilityState={{ disabled: uploadingAvatar, busy: uploadingAvatar }}
             >
               {uploadingAvatar ? (
                 <ActivityIndicator size="small" color={colors.text} />
@@ -295,7 +288,7 @@ export default function ProfilePage() {
                   },
                 ]}
               >
-                <Icon name="image" size={13} color="#fff" />
+                <Icon name="image" size={13} color={staticColors.hex_fff_yhjmu8} />
               </View>
             </TouchableOpacity>
 
@@ -305,7 +298,7 @@ export default function ProfilePage() {
               </Text>
 
               <Text style={[styles.roleText, { color: colors.textMuted }]}>
-                {role ? role.toString() : "Employee"}
+                {displayRole}
               </Text>
 
               {userCode ? (
@@ -313,145 +306,97 @@ export default function ProfilePage() {
                   Code {userCode}
                 </Text>
               ) : null}
+              <AppButton
+                label="Change photo"
+                icon="camera"
+                variant="ghost"
+                size="small"
+                onPress={handleChangePhoto}
+                disabled={uploadingAvatar}
+                accessibilityRole="button"
+                accessibilityLabel="Change profile photo"
+              />
             </View>
           </View>
 
           <View style={styles.section}>
             <Text style={[styles.sectionTitle, { color: colors.text }]}>
-              Account Details
+              Account
             </Text>
-
-            <View style={styles.fieldGroup}>
-              <Text style={[styles.label, { color: colors.textMuted }]}>Name</Text>
-              <TextInput
-                style={[
-                  styles.input,
-                  styles.lockedInput,
-                  {
-                    backgroundColor: colors.surfaceAlt,
-                    color: colors.textMuted,
-                  },
-                ]}
-                value={name}
-                editable={false}
-                placeholder="Name"
-                placeholderTextColor={colors.textMuted}
-              />
+            <View style={[styles.accountCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              {[
+                { icon: "user", label: "Name", value: name || "Not set" },
+                { icon: "mail", label: "Email", value: email || "Not set" },
+                { icon: "hash", label: "Employee code", value: userCode || "Not set" },
+              ].map((item, index) => (
+                <View
+                  key={item.label}
+                  style={[
+                    styles.accountRow,
+                    index > 0 && {
+                      borderTopColor: colors.border,
+                      borderTopWidth: StyleSheet.hairlineWidth,
+                    },
+                  ]}
+                >
+                  <View style={[styles.accountIcon, { backgroundColor: colors.surfaceAlt }]}>
+                    <Icon name={item.icon} size={15} color={colors.textMuted} />
+                  </View>
+                  <View style={styles.accountCopy}>
+                    <Text style={[styles.accountLabel, { color: colors.textMuted }]}>{item.label}</Text>
+                    <Text style={[styles.accountValue, { color: colors.text }]} numberOfLines={1}>
+                      {item.value}
+                    </Text>
+                  </View>
+                  <Icon name="lock" size={13} color={colors.textMuted} />
+                </View>
+              ))}
             </View>
-
-            <View style={styles.fieldGroup}>
-              <Text style={[styles.label, { color: colors.textMuted }]}>Email</Text>
-              <TextInput
-                style={[
-                  styles.input,
-                  styles.lockedInput,
-                  {
-                    backgroundColor: colors.surfaceAlt,
-                    color: colors.textMuted,
-                  },
-                ]}
-                value={email}
-                editable={false}
-                placeholder="Email"
-                placeholderTextColor={colors.textMuted}
-              />
-            </View>
-
-            <View style={styles.fieldGroup}>
-              <Text style={[styles.label, { color: colors.textMuted }]}>
-                User Code
-              </Text>
-              <TextInput
-                style={[
-                  styles.input,
-                  styles.lockedInput,
-                  {
-                    backgroundColor: colors.surfaceAlt,
-                    color: colors.textMuted,
-                  },
-                ]}
-                value={userCode}
-                editable={false}
-                placeholder="User Code"
-                placeholderTextColor={colors.textMuted}
-              />
-            </View>
-
-            <Text style={[styles.helperText, { color: colors.textMuted }]}>
-              Name, email and user code are managed by your admin.
-            </Text>
+            <Text style={[styles.helperText, { color: colors.textMuted }]}>Managed by your administrator.</Text>
           </View>
 
           <View style={styles.section}>
             <Text style={[styles.sectionTitle, { color: colors.text }]}>
-              Contact Details
+              Contact number
             </Text>
 
             <View style={styles.fieldGroup}>
-              <Text style={[styles.label, { color: colors.textMuted }]}>
-                Phone Number
-              </Text>
-              <TextInput
-                style={[
-                  styles.input,
-                  {
-                    backgroundColor: colors.inputBackground || colors.surfaceAlt,
-                    color: colors.text,
-                    borderColor: withAlpha(colors.border, 0.5),
-                  },
-                ]}
+              <FormField
+                label="Phone number"
                 value={phone}
                 onChangeText={setPhone}
                 placeholder="Enter your phone number"
-                placeholderTextColor={colors.textMuted}
-                keyboardType="phone-pad"
-                editable={!saving}
+                disabled={saving}
+                hint="Used by the crew directory and booking team."
+                inputProps={{ keyboardType: "phone-pad", textContentType: "telephoneNumber" }}
               />
             </View>
           </View>
 
-          <TouchableOpacity
-            style={[
-              styles.saveButton,
-              {
-                backgroundColor: colors.accent,
-              },
-              saving && styles.disabledButton,
-            ]}
+          <AppButton
+            label={hasChanges ? "Save phone number" : "No changes"}
+            icon="save"
             onPress={handleSave}
-            disabled={saving}
-          >
-            {saving ? (
-              <ActivityIndicator size="small" color="#fff" />
-            ) : (
-              <>
-                <Icon name="save" size={18} color="#fff" style={{ marginRight: 8 }} />
-                <Text style={styles.saveButtonText}>Save Changes</Text>
-              </>
-            )}
-          </TouchableOpacity>
+            disabled={!hasChanges || saving}
+            loading={saving}
+            fullWidth
+            accessibilityLabel="Save phone number"
+          />
 
-          <TouchableOpacity
-            style={[
-              styles.logoutButton,
-              {
-                backgroundColor: withAlpha(colors.surfaceAlt, 0.65),
-              },
-            ]}
-            onPress={handleLogout}
-          >
-            <Icon name="log-out" size={18} color={colors.text} style={{ marginRight: 8 }} />
-            <Text style={[styles.logoutButtonText, { color: colors.text }]}>
-              Logout
-            </Text>
-          </TouchableOpacity>
-
-          <Text style={[styles.bottomNote, { color: colors.textMuted }]}>
-            Your profile details help keep bookings, timesheets and communication accurate.
-          </Text>
+          <View style={[styles.accountActionsSection, { borderTopColor: colors.border }]}>
+            <Text style={[styles.accountActionsTitle, { color: colors.textMuted }]}>Account access</Text>
+            <AppButton
+              label="Log out"
+              icon="log-out"
+              variant="danger"
+              onPress={confirmLogout}
+              fullWidth
+              accessibilityLabel="Log out"
+            />
+          </View>
         </View>
       )}
-    </SafeAreaView>
+    </PageShell>
   );
 }
 
@@ -464,35 +409,35 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
-    paddingHorizontal: 20,
+    paddingHorizontal: t.spacing.lg,
   },
 
   loadingText: {
-    marginTop: 12,
-    fontSize: 14,
+    marginTop: t.spacing.sm,
+    fontSize: t.typography.body.fontSize,
     fontWeight: "600",
   },
 
   content: {
     flex: 1,
-    paddingHorizontal: 20,
-    paddingTop: 14,
-    paddingBottom: 18,
+    paddingHorizontal: t.spacing.none,
+    paddingTop: t.spacing.sm,
+    paddingBottom: t.spacing.md,
   },
 
   header: {
     flexDirection: "row",
     alignItems: "center",
-    marginBottom: 18,
+    marginBottom: t.spacing.md,
   },
 
   backButton: {
     width: 40,
     height: 40,
-    borderRadius: 20,
+    borderRadius: t.radius.pill,
     justifyContent: "center",
     alignItems: "center",
-    marginRight: 12,
+    marginRight: t.spacing.sm,
   },
 
   headerTextWrap: {
@@ -500,42 +445,42 @@ const styles = StyleSheet.create({
   },
 
   pageTitle: {
-    fontSize: 26,
+    fontSize: t.typography.pageTitle.fontSize,
     fontWeight: "900",
     letterSpacing: -0.4,
   },
 
   pageSubtitle: {
-    marginTop: 3,
-    fontSize: 13,
+    marginTop: t.spacing.xxs,
+    fontSize: t.typography.bodySmall.fontSize,
     fontWeight: "600",
   },
 
   profileTop: {
     flexDirection: "row",
     alignItems: "center",
-    marginBottom: 22,
+    marginBottom: t.spacing.md,
   },
 
   avatarCircle: {
-    width: 82,
-    height: 82,
-    borderRadius: 41,
+    width: t.controls.buttonHeightLg + t.spacing.lg,
+    height: t.controls.buttonHeightLg + t.spacing.lg,
+    borderRadius: t.radius.pill,
     justifyContent: "center",
     alignItems: "center",
     overflow: "visible",
-    marginRight: 16,
+    marginRight: t.spacing.md,
   },
 
   avatarImage: {
-    width: 82,
-    height: 82,
-    borderRadius: 41,
+    width: t.controls.buttonHeightLg + t.spacing.lg,
+    height: t.controls.buttonHeightLg + t.spacing.lg,
+    borderRadius: t.radius.pill,
     resizeMode: "cover",
   },
 
   avatarInitial: {
-    fontSize: 30,
+    fontSize: t.typography.display.fontSize,
     fontWeight: "900",
   },
 
@@ -545,7 +490,7 @@ const styles = StyleSheet.create({
     bottom: 0,
     width: 26,
     height: 26,
-    borderRadius: 13,
+    borderRadius: t.radius.pill,
     justifyContent: "center",
     alignItems: "center",
   },
@@ -555,102 +500,89 @@ const styles = StyleSheet.create({
   },
 
   nameText: {
-    fontSize: 20,
+    fontSize: t.typography.titleSmall.fontSize,
     fontWeight: "900",
-    marginBottom: 3,
+    marginBottom: t.spacing.xxs,
   },
 
   roleText: {
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     fontWeight: "700",
-    marginBottom: 2,
+    marginBottom: t.spacing.none,
   },
 
   codeText: {
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
     fontWeight: "600",
   },
 
   section: {
-    marginBottom: 18,
+    marginBottom: t.spacing.md,
   },
 
   sectionTitle: {
-    fontSize: 17,
+    fontSize: t.typography.sectionTitle.fontSize,
     fontWeight: "900",
-    marginBottom: 10,
+    marginBottom: t.spacing.xs,
   },
 
   fieldGroup: {
-    marginBottom: 10,
+    marginBottom: t.spacing.xs,
   },
 
-  label: {
-    fontSize: 13,
+  accountCard: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: t.radius.lg,
+    paddingHorizontal: t.spacing.sm,
+  },
+  accountRow: {
+    minHeight: t.controls.buttonHeightLg + t.spacing.xs,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: t.spacing.xs,
+  },
+  accountIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: t.radius.pill,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  accountCopy: { flex: 1, minWidth: 0 },
+  accountLabel: {
+    fontSize: t.typography.caption.fontSize,
+    fontWeight: "700",
+  },
+  accountValue: {
+    marginTop: t.spacing.none,
+    fontSize: t.typography.bodySmall.fontSize,
     fontWeight: "800",
-    marginBottom: 6,
-  },
-
-  input: {
-    minHeight: 44,
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    fontSize: 15,
-    fontWeight: "600",
-    borderWidth: 1,
-  },
-
-  lockedInput: {
-    borderWidth: 0,
-    opacity: 0.9,
   },
 
   helperText: {
-    fontSize: 12,
-    lineHeight: 17,
+    fontSize: t.typography.metadata.fontSize,
+    lineHeight: t.typography.metadata.lineHeight,
     fontWeight: "600",
-    marginTop: 0,
+    marginTop: t.spacing.none,
   },
-
-  saveButton: {
-    height: 48,
-    borderRadius: 26,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    marginTop: 2,
+  accountActionsSection: {
+    marginTop: t.spacing.lg,
+    paddingTop: t.spacing.sm,
+    borderTopWidth: StyleSheet.hairlineWidth,
   },
-
-  disabledButton: {
-    opacity: 0.7,
-  },
-
-  saveButtonText: {
-    color: "#fff",
-    fontSize: 15,
-    fontWeight: "900",
-  },
-
-  logoutButton: {
-    height: 48,
-    borderRadius: 26,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    marginTop: 10,
-  },
-
-  logoutButtonText: {
-    fontSize: 15,
-    fontWeight: "900",
+  accountActionsTitle: {
+    marginBottom: t.spacing.xs,
+    fontSize: t.typography.caption.fontSize,
+    fontWeight: "800",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
   },
 
   bottomNote: {
-    fontSize: 12,
-    lineHeight: 17,
+    fontSize: t.typography.metadata.fontSize,
+    lineHeight: t.typography.metadata.lineHeight,
     fontWeight: "600",
     textAlign: "center",
-    marginTop: 12,
+    marginTop: t.spacing.sm,
   },
 });

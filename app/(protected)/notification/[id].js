@@ -1,35 +1,38 @@
+import { AppText as Text, AppPressable as TouchableOpacity } from "../../../components/ui/AppPrimitives";
 // app/(protected)/notification/[id].js
-import { useLocalSearchParams, useRouter } from "expo-router";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  useLocalSearchParams,
+  useRouter } from "expo-router";
+import { useCallback,
+  useEffect,
+  useMemo,
+  useState } from "react";
 import {
     ActivityIndicator,
-    SafeAreaView,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  StyleSheet,
+  View,
 } from "react-native";
 import Icon from "react-native-vector-icons/Feather";
 
 import { doc, getDoc } from "firebase/firestore";
 import { db } from "../../../firebaseConfig";
 
+import { useVehicles } from "../../../hooks/useOperationalData";
+import { resolveNotificationVehicleBody } from "../../../lib/fleetSchema";
+import { getBookingDayNote } from "../../../lib/bookingDayNotes";
 import { getInbox, markRead } from "../../../lib/notificationInbox";
 import { formatDateDDMMYYYY } from "../../../lib/dateFormat";
 import { isBookingVisibleToEmployee } from "../../../lib/bookingVisibility";
+import {
+  getTimesheetReminderHref,
+  getTimesheetReminderWeekStart,
+  isTimesheetReminder,
+} from "../../../lib/timesheetNotification";
 import { useAuth } from "../../../providers/AuthProvider";
 import { useTheme } from "../../../providers/ThemeProvider";
-
-function withAlpha(hex, alpha) {
-  const safeAlpha = Math.max(0, Math.min(1, Number(alpha) || 0));
-  const raw = String(hex || "").replace("#", "");
-  if (!/^[0-9a-fA-F]{6}$/.test(raw)) return `rgba(255,255,255,${safeAlpha})`;
-  const r = parseInt(raw.slice(0, 2), 16);
-  const g = parseInt(raw.slice(2, 4), 16);
-  const b = parseInt(raw.slice(4, 6), 16);
-  return `rgba(${r},${g},${b},${safeAlpha})`;
-}
+import { withAlpha } from "../../../lib/design/color";
+import { designTokens as t } from "../../../lib/design/tokens";
+import PageShell from "../../../components/layout/PageShell";
 
 function formatTime(ts) {
   const d = new Date(ts);
@@ -80,24 +83,69 @@ function extractISOFromNotificationData(data) {
   return null;
 }
 
+function notificationBodySegments(body, vehicles) {
+  return resolveNotificationVehicleBody(body, vehicles)
+    .split("•")
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+}
+
 export default function NotificationDetailPage() {
   const router = useRouter();
   const { id } = useLocalSearchParams(); // /notification/[id]
   const { colors } = useTheme();
   const { employee } = useAuth();
+  const vehiclesResource = useVehicles();
 
   const [item, setItem] = useState(null);
+  const [linkedBooking, setLinkedBooking] = useState(null);
+  const [loading, setLoading] = useState(true);
   const [navBusy, setNavBusy] = useState(false);
 
   const load = useCallback(async () => {
-    const list = await getInbox();
-    const found = list.find((n) => String(n.id) === String(id));
-    setItem(found || null);
+    try {
+      const list = await getInbox();
+      const found = list.find((n) => String(n.id) === String(id));
+      setItem(found || null);
+    } finally {
+      setLoading(false);
+    }
   }, [id]);
 
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    let active = true;
+    const bookingId = item?.data?.bookingId;
+
+    if (!bookingId) {
+      setLinkedBooking(null);
+      return () => {
+        active = false;
+      };
+    }
+
+    (async () => {
+      try {
+        const snap = await getDoc(doc(db, "bookings", String(bookingId)));
+        const booking = snap.exists() ? { id: snap.id, ...snap.data() } : null;
+        if (active) {
+          setLinkedBooking(
+            booking && isBookingVisibleToEmployee(booking, employee) ? booking : null
+          );
+        }
+      } catch (error) {
+        console.warn("[notification-detail] booking load failed:", error?.message || error);
+        if (active) setLinkedBooking(null);
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [employee, item?.data?.bookingId]);
 
   useEffect(() => {
     // mark read when opened
@@ -110,6 +158,7 @@ export default function NotificationDetailPage() {
 
   const typeLabel = useMemo(() => {
     const d = item?.data || {};
+    if (isTimesheetReminder(d)) return "Timesheet";
     if (d.bookingId) return "Job";
     if (d.holidayId) return "Holiday";
     return "General";
@@ -117,13 +166,36 @@ export default function NotificationDetailPage() {
 
   const iconName = useMemo(() => {
     const d = item?.data || {};
+    if (isTimesheetReminder(d)) return "clock";
     if (d.bookingId) return "briefcase";
     if (d.holidayId) return "umbrella";
     return "info";
   }, [item]);
 
+  const bodySegments = useMemo(
+    () => notificationBodySegments(item?.body || "", vehiclesResource.data),
+    [item?.body, vehiclesResource.data]
+  );
+
+  const jobDateISO = useMemo(
+    () => extractISOFromNotificationData(item?.data),
+    [item?.data]
+  );
+  const dayNotes = useMemo(
+    () =>
+      getBookingDayNote(linkedBooking, jobDateISO) ||
+      getBookingDayNote(item?.data, jobDateISO),
+    [item?.data, jobDateISO, linkedBooking]
+  );
+
   const goToLinkedItem = useCallback(async () => {
     const d = item?.data || {};
+    const timesheetHref = getTimesheetReminderHref(d);
+    if (timesheetHref) {
+      router.push(timesheetHref);
+      return;
+    }
+
     if (d.bookingId) {
       try {
         setNavBusy(true);
@@ -163,281 +235,228 @@ export default function NotificationDetailPage() {
     }
   }, [employee, item, router]);
 
-  if (!item) {
-    return (
-      <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>
-        <View
-          style={[
-            styles.heroCard,
-            { backgroundColor: colors.surface, borderColor: colors.border },
-          ]}
-        >
-          <View style={styles.heroTopRow}>
-            <TouchableOpacity
-              onPress={() => router.back()}
-              style={[
-                styles.backBtn,
-                {
-                  borderColor: withAlpha(colors.border, 0.8),
-                  backgroundColor: withAlpha(colors.surfaceAlt, 0.8),
-                },
-              ]}
-              activeOpacity={0.85}
-            >
-              <Icon name="arrow-left" size={14} color={colors.text} />
-              <Text style={[styles.backText, { color: colors.text }]}>Back</Text>
-            </TouchableOpacity>
-          </View>
-          <View style={styles.heroContent}>
-            <Text style={[styles.heroEyebrow, { color: colors.textMuted }]}>Inbox</Text>
-            <Text style={[styles.heroTitle, { color: colors.text }]}>Notification</Text>
-            <Text style={[styles.heroSubTitle, { color: colors.textMuted }]}>Details</Text>
-          </View>
-        </View>
-
-        <View style={[styles.empty, { borderColor: colors.border, backgroundColor: colors.surface }]}>
-          <Icon name="alert-circle" size={22} color={colors.textMuted} />
-          <Text style={[styles.emptyText, { color: colors.textMuted }]}>
-            This notification no longer exists.
-          </Text>
-        </View>
-      </SafeAreaView>
-    );
-  }
-
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>
-      <View
-        style={[
-          styles.heroCard,
-          { backgroundColor: colors.surface, borderColor: colors.border },
-        ]}
-      >
-        <View style={styles.heroTopRow}>
-          <TouchableOpacity
-            onPress={() => router.back()}
-            style={[
-              styles.backBtn,
-              {
-                borderColor: withAlpha(colors.border, 0.8),
-                backgroundColor: withAlpha(colors.surfaceAlt, 0.8),
-              },
-            ]}
-            activeOpacity={0.85}
-          >
-            <Icon name="arrow-left" size={14} color={colors.text} />
-            <Text style={[styles.backText, { color: colors.text }]}>Back</Text>
-          </TouchableOpacity>
+    <PageShell
+      contentSpacing="compact"
+      header={{
+        variant: "compact",
+        eyebrow: item ? typeLabel : "Inbox",
+        title: "Notification",
+        subtitle: item ? formatTime(item.createdAt) : "Inbox detail",
+        onBack: router.back,
+      }}
+    >
+      
+
+      {loading ? (
+        <View style={styles.centerState}>
+          <ActivityIndicator color={colors.accent} />
         </View>
-
-        <View style={styles.heroContent}>
-          <Text style={[styles.heroEyebrow, { color: colors.textMuted }]}>Inbox</Text>
-          <Text style={[styles.heroTitle, { color: colors.text }]}>Notification</Text>
-          <Text style={[styles.heroSubTitle, { color: colors.textMuted }]}>
-            {formatTime(item.createdAt)}
+      ) : !item ? (
+        <View style={styles.centerState}>
+          <View style={[styles.emptyIcon, { backgroundColor: colors.surfaceAlt }]}>
+            <Icon name="alert-circle" size={24} color={colors.textMuted} />
+          </View>
+          <Text style={[styles.emptyTitle, { color: colors.text }]}>Notification unavailable</Text>
+          <Text style={[styles.emptyText, { color: colors.textMuted }]}>
+            This notification may have been cleared from your inbox.
           </Text>
-
-          <View style={styles.heroMetaRow}>
+        </View>
+      ) : (
+        <>
+          <View
+            style={[
+              styles.summaryCard,
+              { backgroundColor: colors.surface, borderColor: colors.border },
+            ]}
+          >
+          <View style={styles.summary}>
             <View
               style={[
-                styles.heroMetaChip,
+                styles.iconBubble,
                 {
-                  backgroundColor: withAlpha(colors.surfaceAlt, 0.75),
-                  borderColor: withAlpha(colors.border, 0.75),
+                  backgroundColor: withAlpha(colors.accent, 0.13),
+                  borderColor: withAlpha(colors.accent, 0.3),
                 },
               ]}
             >
-              <Icon name={iconName} size={12} color={colors.textMuted} />
-              <Text style={[styles.heroMetaText, { color: colors.text }]}>{typeLabel}</Text>
+              <Icon name={iconName} size={23} color={colors.accent} />
             </View>
-          </View>
-        </View>
-      </View>
-
-      <ScrollView contentContainerStyle={styles.content}>
-        <View style={[styles.card, { borderColor: colors.border, backgroundColor: colors.surface }]}>
-          <View style={styles.topRow}>
-            <View style={[styles.iconBubble, { backgroundColor: colors.surfaceAlt }]}>
-              <Icon name={iconName} size={18} color={colors.text} />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={[styles.cardTitle, { color: colors.text }]}>{item.title}</Text>
-              <View style={[styles.pill, { backgroundColor: colors.surfaceAlt, borderColor: colors.border }]}>
-                <Text style={[styles.pillText, { color: colors.text }]}>{typeLabel}</Text>
-              </View>
-            </View>
-          </View>
-
-          {!!item.body && (
-            <Text style={[styles.body, { color: colors.textMuted }]}>{item.body}</Text>
-          )}
-
-          <View style={[styles.metaBox, { borderColor: colors.border, backgroundColor: colors.surfaceAlt }]}>
-            <Text style={[styles.metaTitle, { color: colors.text }]}>Details</Text>
-            <Text style={[styles.metaText, { color: colors.textMuted }]}>
-              Read: {item.read ? "Yes" : "No"}
-            </Text>
-
-            {item.data?.bookingId ? (
-              <>
-                <Text style={[styles.metaText, { color: colors.textMuted }]}>
-                  Booking ID: {String(item.data.bookingId)}
-                </Text>
-                {!!extractISOFromNotificationData(item.data) && (
-                  <Text style={[styles.metaText, { color: colors.textMuted }]}>
-                    Date: {formatDateDDMMYYYY(extractISOFromNotificationData(item.data))}
-                  </Text>
-                )}
-              </>
-            ) : null}
-
-            {item.data?.holidayId ? (
-              <Text style={[styles.metaText, { color: colors.textMuted }]}>
-                Holiday ID: {String(item.data.holidayId)}
+            <View style={styles.summaryCopy}>
+              <Text style={[styles.notificationTitle, { color: colors.text }]}>
+                {item.title}
               </Text>
+              <Text style={[styles.typeLabel, { color: colors.accent }]}>{typeLabel}</Text>
+            </View>
+          </View>
+
+          {bodySegments.length > 0 && (
+            <View style={[styles.messageCard, { borderTopColor: colors.border }]}>
+              {bodySegments.map((segment, index) => (
+                <View key={`${segment}-${index}`} style={styles.messageLine}>
+                  <View style={[styles.messageDot, { backgroundColor: colors.accent }]} />
+                  <Text style={[styles.body, { color: colors.text }]}>{segment}</Text>
+                </View>
+              ))}
+            </View>
+          )}
+          </View>
+
+          <View
+            style={[
+              styles.detailCard,
+              { backgroundColor: colors.surface, borderColor: colors.border },
+            ]}
+          >
+            <DetailRow label="Received" value={formatTime(item.createdAt)} colors={colors} />
+
+          {item.data?.bookingId ? (
+            !!jobDateISO && (
+              <DetailRow
+                label="Job date"
+                value={formatDateDDMMYYYY(jobDateISO)}
+                colors={colors}
+              />
+            )
+          ) : null}
+
+            {dayNotes ? <DetailNote value={dayNotes} colors={colors} /> : null}
+
+            {isTimesheetReminder(item.data) ? (
+              <DetailRow
+                label="Week commencing"
+                value={formatDateDDMMYYYY(getTimesheetReminderWeekStart(item.data))}
+                colors={colors}
+              />
+            ) : null}
+
+            {!item.data?.bookingId && !isTimesheetReminder(item.data) ? (
+              <DetailRow label="Status" value={item.read ? "Read" : "Unread"} colors={colors} />
             ) : null}
           </View>
 
-          {(item.data?.bookingId || item.data?.holidayId) && (
+          {(item.data?.bookingId ||
+            item.data?.holidayId ||
+            isTimesheetReminder(item.data)) && (
             <TouchableOpacity
               onPress={goToLinkedItem}
-              activeOpacity={0.9}
+              activeOpacity={0.86}
               disabled={navBusy}
               style={[
                 styles.cta,
-                { backgroundColor: colors.accent, borderColor: colors.accent, opacity: navBusy ? 0.7 : 1 },
+                { backgroundColor: colors.accent, opacity: navBusy ? 0.7 : 1 },
               ]}
+              accessibilityRole="button"
             >
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-                {navBusy ? <ActivityIndicator size="small" color={colors.surface} /> : null}
+              <View style={styles.ctaContent}>
+                {navBusy && <ActivityIndicator size="small" color={colors.surface} />}
                 <Text style={[styles.ctaText, { color: colors.surface }]}>
-                  {item.data?.bookingId ? "View job" : "View holiday"}
+                  {isTimesheetReminder(item.data)
+                    ? "Open timesheet"
+                    : item.data?.bookingId
+                    ? "View job"
+                    : "View holiday"}
                 </Text>
               </View>
-              <Icon name="chevron-right" size={18} color={colors.surface} />
+              <Icon name="arrow-up-right" size={19} color={colors.surface} />
             </TouchableOpacity>
           )}
-        </View>
-
-        <View style={{ height: 30 }} />
-      </ScrollView>
-    </SafeAreaView>
+        </>
+      )}
+    </PageShell>
   );
 }
 
+const DetailRow = ({ label, value, colors }) => (
+  <View style={[styles.detailRow, { borderBottomColor: colors.border }]}>
+    <Text style={[styles.detailLabel, { color: colors.textMuted }]}>{label}</Text>
+    <Text style={[styles.detailValue, { color: colors.text }]} selectable>
+      {value}
+    </Text>
+  </View>
+);
+
+const DetailNote = ({ value, colors }) => (
+  <View style={[styles.detailNote, { borderBottomColor: colors.border }]}> 
+    <Text style={[styles.detailLabel, { color: colors.textMuted }]}>Day notes</Text>
+    <Text style={[styles.detailNoteValue, { color: colors.text }]} selectable>
+      {value}
+    </Text>
+  </View>
+);
+
 const styles = StyleSheet.create({
-  safeArea: { flex: 1 },
-
-  heroCard: {
-    position: "relative",
-    borderRadius: 18,
-    borderWidth: 1,
-    marginHorizontal: 12,
-    marginTop: 24,
-    marginBottom: 10,
-    overflow: "hidden",
-  },
-  heroTopRow: {
+  summaryCard: { borderWidth: 1, borderRadius: t.radius.xl, padding: t.spacing.md },
+  summary: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "flex-start",
-    paddingHorizontal: 12,
-    paddingTop: 16,
+    gap: t.spacing.sm,
   },
-  backBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-    borderRadius: 999,
-    borderWidth: 1,
-  },
-  backText: { fontWeight: "800", fontSize: 12 },
-
-  heroContent: {
-    paddingHorizontal: 14,
-    paddingBottom: 14,
-    paddingTop: 12,
-  },
-  heroEyebrow: {
-    fontSize: 12,
-    letterSpacing: 0.6,
-    textTransform: "uppercase",
-    fontWeight: "800",
-  },
-  heroTitle: { marginTop: 3, fontSize: 24, fontWeight: "900", letterSpacing: 0.2 },
-  heroSubTitle: { marginTop: 2, fontSize: 13, fontWeight: "600" },
-  heroMetaRow: { marginTop: 12, flexDirection: "row", gap: 8, flexWrap: "wrap" },
-  heroMetaChip: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    borderRadius: 999,
-    borderWidth: 1,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-  },
-  heroMetaText: { fontSize: 11, fontWeight: "700" },
-
-  content: { paddingHorizontal: 16, paddingTop: 12 },
-
-  empty: {
-    margin: 16,
-    borderRadius: 16,
-    borderWidth: 1,
-    padding: 16,
-    alignItems: "center",
-    gap: 10,
-  },
-  emptyText: { fontSize: 13, fontWeight: "700" },
-
-  card: {
-    borderRadius: 18,
-    borderWidth: 1,
-    padding: 14,
-    marginTop: 10,
-  },
-  topRow: { flexDirection: "row", gap: 12, alignItems: "center" },
   iconBubble: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    width: 58,
+    height: 58,
+    borderRadius: t.radius.pill,
+    borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
   },
-  cardTitle: { fontSize: 16, fontWeight: "900" },
-
-  pill: {
-    marginTop: 8,
-    alignSelf: "flex-start",
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
-    borderWidth: 1,
+  summaryCopy: { flex: 1, minWidth: 0 },
+  notificationTitle: { fontSize: t.typography.titleSmall.fontSize, lineHeight: t.typography.titleSmall.lineHeight, fontWeight: "900" },
+  typeLabel: {
+    marginTop: t.spacing.xxs,
+    fontSize: t.typography.caption.fontSize,
+    fontWeight: "900",
+    letterSpacing: 0.5,
+    textTransform: "uppercase",
   },
-  pillText: { fontSize: 12, fontWeight: "800" },
-
-  body: { marginTop: 12, fontSize: 13, lineHeight: 18 },
-
-  metaBox: {
-    marginTop: 14,
-    borderRadius: 14,
-    borderWidth: 1,
-    padding: 12,
+  messageCard: { marginTop: t.spacing.md, paddingTop: t.spacing.sm, borderTopWidth: StyleSheet.hairlineWidth, gap: t.spacing.xs },
+  messageLine: { flexDirection: "row", alignItems: "flex-start", gap: t.spacing.xs },
+  messageDot: { width: 5, height: 5, marginTop: t.spacing.xs, borderRadius: t.radius.pill },
+  body: { flex: 1, fontSize: t.typography.bodySmall.fontSize, lineHeight: t.typography.bodySmall.lineHeight, fontWeight: "700" },
+  detailCard: { borderWidth: 1, borderRadius: t.radius.xl, paddingHorizontal: t.spacing.md, overflow: "hidden" },
+  detailRow: {
+    minHeight: 52,
+    paddingVertical: t.spacing.sm,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: t.spacing.md,
   },
-  metaTitle: { fontSize: 13, fontWeight: "900", marginBottom: 6 },
-  metaText: { fontSize: 12, fontWeight: "700", marginTop: 2 },
+  detailLabel: { fontSize: t.typography.bodySmall.fontSize, fontWeight: "700" },
+  detailValue: { flex: 1, fontSize: t.typography.bodySmall.fontSize, fontWeight: "800", textAlign: "right" },
+  detailNote: {
+    paddingVertical: t.spacing.sm,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    gap: t.spacing.xxs,
+  },
+  detailNoteValue: {
+    fontSize: t.typography.bodySmall.fontSize,
+    lineHeight: t.typography.bodySmall.lineHeight,
+    fontWeight: "700",
+  },
 
   cta: {
-    marginTop: 14,
-    borderRadius: 14,
-    borderWidth: 1,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
+    marginTop: t.spacing.sm,
+    minHeight: 52,
+    borderRadius: t.radius.xl,
+    paddingHorizontal: t.spacing.md,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
   },
-  ctaText: { fontWeight: "900", fontSize: 14 },
+  ctaContent: { flexDirection: "row", alignItems: "center", gap: t.spacing.xs },
+  ctaText: { fontWeight: "900", fontSize: t.typography.bodyLarge.fontSize },
+
+  centerState: { flex: 1, alignItems: "center", justifyContent: "center", padding: t.spacing.xl },
+  emptyIcon: {
+    width: 56,
+    height: 56,
+    borderRadius: t.radius.pill,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: t.spacing.sm,
+  },
+  emptyTitle: { fontSize: t.typography.sectionTitle.fontSize, fontWeight: "900" },
+  emptyText: { marginTop: t.spacing.xxs, fontSize: t.typography.bodySmall.fontSize, lineHeight: t.typography.bodySmall.lineHeight, textAlign: "center" },
 });

@@ -1,166 +1,42 @@
+import {
+  AppButton,
+  AppText as Text,
+  Banner,
+  FormStep,
+  PageSection,
+  SelectField,
+  StateView,
+  TextArea,
+} from "../../components/ui/AppPrimitives";
 // app/(protected)/vehicle-issues.js
-import { Picker } from "@react-native-picker/picker";
 import { useRouter } from "expo-router";
 import {
   addDoc,
   collection,
-  getDocs,
   serverTimestamp,
 } from "firebase/firestore";
 import { useEffect, useMemo, useState } from "react";
-import {
-  ActivityIndicator,
-  Alert,
-  Modal,
-  Platform,
-  Pressable,
-  SafeAreaView,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View,
-} from "react-native";
-import Icon from "react-native-vector-icons/Feather";
+import { Alert, StyleSheet, View } from "react-native";
 
 // 🔑 Firebase + Auth provider (paths for app/(protected)/*)
+import PageShell from "../../components/layout/PageShell";
 import { db } from "../../firebaseConfig";
+import { useEquipment, useVehicles } from "../../hooks/useOperationalData";
+import { designTokens as t } from "../../lib/design/tokens";
+import {
+  getEquipmentCategory,
+  getEquipmentName,
+  getVehicleDisplayLabel,
+  getVehicleDisplayName,
+  getVehicleRegistration,
+} from "../../lib/fleetSchema";
 import { useAuth } from "../../providers/AuthProvider";
-import { useTheme } from "../../providers/ThemeProvider";
 
 const MAX_CHARS = 600;
-
-/* ------------------------- Mobile-friendly Select ------------------------- */
-function Select({
-  value,
-  onChange,
-  items,
-  placeholder = "Select…",
-  disabled,
-  testID,
-  colors,
-}) {
-  const [open, setOpen] = useState(false);
-  const selectedLabel = items.find((i) => i.value === value)?.label || "";
-
-  if (Platform.OS === "android") {
-    return (
-      <View
-        style={[
-          styles.pickerShellAndroid,
-          {
-            backgroundColor: colors.inputBackground,
-            borderColor: colors.inputBorder,
-          },
-        ]}
-      >
-        <Picker
-          mode="dialog"
-          enabled={!disabled}
-          selectedValue={value}
-          onValueChange={onChange}
-          dropdownIconColor={colors.text}
-          style={{ color: colors.text, height: 44, width: "100%" }}
-          testID={testID}
-        >
-          <Picker.Item
-            label={`-- ${placeholder} --`}
-            value=""
-            color={colors.textMuted}
-          />
-          {items.map((i) => (
-            <Picker.Item
-              key={i.value}
-              label={i.label}
-              value={i.value}
-              color={colors.text}
-            />
-          ))}
-        </Picker>
-      </View>
-    );
-  }
-
-  // iOS
-  return (
-    <>
-      <Pressable
-        onPress={() => !disabled && setOpen(true)}
-        style={[
-          styles.selectField,
-          {
-            backgroundColor: colors.inputBackground,
-            borderColor: colors.inputBorder,
-          },
-          disabled && { opacity: 0.6 },
-        ]}
-        accessibilityRole="button"
-        testID={testID}
-      >
-        <Text
-          style={[
-            styles.selectFieldText,
-            { color: selectedLabel ? colors.text : colors.textMuted },
-          ]}
-        >
-          {selectedLabel || `-- ${placeholder} --`}
-        </Text>
-      </Pressable>
-
-      <Modal
-        visible={open}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setOpen(false)}
-      >
-        <Pressable
-          style={styles.modalBackdrop}
-          onPress={() => setOpen(false)}
-        />
-        <View style={[styles.sheet, { backgroundColor: colors.surface }]}>
-          <View
-            style={[
-              styles.sheetToolbar,
-              { borderBottomColor: colors.border },
-            ]}
-          >
-            <TouchableOpacity onPress={() => setOpen(false)}>
-              <Text style={[styles.doneText, { color: colors.text }]}>
-                Done
-              </Text>
-            </TouchableOpacity>
-          </View>
-          <Picker
-            selectedValue={value}
-            onValueChange={(v) => onChange(v)}
-            style={{
-              width: "100%",
-              height: 216,
-              backgroundColor: colors.surface,
-            }}
-            itemStyle={{ color: colors.text }}
-          >
-            <Picker.Item
-              label={`-- ${placeholder} --`}
-              value=""
-              color={colors.textMuted}
-            />
-            {items.map((i) => (
-              <Picker.Item
-                key={i.value}
-                label={i.label}
-                value={i.value}
-                color={colors.text}
-              />
-            ))}
-          </Picker>
-        </View>
-      </Modal>
-    </>
-  );
-}
-/* ------------------------------------------------------------------------- */
+const ASSET_TYPES = [
+  { label: "Vehicle", value: "vehicle" },
+  { label: "Equipment", value: "equipment" },
+];
 
 // normalise category
 const normalizeCategory = (cat) => {
@@ -169,21 +45,31 @@ const normalizeCategory = (cat) => {
   return c.length ? c : "Other";
 };
 
-const isFleetVehicleCategory = (cat) =>
-  normalizeCategory(cat).toLowerCase() === "fleet vehicles";
+const getEquipmentIdentifier = (equipment) =>
+  String(
+    equipment?.serialNumber || equipment?.equipmentId || equipment?.asset || ""
+  ).trim();
+
+const getEquipmentDisplayLabel = (equipment) => {
+  const name = String(getEquipmentName(equipment) || "Unnamed equipment").trim();
+  const identifier = getEquipmentIdentifier(equipment);
+  return identifier ? `${name} · ${identifier}` : name;
+};
 
 export default function VehicleIssuesPage() {
   const router = useRouter();
 
   // ✅ mirror me.js
   const { employee, user, isAuthed, loading } = useAuth();
-  const { colors } = useTheme();
+  const vehiclesResource = useVehicles();
+  const equipmentResource = useEquipment();
+  const vehicles = vehiclesResource.data;
+  const equipment = equipmentResource.data;
 
-  const [vehicles, setVehicles] = useState([]);
-  const [loadingVehicles, setLoadingVehicles] = useState(true);
+  const [selectedAssetType, setSelectedAssetType] = useState("vehicle");
 
   const [selectedCategory, setSelectedCategory] = useState("");
-  const [selectedVehicle, setSelectedVehicle] = useState("");
+  const [selectedAsset, setSelectedAsset] = useState("");
   const [issueText, setIssueText] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -192,48 +78,58 @@ export default function VehicleIssuesPage() {
     [vehicles]
   );
 
-  const reportableVehicles = useMemo(
-    () => normalizedVehicles.filter((v) => !isFleetVehicleCategory(v.category)),
-    [normalizedVehicles]
+  // Fleet Vehicles are valid maintenance targets. This screen previously
+  // filtered that category out, which left many employees with nothing to report.
+  const reportableVehicles = normalizedVehicles;
+
+  const normalizedEquipment = useMemo(
+    () =>
+      equipment.map((item) => ({
+        ...item,
+        category: normalizeCategory(getEquipmentCategory(item) || "Equipment"),
+      })),
+    [equipment]
   );
 
-  const categories = useMemo(() => {
-    const set = new Set(reportableVehicles.map((v) => v.category));
-    return Array.from(set).sort((a, b) => a.localeCompare(b));
-  }, [reportableVehicles]);
+  const reportableAssets =
+    selectedAssetType === "equipment" ? normalizedEquipment : reportableVehicles;
+  const activeResource =
+    selectedAssetType === "equipment" ? equipmentResource : vehiclesResource;
+  const loadingAssets = activeResource.isInitialLoading;
+  const assetLoadError = activeResource.error;
 
-  const filteredVehicles = useMemo(() => {
+  const categories = useMemo(() => {
+    const set = new Set(reportableAssets.map((asset) => asset.category));
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [reportableAssets]);
+
+  const filteredAssets = useMemo(() => {
     if (!selectedCategory) return [];
-    return reportableVehicles.filter((v) => v.category === selectedCategory);
-  }, [reportableVehicles, selectedCategory]);
+    return reportableAssets.filter((asset) => asset.category === selectedCategory);
+  }, [reportableAssets, selectedCategory]);
+
+  const selectedAssetRecord = useMemo(
+    () => reportableAssets.find((asset) => asset.id === selectedAsset) || null,
+    [reportableAssets, selectedAsset]
+  );
+  const selectedRegistration =
+    selectedAssetType === "vehicle" ? getVehicleRegistration(selectedAssetRecord) : "";
+  const selectedEquipmentIdentifier =
+    selectedAssetType === "equipment"
+      ? getEquipmentIdentifier(selectedAssetRecord)
+      : "";
 
   const isValid =
-    selectedCategory && selectedVehicle && issueText.trim().length > 0;
-  const charCount = issueText.length;
+    selectedCategory && selectedAsset && issueText.trim().length > 0;
 
   useEffect(() => {
-    // gate like me.js
-    if (loading || !isAuthed) return;
-    const fetchVehicles = async () => {
-      try {
-        const snapshot = await getDocs(collection(db, "vehicles"));
-        const list = snapshot.docs.map((doc) => ({
-          id: doc.id,
-          ...doc.data(),
-        }));
-        setVehicles(list);
-      } catch (e) {
-        console.error("Error fetching vehicles:", e);
-      } finally {
-        setLoadingVehicles(false);
-      }
-    };
-    fetchVehicles();
-  }, [loading, isAuthed]);
+    setSelectedCategory("");
+    setSelectedAsset("");
+  }, [selectedAssetType]);
 
   // clear vehicle when category changes
   useEffect(() => {
-    setSelectedVehicle("");
+    setSelectedAsset("");
   }, [selectedCategory]);
 
   const reportIssue = async () => {
@@ -246,7 +142,14 @@ export default function VehicleIssuesPage() {
     }
     try {
       setSubmitting(true);
-      const v = reportableVehicles.find((x) => x.id === selectedVehicle);
+      const asset = reportableAssets.find((item) => item.id === selectedAsset);
+      const companyId = String(employee?.companyId || "").trim();
+      if (!asset) {
+        throw new Error("The selected asset is no longer available.");
+      }
+      if (!companyId) {
+        throw new Error("The employee account is not linked to a company.");
+      }
       const reporterName =
         employee?.name ||
         employee?.displayName ||
@@ -256,9 +159,27 @@ export default function VehicleIssuesPage() {
       const reporterUid = user?.uid || "N/A";
 
       await addDoc(collection(db, "vehicleIssues"), {
-        vehicleId: v.id,
-        vehicleName: v.name || "Unnamed Vehicle",
-        category: v.category || "Other",
+        companyId,
+        assetType: selectedAssetType,
+        assetId: asset.id,
+        assetName:
+          selectedAssetType === "equipment"
+            ? getEquipmentName(asset) || "Unnamed equipment"
+            : getVehicleDisplayName(asset, vehicles),
+        ...(selectedAssetType === "equipment"
+          ? {
+              equipmentDocId: asset.id,
+              equipmentId: getEquipmentIdentifier(asset),
+              equipmentName: getEquipmentName(asset) || "Unnamed equipment",
+              serialNumber: String(asset.serialNumber || "").trim(),
+              asset: String(asset.asset || "").trim(),
+            }
+          : {
+              vehicleId: asset.id,
+              vehicleName: getVehicleDisplayName(asset, vehicles),
+              registration: getVehicleRegistration(asset),
+            }),
+        category: asset.category || "Other",
         description: issueText.trim(),
         // reporter meta (matches provider pattern)
         reporterName,
@@ -270,14 +191,18 @@ export default function VehicleIssuesPage() {
 
       Alert.alert(
         "✅ Issue reported",
-        `Thanks! We logged an issue for ${v.name || "vehicle"}.`,
+        `Thanks! We logged an issue for ${
+          selectedAssetType === "equipment"
+            ? getEquipmentDisplayLabel(asset)
+            : getVehicleDisplayLabel(asset, vehicles)
+        }.`,
         [
           {
             text: "OK",
             onPress: () => {
               // clear form
               setIssueText("");
-              setSelectedVehicle("");
+              setSelectedAsset("");
               setSelectedCategory("");
               // go home
               router.replace("/(protected)/screens/homescreen");
@@ -297,372 +222,175 @@ export default function VehicleIssuesPage() {
   if (loading || !isAuthed) return null;
 
   return (
-    <SafeAreaView
-      style={[styles.safeArea, { backgroundColor: colors.background }]}
+    <PageShell
+      mode="form"
+      width="form"
+      header={{
+        variant: "compact",
+        eyebrow: "Maintenance",
+        title: "Report an issue",
+        subtitle: "Tell us what needs attention",
+        onBack: () => router.back(),
+      }}
     >
-      <View style={[styles.container, { backgroundColor: colors.background }]}>
-        <ScrollView
-          contentContainerStyle={styles.content}
-          keyboardShouldPersistTaps="handled"
-          nestedScrollEnabled
-        >
-          {/* Header */}
-          <View style={styles.headerWrap}>
-            <Text style={[styles.title, { color: colors.text }]}>
-              Report Vehicle Issues
-            </Text>
-            <Text style={[styles.subtitle, { color: colors.textMuted }]}>
-              Log problems quickly so the team can action them.
-            </Text>
-          </View>
+      <View style={styles.container}>
+        <Banner title="Quick report" icon="tool">
+          Choose the asset, then describe the problem. The maintenance team will be notified.
+        </Banner>
+
+        <PageSection divided={false} layoutStyle={styles.formFlow}>
+          <FormStep number={1} title="Choose the asset type" hint="What needs attention?">
+            <SelectField
+              label="Asset type"
+              value={selectedAssetType}
+              onChange={setSelectedAssetType}
+              placeholder="Select asset type"
+              disabled={submitting}
+              options={ASSET_TYPES}
+              testID="asset-type-select"
+            />
+          </FormStep>
 
           {/* Loading / Empty */}
-          {loadingVehicles ? (
-            <View
-              style={[
-                styles.loadingCard,
-                {
-                  backgroundColor: colors.surface,
-                  borderColor: colors.border,
-                },
-              ]}
-            >
-              <ActivityIndicator size="large" color={colors.accent} />
-              <Text
-                style={[styles.loadingText, { color: colors.textMuted }]}
-              >
-                Loading vehicles…
-              </Text>
-            </View>
-          ) : reportableVehicles.length === 0 ? (
-            <View
-              style={[
-                styles.emptyCard,
-                {
-                  backgroundColor: colors.surface,
-                  borderColor: colors.border,
-                },
-              ]}
-            >
-              <Icon name="truck" size={22} color={colors.textMuted} />
-              <Text style={[styles.emptyTitle, { color: colors.text }]}>
-                No vehicles found
-              </Text>
-              <Text style={[styles.emptyText, { color: colors.textMuted }]}>
-                Add vehicles in the admin area, then report issues here.
-              </Text>
-            </View>
+          {loadingAssets ? (
+            <StateView
+              state="loading"
+              compact
+              title={`Loading ${selectedAssetType === "equipment" ? "equipment" : "vehicles"}…`}
+            />
+          ) : assetLoadError && reportableAssets.length === 0 ? (
+            <StateView
+              state="error"
+              compact
+              title={`${selectedAssetType === "equipment" ? "Equipment" : "Vehicles"} could not be loaded`}
+              message="Check your connection and try again."
+              actionLabel="Retry"
+              onAction={activeResource.refresh}
+            />
+          ) : reportableAssets.length === 0 ? (
+            <StateView
+              state="empty"
+              compact
+              icon={selectedAssetType === "equipment" ? "tool" : "truck"}
+              title={`No ${selectedAssetType === "equipment" ? "equipment" : "vehicles"} found`}
+              message={`Add ${selectedAssetType === "equipment" ? "equipment" : "vehicles"} in the admin area, then report issues here.`}
+            />
           ) : (
             <>
               {/* Category */}
-              <View
-                style={[
-                  styles.card,
-                  {
-                    backgroundColor: colors.surface,
-                    borderColor: colors.border,
-                  },
-                ]}
-              >
-                <View style={styles.cardHeader}>
-                  <Icon name="tag" size={16} color={colors.textMuted} />
-                  <Text
-                    style={[
-                      styles.cardHeaderText,
-                      { color: colors.text },
-                    ]}
-                  >
-                    Category
-                  </Text>
-                </View>
-
-                <Select
+              <FormStep number={2} title="Narrow the asset list" hint="Choose a category">
+                <SelectField
+                  label="Category"
                   value={selectedCategory}
                   onChange={setSelectedCategory}
-                  placeholder="Select Category"
+                  placeholder="Select category"
                   disabled={submitting}
-                  items={categories.map((cat) => ({
-                    label: cat,
-                    value: cat,
-                  }))}
+                  options={categories.map((category) => ({ label: category, value: category }))}
+                  searchable={categories.length > 8}
                   testID="category-select"
-                  colors={colors}
                 />
-              </View>
+              </FormStep>
 
-              {/* Vehicle */}
-              <View
-                style={[
-                  styles.card,
-                  {
-                    backgroundColor: colors.surface,
-                    borderColor: colors.border,
-                  },
-                ]}
+              {/* Asset */}
+              <FormStep
+                number={3}
+                title="Select the specific asset"
+                hint={selectedAssetType === "equipment" ? "Equipment" : "Vehicle"}
               >
-                <View style={styles.cardHeader}>
-                  <Icon name="truck" size={16} color={colors.textMuted} />
-                  <Text
-                    style={[
-                      styles.cardHeaderText,
-                      { color: colors.text },
-                    ]}
-                  >
-                    Vehicle
-                  </Text>
-                </View>
-
-                <Select
-                  value={selectedVehicle}
-                  onChange={setSelectedVehicle}
-                  placeholder="Select Vehicle"
+                <SelectField
+                  label={selectedAssetType === "equipment" ? "Equipment" : "Vehicle"}
+                  value={selectedAsset}
+                  onChange={setSelectedAsset}
+                  placeholder={`Select ${selectedAssetType === "equipment" ? "Equipment" : "Vehicle"}`}
                   disabled={!selectedCategory || submitting}
-                  items={filteredVehicles.map((v) => ({
-                    label: v.name || "Unnamed Vehicle",
-                    value: v.id,
+                  options={filteredAssets.map((asset) => ({
+                    label:
+                      selectedAssetType === "equipment"
+                        ? getEquipmentDisplayLabel(asset)
+                        : getVehicleDisplayLabel(asset, vehicles),
+                    value: asset.id,
                   }))}
+                  searchable
                   testID="vehicle-select"
-                  colors={colors}
                 />
 
-                {selectedVehicle ? (
+                {selectedAsset ? (
                   <View style={styles.metaRow}>
-                    <Text
-                      style={[styles.meta, { color: colors.textMuted }]}
-                    >
-                      ID:{" "}
-                      <Text
-                        style={[
-                          styles.metaValue,
-                          { color: colors.text },
-                        ]}
-                      >
-                        {selectedVehicle}
+                    <Text variant="metadata" tone="secondary">
+                      {selectedAssetType === "equipment" ? "Equipment" : "Vehicle"}:{" "}
+                      <Text variant="metadata">
+                        {selectedAssetType === "equipment"
+                          ? getEquipmentName(selectedAssetRecord) || "Unnamed equipment"
+                          : getVehicleDisplayName(selectedAssetRecord, vehicles)}
                       </Text>
                     </Text>
-                    <Text
-                      style={[styles.metaDot, { color: colors.textMuted }]}
-                    >
-                      •
-                    </Text>
-                    <Text
-                      style={[styles.meta, { color: colors.textMuted }]}
-                    >
+                    {selectedRegistration ? (
+                      <Text variant="metadata" tone="secondary">
+                        Reg:{" "}
+                        <Text variant="metadata">
+                          {selectedRegistration}
+                        </Text>
+                      </Text>
+                    ) : null}
+                    {selectedEquipmentIdentifier ? (
+                      <Text variant="metadata" tone="secondary">
+                        ID:{" "}
+                        <Text variant="metadata">
+                          {selectedEquipmentIdentifier}
+                        </Text>
+                      </Text>
+                    ) : null}
+                    <Text variant="metadata" tone="secondary">
                       Cat:{" "}
-                      <Text
-                        style={[
-                          styles.metaValue,
-                          { color: colors.text },
-                        ]}
-                      >
+                      <Text variant="metadata">
                         {selectedCategory || "Other"}
                       </Text>
                     </Text>
                   </View>
                 ) : null}
-              </View>
+              </FormStep>
 
               {/* Issue description */}
-              <View
-                style={[
-                  styles.card,
-                  {
-                    backgroundColor: colors.surface,
-                    borderColor: colors.border,
-                  },
-                ]}
-              >
-                <View style={styles.cardHeader}>
-                  <Icon
-                    name="alert-triangle"
-                    size={16}
-                    color={colors.textMuted}
-                  />
-                  <Text
-                    style={[
-                      styles.cardHeaderText,
-                      { color: colors.text },
-                    ]}
-                  >
-                    Describe the issue
-                  </Text>
-                </View>
-
-                <TextInput
-                  editable={!!selectedVehicle && !submitting}
-                  style={[
-                    styles.input,
-                    {
-                      backgroundColor: colors.inputBackground,
-                      borderColor: colors.inputBorder,
-                      color: colors.text,
-                    },
-                  ]}
+              <FormStep number={4} title="Describe the issue" hint="Include warning lights, sounds or symptoms" last>
+                <TextArea
+                  label="Issue details"
+                  disabled={!selectedAsset || submitting}
                   placeholder="e.g. Brakes squeaking above 40mph, warning light on, tyre low…"
-                  placeholderTextColor={colors.textMuted}
-                  multiline
                   value={issueText}
-                  onChangeText={(t) =>
-                    setIssueText(
-                      t.length > MAX_CHARS ? t.slice(0, MAX_CHARS) : t
-                    )
-                  }
+                  onChangeText={setIssueText}
+                  maxLength={MAX_CHARS}
+                  showCount
                 />
-                <View style={styles.counterRow}>
-                  <Text
-                    style={[
-                      styles.counterText,
-                      { color: colors.textMuted },
-                    ]}
-                  >
-                    {charCount}/{MAX_CHARS}
-                  </Text>
-                </View>
-
-                <TouchableOpacity
-                  style={[
-                    styles.button,
-                    {
-                      backgroundColor: colors.accent,
-                      borderColor: colors.accent,
-                    },
-                    (!isValid || submitting) && styles.buttonDisabled,
-                  ]}
+                <AppButton
+                  label={submitting ? "Submitting…" : "Report issue"}
+                  icon="send"
                   onPress={reportIssue}
                   disabled={!isValid || submitting}
-                  activeOpacity={0.9}
-                >
-                  <Text
-                    style={[
-                      styles.buttonText,
-                      { color: colors.surface },
-                    ]}
-                  >
-                    {submitting ? "Submitting…" : "Report Issue"}
-                  </Text>
-                </TouchableOpacity>
-              </View>
+                  loading={submitting}
+                  fullWidth
+                />
+              </FormStep>
             </>
           )}
+        </PageSection>
 
-          <View style={{ height: 24 }} />
-        </ScrollView>
+        <View style={styles.bottomSpacer} />
       </View>
-    </SafeAreaView>
+    </PageShell>
   );
 }
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1 },
   container: { flex: 1 },
-  content: { padding: 16, paddingBottom: 24 },
-
-  headerWrap: { alignItems: "center", marginBottom: 12 },
-  title: {
-    fontSize: 22,
-    fontWeight: "800",
-    letterSpacing: 0.2,
-    textAlign: "center",
+  formFlow: {
+    marginTop: t.spacing.xs,
   },
-  subtitle: { marginTop: 6, fontSize: 13, textAlign: "center" },
-
-  card: {
-    borderRadius: 12,
-    borderWidth: 1,
-    padding: 12,
-    marginTop: 12,
-  },
-  cardHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    marginBottom: 8,
-  },
-  cardHeaderText: { fontSize: 14, fontWeight: "700" },
-
-  // Android inline shell
-  pickerShellAndroid: {
-    borderWidth: 1,
-    borderRadius: 10,
-    overflow: "hidden",
-  },
-
-  // iOS tap field
-  selectField: {
-    borderWidth: 1,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-  },
-  selectFieldText: {},
-
-  // iOS modal sheet
-  modalBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)" },
-  sheet: {
-    borderTopLeftRadius: 14,
-    borderTopRightRadius: 14,
-    paddingBottom: 24,
-  },
-  sheetToolbar: {
-    flexDirection: "row",
-    justifyContent: "flex-end",
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-  },
-  doneText: { fontWeight: "700" },
-
   metaRow: {
     flexDirection: "row",
+    flexWrap: "wrap",
     alignItems: "center",
-    gap: 8,
-    marginTop: 10,
+    gap: t.spacing.xs,
+    marginTop: t.spacing.xs,
   },
-  meta: { fontSize: 12 },
-  metaValue: { fontWeight: "700" },
-  metaDot: {},
-
-  input: {
-    borderRadius: 10,
-    borderWidth: 1,
-    minHeight: 100,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    textAlignVertical: "top",
-  },
-  counterRow: {
-    flexDirection: "row",
-    justifyContent: "flex-end",
-    marginTop: 6,
-  },
-  counterText: { fontSize: 12 },
-
-  button: {
-    paddingVertical: 12,
-    borderRadius: 10,
-    alignItems: "center",
-    marginTop: 12,
-    borderWidth: 1,
-  },
-  buttonDisabled: { opacity: 0.6 },
-  buttonText: { fontSize: 16, fontWeight: "800" },
-
-  loadingCard: {
-    borderRadius: 12,
-    borderWidth: 1,
-    padding: 20,
-    alignItems: "center",
-    marginTop: 16,
-  },
-  loadingText: { marginTop: 10 },
-  emptyCard: {
-    borderRadius: 12,
-    borderWidth: 1,
-    padding: 20,
-    alignItems: "center",
-    marginTop: 16,
-    gap: 8,
-  },
-  emptyTitle: { fontWeight: "800" },
-  emptyText: { textAlign: "center" },
+  bottomSpacer: { height: t.spacing.xs },
 });

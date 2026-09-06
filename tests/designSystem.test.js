@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { getResponsiveLayout } from "../lib/design/responsive.js";
+import { getDashboardGridColumns } from "../lib/design/dashboardLayout.js";
 import {
   createActionLock,
   getStatusColors,
@@ -14,6 +15,15 @@ test("responsive layout uses phone, tablet, and wide gutters", () => {
   assert.equal(getResponsiveLayout(800).columns, 2);
   assert.equal(getResponsiveLayout(800).pageGutter, 24);
   assert.equal(getResponsiveLayout(1400).pageGutter, 32);
+});
+
+test("dashboard grid adapts to usable width and accessibility text", () => {
+  assert.equal(getDashboardGridColumns(280), 1);
+  assert.equal(getDashboardGridColumns(320), 2);
+  assert.equal(getDashboardGridColumns(393), 3);
+  assert.equal(getDashboardGridColumns(768), 3);
+  assert.equal(getDashboardGridColumns(393, 1.6), 1);
+  assert.equal(getDashboardGridColumns(768, 1.6), 3);
 });
 
 test("operational status aliases map to stable semantic tones", () => {

@@ -1,41 +1,30 @@
+import { AppText as Text, AppPressable as TouchableOpacity, FormField } from "../../components/ui/AppPrimitives";
 // app/(protected)/contacts.js
-import { useMemo, useState } from "react";
+import {
+  Fragment,
+  useMemo,
+  useState } from "react";
 import {
   Alert,
   Linking,
   Platform,
-  RefreshControl,
-  ScrollView,
   StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
 import PageHeaderCard from "../../components/PageHeaderCard";
-import { AsyncContentState, EmptyState } from "../../components/AsyncState";
+import { EmptyState } from "../../components/AsyncState";
+import PageShell from "../../components/layout/PageShell";
 import { useContacts } from "../../hooks/useOperationalData";
-import { useResponsiveLayout } from "../../hooks/useResponsiveLayout";
 import { designTokens as t } from "../../lib/design/tokens";
 
 import { useTheme } from "../../providers/ThemeProvider";
-
-function withAlpha(hex, alpha) {
-  const safeAlpha = Math.max(0, Math.min(1, Number(alpha) || 0));
-  const raw = String(hex || "").replace("#", "");
-  if (!/^[0-9a-fA-F]{6}$/.test(raw)) return `rgba(255,255,255,${safeAlpha})`;
-  const r = parseInt(raw.slice(0, 2), 16);
-  const g = parseInt(raw.slice(2, 4), 16);
-  const b = parseInt(raw.slice(4, 6), 16);
-  return `rgba(${r},${g},${b},${safeAlpha})`;
-}
+import { staticColors } from "../../lib/design/staticColors";
+import { withAlpha } from "../../lib/design/color";
 
 export default function ContactsPage() {
   const { colors, colorScheme } = useTheme();
-  const responsive = useResponsiveLayout();
   const isDark = colorScheme === "dark";
 
   const [q, setQ] = useState("");
@@ -142,145 +131,87 @@ export default function ContactsPage() {
 
   const totalCount = employees.length;
   const showingCount = filtered.length;
+  const countLabel = q.trim()
+    ? `${showingCount} of ${totalCount} contacts`
+    : `${totalCount} contacts`;
 
   // 🔹 All colours from theme
-  const bg = colors.background;
-  const cardBg = colors.surfaceAlt ?? colors.surface;
+  const cardBg = colors.surface;
   const borderColor = colors.border;
   const textPrimary = colors.text;
-  const textMuted = colors.textMuted ?? "#7a7a7a";
-  const inputBg = colors.inputBackground ?? colors.surface;
-  const inputBorder = colors.inputBorder ?? colors.border;
-  const placeholder = colors.placeholder ?? textMuted;
+  const textMuted = colors.textMuted ?? staticColors.hex_7a7a7a_7vh7e8;
   const iconMuted = colors.iconMuted ?? textMuted;
   const avatarBg = colors.avatarBg ?? colors.surface;
   const avatarBorder = colors.avatarBorder ?? colors.border;
   const metaText = colors.metaText ?? textMuted;
-  const clearBg = colors.chipBg ?? (isDark ? "#252525" : "#e5e5ea");
-  const callColor = colors.accent ?? "#C8102E";
-  const msgColor = "#23C063";
-  const disabledBg = colors.disabled ?? (isDark ? "#2a2a2a" : "#d1d1d6");
+  const callColor = colors.accent ?? staticColors.hex_c8102e_6za5cb;
+  const msgColor = staticColors.hex_23c063_74ohzl;
+  const disabledBg = colors.disabled ?? (isDark ? staticColors.hex_2a2a2a_631aj9 : staticColors.hex_d1d1d6_pnsuhg);
 
   return (
-    <SafeAreaView
-      edges={["top", "left", "right"]}
-      style={[styles.container, { backgroundColor: bg }]}
-    >
-      <View style={{ flex: 1 }}>
-        <ScrollView
-          contentContainerStyle={[
-            styles.content,
-            { width: "100%", maxWidth: responsive.maxContentWidth, alignSelf: "center" },
-          ]}
-          keyboardShouldPersistTaps="handled"
-          refreshControl={
-            <RefreshControl
-              refreshing={contactsResource.isRefreshing}
-              onRefresh={contactsResource.refresh}
-              tintColor={colors.accent}
-            />
-          }
+    <PageShell
+      contentSpacing="compact"
+      customHeader={
+        <PageHeaderCard
+          eyebrow="Team"
+          title="Contacts"
+          subtitle="Reach crew quickly by phone or WhatsApp."
+          style={styles.heroCard}
+          contentStyle={styles.heroContent}
+          titleStyle={{ color: textPrimary }}
+          eyebrowStyle={{ color: textMuted }}
+          subtitleStyle={{ color: textMuted }}
         >
-          <PageHeaderCard
-            eyebrow="Team"
-            title="Contacts"
-            subtitle="Reach crew quickly by phone or WhatsApp."
-            style={styles.heroCard}
-            contentStyle={styles.heroContent}
-            titleStyle={{ color: textPrimary }}
-            eyebrowStyle={{ color: textMuted }}
-            subtitleStyle={{ color: textMuted }}
-          >
-            <View style={styles.heroMetaRow}>
-                <View
-                  style={[
-                    styles.heroMetaChip,
-                    {
-                      backgroundColor: withAlpha(colors.surfaceAlt, 0.8),
-                      borderColor: withAlpha(colors.border, 0.8),
-                    },
-                  ]}
-                >
-                  <Icon name="users" size={12} color={textMuted} />
-                  <Text style={[styles.heroMetaText, { color: textPrimary }]}>
-                    Total: {totalCount}
-                  </Text>
-                </View>
-                <View
-                  style={[
-                    styles.heroMetaChip,
-                    {
-                      backgroundColor: withAlpha(colors.surfaceAlt, 0.8),
-                      borderColor: withAlpha(colors.border, 0.8),
-                    },
-                  ]}
-                >
-                  <Icon name="filter" size={12} color={textMuted} />
-                  <Text style={[styles.heroMetaText, { color: textPrimary }]}>
-                    Showing: {showingCount}
-                  </Text>
-                </View>
-            </View>
-          </PageHeaderCard>
-
+          <View style={styles.heroMetaRow}>
+              <View
+                style={[
+                  styles.heroMetaChip,
+                  {
+                    backgroundColor: withAlpha(colors.surfaceAlt, 0.8),
+                    borderColor: withAlpha(colors.border, 0.8),
+                  },
+                ]}
+              >
+                <Icon name="users" size={12} color={textMuted} />
+                <Text style={[styles.heroMetaText, { color: textPrimary }]}>{countLabel}</Text>
+              </View>
+          </View>
+        </PageHeaderCard>
+      }
+      customHeaderPlacement="scroll"
+      refresh={{
+        refreshing: contactsResource.isRefreshing,
+        onRefresh: contactsResource.refresh,
+      }}
+      state={{
+        resources: [contactsResource],
+        hasContent: employees.length > 0,
+        onRetry: contactsResource.refresh,
+        loadingLabel: "Loading contacts…",
+        empty: {
+          when: employees.length === 0,
+          icon: "user-x",
+          title: "No employees found",
+          message: "Add employees in the web app.",
+        },
+      }}
+    >
+      <View style={styles.contactsBody}>
           {/* Search bar */}
           <View style={styles.searchRow}>
-            <View
-              style={[
-                styles.searchInner,
-                {
-                  backgroundColor: inputBg,
-                  borderColor: inputBorder,
-                },
-              ]}
-            >
-              <Icon
-                name="search"
-                size={16}
-                color={iconMuted}
-                style={{ marginRight: 8 }}
-              />
-              <TextInput
-                accessibilityLabel="Search employee contacts"
-                accessibilityHint="Enter an employee name or phone number"
-                style={[styles.searchInput, { color: textPrimary }]}
+              <FormField
+                label="Search employee contacts"
+                hint="Enter an employee name or phone number"
                 placeholder="Search by name or phone"
-                placeholderTextColor={placeholder}
                 value={q}
                 onChangeText={setQ}
-                autoCapitalize="none"
-                autoCorrect={false}
-                returnKeyType="search"
+                style={{ flex: 1 }}
+                inputProps={{ autoCapitalize: "none", autoCorrect: false, returnKeyType: "search" }}
               />
-              {q.length > 0 && (
-                <TouchableOpacity
-                  onPress={() => setQ("")}
-                  accessibilityRole="button"
-                  accessibilityLabel="Clear search"
-                  hitSlop={6}
-                  style={[styles.clearBtn, { backgroundColor: clearBg }]}
-                >
-                  <Text
-                    style={[
-                      styles.clearBtnText,
-                      { color: textPrimary, opacity: 0.9 },
-                    ]}
-                  >
-                    ×
-                  </Text>
-                </TouchableOpacity>
-              )}
-            </View>
           </View>
 
           {/* List */}
-          <AsyncContentState
-            resources={[contactsResource]}
-            hasContent={employees.length > 0}
-            onRetry={contactsResource.refresh}
-            loadingLabel="Loading contacts…"
-          >
-            {filtered.length === 0 ? (
+          {filtered.length === 0 ? (
               <EmptyState
                 icon="user-x"
                 title={q ? "No matches found" : "No employees found"}
@@ -292,7 +223,7 @@ export default function ContactsPage() {
                 compact
               />
             ) : (
-              filtered.map((emp) => {
+              filtered.map((emp, index) => {
               const initials = (emp.name || "")
                 .split(" ")
                 .map((n) => n[0])
@@ -302,18 +233,28 @@ export default function ContactsPage() {
 
               const phone = emp.mobile || "";
               const hasPhone = Boolean(toIntlNoPlusUK(phone));
+              const role = Array.isArray(emp.jobTitle)
+                ? emp.jobTitle.filter(Boolean).join(" · ")
+                : String(emp.jobTitle || "").trim();
+              const letter = (emp.name || "#").trim().charAt(0).toUpperCase() || "#";
+              const previousLetter = index > 0
+                ? (filtered[index - 1]?.name || "#").trim().charAt(0).toUpperCase() || "#"
+                : null;
 
               return (
-                <View
-                  key={emp.id}
-                  style={[
-                    styles.card,
-                    {
-                      backgroundColor: cardBg,
-                      borderColor,
-                    },
-                  ]}
-                >
+                <Fragment key={emp.id}>
+                  {letter !== previousLetter ? (
+                    <Text style={[styles.letterHeading, { color: textMuted }]}>{letter}</Text>
+                  ) : null}
+                  <View
+                    style={[
+                      styles.card,
+                      {
+                        backgroundColor: cardBg,
+                        borderColor,
+                      },
+                    ]}
+                  >
                   {/* Left avatar */}
                   <View
                     style={[
@@ -330,8 +271,8 @@ export default function ContactsPage() {
                   </View>
 
                   {/* Middle content */}
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.name, { color: textPrimary }]}>
+                  <View style={styles.contactCopy}>
+                    <Text style={[styles.name, { color: textPrimary }]} numberOfLines={1}>
                       {emp.name || "No Name"}
                     </Text>
 
@@ -340,31 +281,11 @@ export default function ContactsPage() {
                         name="phone"
                         size={14}
                         color={hasPhone ? iconMuted : textMuted}
-                        style={{ marginRight: 6 }}
+                        style={styles.infoIcon}
                       />
-                      <TouchableOpacity
-                        onPress={() => hasPhone && callNumber(phone)}
-                        activeOpacity={hasPhone ? 0.7 : 1}
-                        accessibilityRole="button"
-                        accessibilityLabel={`Call ${emp.name || "employee"}`}
-                        accessibilityHint={hasPhone ? `Calls ${phone}` : "No phone number available"}
-                        accessibilityState={{ disabled: !hasPhone }}
-                        disabled={!hasPhone}
-                      >
-                        <Text
-                          style={[
-                            styles.meta,
-                            {
-                              color: hasPhone ? metaText : textMuted,
-                              textDecorationLine: hasPhone
-                                ? "underline"
-                                : "none",
-                            },
-                          ]}
-                        >
-                          {phone || "No number"}
-                        </Text>
-                      </TouchableOpacity>
+                      <Text style={[styles.meta, { color: hasPhone ? metaText : textMuted }]} numberOfLines={1}>
+                        {[role, phone || "No number"].filter(Boolean).join(" · ")}
+                      </Text>
                     </View>
                   </View>
 
@@ -374,7 +295,12 @@ export default function ContactsPage() {
                       style={[
                         styles.btn,
                         {
-                          backgroundColor: hasPhone ? msgColor : disabledBg,
+                          backgroundColor: hasPhone
+                            ? withAlpha(msgColor, 0.14)
+                            : disabledBg,
+                          borderColor: hasPhone
+                            ? withAlpha(msgColor, 0.4)
+                            : withAlpha(borderColor, 0.7),
                         },
                       ]}
                       onPress={() => hasPhone && messageWhatsApp(phone, emp.name)}
@@ -385,18 +311,21 @@ export default function ContactsPage() {
                     >
                       <Icon
                         name="message-circle"
-                        size={14}
-                        color="#000"
-                        style={{ marginRight: 6 }}
+                        size={18}
+                        color={hasPhone ? msgColor : textMuted}
                       />
-                      <Text style={[styles.btnText, { color: "#000" }]}>Message</Text>
                     </TouchableOpacity>
 
                     <TouchableOpacity
                       style={[
                         styles.btn,
                         {
-                          backgroundColor: hasPhone ? callColor : disabledBg,
+                          backgroundColor: hasPhone
+                            ? withAlpha(callColor, 0.14)
+                            : disabledBg,
+                          borderColor: hasPhone
+                            ? withAlpha(callColor, 0.4)
+                            : withAlpha(borderColor, 0.7),
                         },
                       ]}
                       onPress={() => hasPhone && callNumber(phone)}
@@ -407,23 +336,18 @@ export default function ContactsPage() {
                     >
                       <Icon
                         name="phone-call"
-                        size={14}
-                        color="#fff"
-                        style={{ marginRight: 6 }}
+                        size={18}
+                        color={hasPhone ? callColor : textMuted}
                       />
-                      <Text style={styles.btnText}>Call</Text>
                     </TouchableOpacity>
                   </View>
-                </View>
+                  </View>
+                </Fragment>
               );
               })
             )}
-          </AsyncContentState>
-
-          <View style={{ height: 18 }} />
-        </ScrollView>
       </View>
-    </SafeAreaView>
+    </PageShell>
   );
 }
 
@@ -432,20 +356,20 @@ const styles = StyleSheet.create({
   container: { flex: 1 },
   content: {
     paddingHorizontal: t.spacing.md,
-    paddingTop: 10,
-    paddingBottom: t.spacing.lg,
+    paddingTop: t.spacing.xs,
+    paddingBottom: 200,
   },
 
   /* Hero */
   heroCard: {
     position: "relative",
     borderRadius: t.radius.xl,
-    marginBottom: t.spacing.lg,
     overflow: "hidden",
   },
   heroContent: {
-    paddingHorizontal: 0,
-    paddingVertical: t.spacing.md,
+    paddingHorizontal: t.spacing.none,
+    paddingTop: t.spacing.md,
+    paddingBottom: t.spacing.none,
   },
   heroEyebrow: {
     ...t.typography.label,
@@ -453,130 +377,141 @@ const styles = StyleSheet.create({
   },
   heroTitle: {
     ...t.typography.pageTitle,
-    marginTop: 3,
+    marginTop: t.spacing.xxs,
     letterSpacing: 0.4,
   },
   heroSubTitle: {
-    fontSize: 13,
-    marginTop: 3,
-    lineHeight: 18,
+    fontSize: t.typography.bodySmall.fontSize,
+    marginTop: t.spacing.xxs,
+    lineHeight: t.typography.bodySmall.lineHeight,
     fontWeight: "600",
   },
   heroMetaRow: {
-    marginTop: 12,
+    marginTop: t.spacing.sm,
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 8,
+    gap: t.spacing.xs,
   },
   heroMetaChip: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+    gap: t.spacing.xxs,
+    borderRadius: t.radius.pill,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
   },
   heroMetaText: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     fontWeight: "700",
   },
 
   /* Search */
-  searchRow: { marginBottom: 12 },
+  contactsBody: { gap: t.spacing.xs },
+  searchRow: {},
   searchInner: {
     flexDirection: "row",
     alignItems: "center",
-    borderRadius: 16,
+    borderRadius: t.radius.xl,
     borderWidth: 1,
-    paddingHorizontal: 12,
+    paddingHorizontal: t.spacing.sm,
     height: t.controls.buttonHeight,
   },
   searchInput: {
     flex: 1,
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
   },
   clearBtn: {
     width: 24,
     height: 24,
-    borderRadius: 12,
+    borderRadius: t.radius.pill,
     alignItems: "center",
     justifyContent: "center",
   },
   clearBtnText: {
-    fontSize: 16,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "800",
   },
 
   /* Empty state */
   emptyWrap: {
-    marginTop: 30,
-    borderRadius: 18,
-    paddingVertical: 22,
-    paddingHorizontal: 20,
+    marginTop: t.spacing["2xl"],
+    borderRadius: t.radius.xl,
+    paddingVertical: t.spacing.lg,
+    paddingHorizontal: t.spacing.lg,
     alignItems: "center",
   },
   emptyTitle: {
-    fontSize: 16,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "800",
-    marginBottom: 4,
+    marginBottom: t.spacing.xxs,
   },
   emptySubtitle: {
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
     textAlign: "center",
   },
 
   /* Contact card */
+  letterHeading: {
+    marginTop: t.spacing.xs,
+    paddingHorizontal: t.spacing.xxs,
+    fontSize: t.typography.caption.fontSize,
+    lineHeight: t.typography.caption.lineHeight,
+    fontWeight: "900",
+    letterSpacing: 0.8,
+  },
   card: {
     flexDirection: "row",
     alignItems: "center",
-    borderRadius: 18,
-    minHeight: 68,
-    paddingVertical: 12,
+    borderRadius: t.radius.lg,
+    minHeight: 76,
+    paddingVertical: t.spacing.xs,
     paddingHorizontal: t.controls.cardPadding,
-    marginBottom: 10,
+    borderWidth: StyleSheet.hairlineWidth,
   },
   avatar: {
     width: 42,
     height: 42,
-    borderRadius: 21,
+    borderRadius: t.radius.pill,
+    borderWidth: StyleSheet.hairlineWidth,
     alignItems: "center",
     justifyContent: "center",
-    marginRight: 10,
+    marginRight: t.spacing.xs,
   },
   avatarText: {
     fontWeight: "800",
-    fontSize: 16,
+    fontSize: t.typography.bodyLarge.fontSize,
   },
 
+  contactCopy: { flex: 1, minWidth: 0 },
   name: {
-    fontSize: 16,
-    fontWeight: "700",
-    marginBottom: 2,
+    fontSize: t.typography.bodyLarge.fontSize,
+    fontWeight: "800",
+    marginBottom: t.spacing.none,
   },
 
   infoRow: {
     flexDirection: "row",
     alignItems: "center",
-    marginTop: 2,
+    marginTop: t.spacing.xxs,
   },
+  infoIcon: { marginRight: t.spacing.xxs },
   meta: {
-    fontSize: 13,
+    flex: 1,
+    fontSize: t.typography.bodySmall.fontSize,
   },
 
   /* Actions */
   actionsCol: {
-    marginLeft: 10,
-    gap: 6,
+    marginLeft: t.spacing.xs,
+    flexDirection: "row",
+    gap: t.spacing.xxs,
   },
   btn: {
-    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    minHeight: t.controls.buttonHeight,
-    paddingVertical: 7,
-    paddingHorizontal: 12,
-    borderRadius: 999,
-    minWidth: 96,
+    width: t.controls.iconButton,
+    height: t.controls.iconButton,
+    borderRadius: t.radius.pill,
+    borderWidth: StyleSheet.hairlineWidth,
   },
-  btnText: { color: "#ffffff", fontWeight: "800", fontSize: 13 },
 });

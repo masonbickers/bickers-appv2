@@ -41,6 +41,17 @@ type Colors = {
   focusRing: string;
   inputBackground: string;
   inputBorder: string;
+  link: string;
+  disabled: string;
+  disabledText: string;
+  overlay: string;
+  mediaBackdrop: string;
+  pressed: string;
+  selected: string;
+  divider: string;
+  navigationSurface: string;
+  navigationSelected: string;
+  navigationBorder: string;
 };
 
 type ThemeContextValue = {
@@ -54,6 +65,7 @@ type ThemeContextValue = {
 
 interface ThemeProviderProps {
   children: ReactNode;
+  forcedTheme?: ColorScheme;
 }
 
 /* ---------- Helpers ---------- */
@@ -63,9 +75,9 @@ function buildColors(scheme: ColorScheme): Colors {
     return {
       background: "#FFFFFF",
       surface: "#FFFFFF",
-      surfaceAlt: "#E9EEF5",
+      surfaceAlt: "#F2F3F5",
       surfaceElevated: "#FFFFFF",
-      border: "#D4DCE6",
+      border: "#D8DCE2",
       text: "#15202B",
       textMuted: "#5F6C7B",
       textOnAccent: "#FFFFFF",
@@ -83,6 +95,17 @@ function buildColors(scheme: ColorScheme): Colors {
       focusRing: "#1D4ED8",
       inputBackground: "#FFFFFF",
       inputBorder: "#C7D1DD",
+      link: "#B42318",
+      disabled: "#E5E7EB",
+      disabledText: "#6B7280",
+      overlay: "rgba(21, 32, 43, 0.48)",
+      mediaBackdrop: "#000000",
+      pressed: "#E4E7EB",
+      selected: "#F8E6E7",
+      divider: "#D4DCE6",
+      navigationSurface: "rgba(255, 255, 255, 0.78)",
+      navigationSelected: "#D9DADD",
+      navigationBorder: "rgba(99, 99, 102, 0.34)",
     };
   }
 
@@ -109,6 +132,17 @@ function buildColors(scheme: ColorScheme): Colors {
     focusRing: "#93C5FD",
     inputBackground: "#111114",
     inputBorder: "#303038",
+    link: "#FF6B72",
+    disabled: "#27272A",
+    disabledText: "#A1A1AA",
+    overlay: "rgba(0, 0, 0, 0.68)",
+    mediaBackdrop: "#000000",
+    pressed: "#54191E",
+    selected: "#3A1216",
+    divider: "#2B2B31",
+    navigationSurface: "rgba(18, 18, 20, 0.78)",
+    navigationSelected: "rgba(174, 174, 178, 0.28)",
+    navigationBorder: "rgba(199, 199, 204, 0.34)",
   };
 }
 
@@ -125,7 +159,7 @@ const ThemeContext = createContext<ThemeContextValue>({
 
 /* ---------- Provider ---------- */
 
-export function ThemeProvider({ children }: ThemeProviderProps) {
+export function ThemeProvider({ children, forcedTheme }: ThemeProviderProps) {
   const [theme, setThemeState] = useState<Theme>("system");
   const [systemScheme, setSystemScheme] = useState<ColorScheme>(
     Appearance.getColorScheme() === "dark" ? "dark" : "light"
@@ -157,7 +191,7 @@ export function ThemeProvider({ children }: ThemeProviderProps) {
     };
   }, []);
 
-  const colorScheme: ColorScheme = theme === "system" ? systemScheme : theme;
+  const colorScheme: ColorScheme = forcedTheme || (theme === "system" ? systemScheme : theme);
 
   const colors = useMemo(() => buildColors(colorScheme), [colorScheme]);
 

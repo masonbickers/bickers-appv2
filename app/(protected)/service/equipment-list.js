@@ -1,18 +1,18 @@
+import { AppText as Text, AppPressable as TouchableOpacity, FormField } from "../../../components/ui/AppPrimitives";
+import {
+  servicePalette as COLORS } from "../../../lib/design/semantics";
 import { useRouter } from "expo-router";
-import { useMemo, useState } from "react";
+import { useMemo,
+  useState } from "react";
 import {
   ActivityIndicator,
   ScrollView,
   StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
-import PageHeaderCard from "../../../components/PageHeaderCard";
+import PageShell from "../../../components/layout/PageShell";
 import { designTokens as t } from "../../../lib/design/tokens";
 import {
   getEquipmentCategory,
@@ -23,19 +23,7 @@ import {
 } from "../../../lib/fleetSchema";
 import { useServiceCollection } from "../../../hooks/useServiceData";
 import { useTheme } from "../../../providers/ThemeProvider";
-
-const COLORS = {
-  background: "#0D0D0D",
-  card: "#1A1A1A",
-  border: "#333333",
-  textHigh: "#FFFFFF",
-  textMid: "#E0E0E0",
-  textLow: "#888888",
-  primaryAction: "#ED1C25",
-  inputBg: "#1A1A1A",
-  chipBg: "#1F1F1F",
-  chipBorder: "#3A3A3A",
-};
+import { staticColors } from "../../../lib/design/staticColors";
 
 const FILTER_OPTIONS = [
   { key: "all", label: "All" },
@@ -221,21 +209,14 @@ export default function EquipmentListScreen() {
   };
 
   return (
-    <SafeAreaView
-      edges={["left", "right"]}
-      style={[styles.container, { backgroundColor: colors.background || COLORS.background }]}
+    <PageShell
+      header={{
+        variant: "hero",
+        eyebrow: "Workshop",
+        title: "Equipment Inspections",
+        subtitle: "Prioritise overdue equipment, then tap to start the inspection form.",
+      }}
     >
-      <PageHeaderCard
-        eyebrow="Workshop"
-        title="Equipment Inspections"
-        subtitle="Prioritise overdue equipment, then tap to start the inspection form."
-        style={styles.headerCard}
-        contentStyle={styles.headerContent}
-        eyebrowStyle={styles.headerEyebrow}
-        titleStyle={styles.headerTitle}
-        subtitleStyle={styles.headerSubtitle}
-      />
-
       {loading ? (
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={colors.danger || COLORS.primaryAction} />
@@ -244,7 +225,7 @@ export default function EquipmentListScreen() {
           </Text>
         </View>
       ) : (
-        <View style={{ flex: 1 }}>
+        <>
           <View style={styles.summaryStrip}>
             <SummaryPill label="Overdue" value={summaryCounts.overdue} tone="danger" />
             <SummaryPill label="Due soon" value={summaryCounts["due-soon"]} tone="warning" />
@@ -253,34 +234,13 @@ export default function EquipmentListScreen() {
           </View>
 
           <View style={styles.controlsContainer}>
-            <View
-              style={[
-                styles.searchBox,
-                {
-                  backgroundColor: colors.inputBackground || COLORS.inputBg,
-                  borderColor: colors.inputBorder || colors.border || COLORS.border,
-                },
-              ]}
-            >
-              <Icon
-                name="search"
-                size={16}
-                color={colors.textMuted || COLORS.textMid}
-                style={{ marginRight: 6 }}
-              />
-              <TextInput
-                placeholder="Search by name, serial, asset, category..."
-                placeholderTextColor={colors.textMuted || "#777"}
-                value={search}
-                onChangeText={setSearch}
-                style={[styles.searchInput, { color: colors.text || COLORS.textHigh }]}
-              />
-              {search.length > 0 && (
-                <TouchableOpacity onPress={() => setSearch("")} activeOpacity={0.7}>
-                  <Icon name="x" size={14} color={colors.textMuted || COLORS.textMid} />
-                </TouchableOpacity>
-              )}
-            </View>
+            <FormField
+              label="Search equipment"
+              placeholder="Search by name, serial, asset, category..."
+              value={search}
+              onChangeText={setSearch}
+              inputProps={{ returnKeyType: "search" }}
+            />
 
             <ScrollView
               horizontal
@@ -299,7 +259,7 @@ export default function EquipmentListScreen() {
                           ? colors.accent || COLORS.primaryAction
                           : colors.border || COLORS.chipBorder,
                         backgroundColor: active
-                          ? colors.accentSoft || "rgba(255,59,48,0.18)"
+                          ? colors.accentSoft || staticColors.rgba_mxgb17
                           : colors.surfaceAlt || COLORS.chipBg,
                       },
                     ]}
@@ -324,7 +284,7 @@ export default function EquipmentListScreen() {
             </ScrollView>
           </View>
 
-          <ScrollView contentContainerStyle={styles.scrollContent}>
+          <>
             {!hasAnyEquipment ? (
               <View style={styles.emptyState}>
                 <Icon name="package" size={26} color={colors.textMuted || COLORS.textMid} />
@@ -342,9 +302,9 @@ export default function EquipmentListScreen() {
                 const expanded = expandedStatus[section.key] ?? true;
 
                 let accentColour = colors.border || COLORS.border;
-                if (section.key === "overdue") accentColour = colors.danger || "#ED1C25";
-                else if (section.key === "due-soon") accentColour = "#FF9500";
-                else if (section.key === "ok") accentColour = colors.success || "#34C759";
+                if (section.key === "overdue") accentColour = colors.danger || staticColors.hex_ed1c25_4py4qa;
+                else if (section.key === "due-soon") accentColour = staticColors.hex_ff9500_5c3jxm;
+                else if (section.key === "ok") accentColour = colors.success || staticColors.hex_34c759_8tm7fd;
 
                 return (
                   <View key={section.key} style={styles.sectionBlock}>
@@ -358,7 +318,7 @@ export default function EquipmentListScreen() {
                           name={expanded ? "chevron-down" : "chevron-right"}
                           size={16}
                           color={accentColour}
-                          style={{ marginRight: 6 }}
+                          style={{ marginRight: t.spacing.xxs }}
                         />
                         <Text style={[styles.sectionTitle, { color: colors.text || COLORS.textHigh }]}>
                           {section.title}
@@ -388,9 +348,9 @@ export default function EquipmentListScreen() {
                         };
 
                         let borderAccent = colors.border || COLORS.border;
-                        if (item.worstCode === "overdue") borderAccent = colors.danger || "#ED1C25";
-                        else if (item.worstCode === "due-soon") borderAccent = "#FF9500";
-                        else if (item.worstCode === "ok") borderAccent = colors.success || "#34C759";
+                        if (item.worstCode === "overdue") borderAccent = colors.danger || staticColors.hex_ed1c25_4py4qa;
+                        else if (item.worstCode === "due-soon") borderAccent = staticColors.hex_ff9500_5c3jxm;
+                        else if (item.worstCode === "ok") borderAccent = colors.success || staticColors.hex_34c759_8tm7fd;
 
                         return (
                           <TouchableOpacity
@@ -428,7 +388,7 @@ export default function EquipmentListScreen() {
                                   name="chevron-right"
                                   size={18}
                                   color={colors.textMuted || COLORS.textMid}
-                                  style={{ marginTop: 2 }}
+                                  style={{ marginTop: t.spacing.none }}
                                 />
                               </View>
                             </View>
@@ -455,31 +415,30 @@ export default function EquipmentListScreen() {
               })
             )}
 
-            <View style={{ height: 40 }} />
-          </ScrollView>
-        </View>
+          </>
+        </>
       )}
-    </SafeAreaView>
+    </PageShell>
   );
 }
 
 function StatusPill({ label, status }) {
   const { colors } = useTheme();
   const code = status.code;
-  let bg = "rgba(74, 74, 74, 0.7)";
+  let bg = staticColors.rgba_17yqod0;
   let fg = colors.text || COLORS.textHigh;
 
   if (code === "overdue") {
-    bg = "rgba(255,59,48,0.22)";
-    fg = colors.danger || "#ED1C25";
+    bg = staticColors.rgba_mxg8sy;
+    fg = colors.danger || staticColors.hex_ed1c25_4py4qa;
   } else if (code === "due-soon") {
-    bg = "rgba(255,149,0,0.22)";
-    fg = "#FF9500";
+    bg = staticColors.rgba_nffwhq;
+    fg = staticColors.hex_ff9500_5c3jxm;
   } else if (code === "ok") {
-    bg = "rgba(52,199,89,0.22)";
-    fg = colors.success || "#34C759";
+    bg = staticColors.rgba_dg0wlz;
+    fg = colors.success || staticColors.hex_34c759_8tm7fd;
   } else if (code === "unknown") {
-    bg = "rgba(142,142,147,0.22)";
+    bg = staticColors.rgba_y8isnm;
     fg = colors.textMuted || COLORS.textMid;
   }
 
@@ -495,9 +454,9 @@ function StatusPill({ label, status }) {
 function SummaryPill({ label, value, tone }) {
   const { colors } = useTheme();
   let fg = colors.textMuted || COLORS.textMid;
-  if (tone === "danger") fg = colors.danger || "#ED1C25";
-  else if (tone === "warning") fg = "#FF9500";
-  else if (tone === "success") fg = colors.success || "#34C759";
+  if (tone === "danger") fg = colors.danger || staticColors.hex_ed1c25_4py4qa;
+  else if (tone === "warning") fg = staticColors.hex_ff9500_5c3jxm;
+  else if (tone === "success") fg = colors.success || staticColors.hex_34c759_8tm7fd;
 
   return (
     <View style={styles.summaryPill}>
@@ -529,26 +488,26 @@ const styles = StyleSheet.create({
   },
   headerCard: {
     marginHorizontal: t.spacing.md,
-    marginTop: 0,
-    marginBottom: 0,
+    marginTop: t.spacing.none,
+    marginBottom: t.spacing.none,
   },
   headerContent: {
-    paddingTop: 10,
-    paddingBottom: 8,
+    paddingTop: t.spacing.xs,
+    paddingBottom: t.spacing.xs,
   },
   headerEyebrow: {
-    fontSize: 11,
-    lineHeight: 14,
+    fontSize: t.typography.caption.fontSize,
+    lineHeight: t.typography.caption.lineHeight,
   },
   headerTitle: {
-    fontSize: 22,
-    lineHeight: 27,
-    marginTop: 1,
+    fontSize: t.typography.titleSmall.fontSize,
+    lineHeight: t.typography.titleSmall.lineHeight,
+    marginTop: t.spacing.none,
   },
   headerSubtitle: {
-    marginTop: 2,
-    fontSize: 12,
-    lineHeight: 16,
+    marginTop: t.spacing.none,
+    fontSize: t.typography.metadata.fontSize,
+    lineHeight: t.typography.metadata.lineHeight,
   },
   loadingContainer: {
     flex: 1,
@@ -556,175 +515,175 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   loadingText: {
-    marginTop: 8,
+    marginTop: t.spacing.xs,
     color: COLORS.textMid,
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
   },
   summaryStrip: {
     flexDirection: "row",
     paddingHorizontal: t.spacing.md,
-    paddingTop: 6,
-    paddingBottom: 2,
+    paddingTop: t.spacing.xxs,
+    paddingBottom: t.spacing.none,
     justifyContent: "space-between",
   },
   summaryPill: {
     flex: 1,
     minHeight: 36,
-    paddingVertical: 4,
-    paddingHorizontal: 6,
-    marginRight: 6,
+    paddingVertical: t.spacing.xxs,
+    paddingHorizontal: t.spacing.xxs,
+    marginRight: t.spacing.xxs,
   },
   summaryValue: {
-    fontSize: 17,
-    lineHeight: 20,
+    fontSize: t.typography.sectionTitle.fontSize,
+    lineHeight: t.typography.sectionTitle.lineHeight,
     fontWeight: "800",
   },
   summaryLabel: {
-    fontSize: 11,
-    lineHeight: 14,
+    fontSize: t.typography.caption.fontSize,
+    lineHeight: t.typography.caption.lineHeight,
   },
   controlsContainer: {
     paddingHorizontal: t.spacing.md,
-    paddingTop: 4,
-    paddingBottom: 0,
+    paddingTop: t.spacing.xxs,
+    paddingBottom: t.spacing.none,
   },
   searchBox: {
     flexDirection: "row",
     alignItems: "center",
     borderWidth: 1,
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
+    borderRadius: t.radius.sm,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
   },
   searchInput: {
     flex: 1,
-    fontSize: 13,
-    paddingVertical: 2,
-    marginRight: 6,
+    fontSize: t.typography.bodySmall.fontSize,
+    paddingVertical: t.spacing.none,
+    marginRight: t.spacing.xxs,
   },
   filterRow: {
-    marginTop: 8,
-    paddingBottom: 2,
+    marginTop: t.spacing.xs,
+    paddingBottom: t.spacing.none,
   },
   filterChip: {
     minHeight: 30,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 999,
-    marginRight: 8,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
+    borderRadius: t.radius.pill,
+    marginRight: t.spacing.xs,
   },
   filterChipText: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "600",
   },
   scrollContent: {
-    paddingHorizontal: 16,
-    paddingTop: 2,
+    paddingHorizontal: t.spacing.md,
+    paddingTop: t.spacing.none,
     paddingBottom: 104,
   },
   sectionBlock: {
-    marginBottom: 8,
+    marginBottom: t.spacing.xs,
   },
   sectionHeaderRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingTop: 4,
-    paddingBottom: 2,
+    paddingTop: t.spacing.xxs,
+    paddingBottom: t.spacing.none,
   },
   sectionTitle: {
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     fontWeight: "700",
   },
   sectionCount: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
   },
   sectionDescription: {
-    fontSize: 11,
-    marginBottom: 4,
+    fontSize: t.typography.caption.fontSize,
+    marginBottom: t.spacing.xxs,
   },
   equipmentCard: {
     backgroundColor: COLORS.card,
-    borderRadius: 10,
-    marginTop: 5,
-    padding: 11,
+    borderRadius: t.radius.md,
+    marginTop: t.spacing.xxs,
+    padding: t.spacing.sm,
     borderLeftWidth: 3,
   },
   equipmentHeaderRow: {
     flexDirection: "row",
     alignItems: "center",
-    marginBottom: 5,
+    marginBottom: t.spacing.xxs,
   },
   equipmentTitle: {
-    fontSize: 15,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "700",
   },
   equipmentMeta: {
-    marginTop: 2,
-    fontSize: 12,
+    marginTop: t.spacing.none,
+    fontSize: t.typography.metadata.fontSize,
   },
   cardHint: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
   },
   statusRow: {
     flexDirection: "row",
     flexWrap: "wrap",
-    marginTop: 4,
+    marginTop: t.spacing.xxs,
     alignItems: "center",
   },
   statusPill: {
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    marginRight: 8,
-    marginBottom: 4,
+    borderRadius: t.radius.pill,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
+    marginRight: t.spacing.xs,
+    marginBottom: t.spacing.xxs,
   },
   statusPillText: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     fontWeight: "600",
   },
   neutralPill: {
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    marginRight: 8,
-    marginBottom: 4,
-    backgroundColor: "rgba(142,142,147,0.22)",
+    borderRadius: t.radius.pill,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
+    marginRight: t.spacing.xs,
+    marginBottom: t.spacing.xxs,
+    backgroundColor: staticColors.rgba_y8isnm,
   },
   neutralPillText: {
     color: COLORS.textMid,
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     fontWeight: "600",
   },
   metaRow: {
     flexDirection: "row",
     flexWrap: "wrap",
-    marginTop: 8,
+    marginTop: t.spacing.xs,
   },
   metaItem: {
-    marginRight: 16,
-    marginBottom: 2,
+    marginRight: t.spacing.md,
+    marginBottom: t.spacing.none,
   },
   metaLabel: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
   },
   metaValue: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
   },
   emptyState: {
     alignItems: "center",
     justifyContent: "center",
-    marginTop: 12,
-    paddingHorizontal: 24,
+    marginTop: t.spacing.sm,
+    paddingHorizontal: t.spacing.xl,
   },
   emptyTitle: {
-    marginTop: 10,
-    fontSize: 16,
+    marginTop: t.spacing.xs,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "700",
   },
   emptySubtitle: {
-    marginTop: 6,
-    fontSize: 13,
+    marginTop: t.spacing.xxs,
+    fontSize: t.typography.bodySmall.fontSize,
     textAlign: "center",
   },
 });

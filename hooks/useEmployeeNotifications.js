@@ -2,6 +2,7 @@ import { collection, doc, onSnapshot, query, where } from "firebase/firestore";
 import { useEffect } from "react";
 
 import { db } from "../firebaseConfig";
+import { useVehicles } from "./useOperationalData";
 import {
   cancelMaintenanceReminder,
   scheduleMaintenanceReminder,
@@ -12,6 +13,14 @@ import {
   isApprovedHolidayStatus,
   timesheetNotificationSignature,
 } from "../lib/notificationTransitions";
+import {
+  getBookingVehicleReferences,
+  getVehicleDisplayList,
+} from "../lib/fleetSchema";
+import {
+  saveRemoteNotificationToInbox,
+  syncRemoteNotificationsToInbox,
+} from "../lib/remoteNotifications";
 import {
   cancelPastScheduledNotifications,
   NOTIFICATIONS_ENABLED,
@@ -105,22 +114,11 @@ function formatBookingDates(booking) {
   return start ? formatDateShort(start) : "";
 }
 
-function formatVehicles(booking) {
-  const vehicles = Array.isArray(booking?.vehicles) ? booking.vehicles : [];
-  const labels = vehicles
-    .map((vehicle) => {
-      if (vehicle && typeof vehicle === "object") {
-        const name =
-          vehicle.name ||
-          [vehicle.manufacturer, vehicle.model].filter(Boolean).join(" ") ||
-          vehicle.vehicleName ||
-          "";
-        const registration = vehicle.registration || vehicle.reg || vehicle.plate || "";
-        return registration ? `${name || "Vehicle"} · ${registration}` : name;
-      }
-      return String(vehicle || "").trim();
-    })
-    .filter(Boolean);
+function formatVehicles(booking, vehicleDirectory) {
+  const labels = getVehicleDisplayList(
+    getBookingVehicleReferences(booking),
+    vehicleDirectory
+  );
   return labels.length <= 2 ? labels.join(", ") : `${labels.slice(0, 2).join(", ")} +${labels.length - 2}`;
 }
 
@@ -130,7 +128,7 @@ function scheduleNotification(payload) {
   );
 }
 
-function notifyBooking(action, id, booking) {
+function notifyBooking(action, id, booking, vehicleDirectory) {
   if (!hasCurrentOrFutureDate(booking)) return;
   const dateISO = firstISOFromBooking(booking) || toISODate(new Date());
   const commonData = { bookingId: id, bookingDates: booking?.bookingDates || null, dateISO };
@@ -145,7 +143,7 @@ function notifyBooking(action, id, booking) {
     return;
   }
   const dates = formatBookingDates(booking);
-  const vehicles = formatVehicles(booking);
+  const vehicles = formatVehicles(booking, vehicleDirectory);
   scheduleNotification({
     title: action === "assigned" ? "New job assigned" : "Job updated",
     body: [
@@ -161,9 +159,11 @@ function notifyBooking(action, id, booking) {
   });
 }
 
-export function useEmployeeNotifications() {
-  const { user, employee, isAuthed, loading } = useAuth();
+export function useEmployeeNotifications({ enabled = true } = {}) {
+  const { user, employee, isAuthed: authIsAuthed, loading } = useAuth();
+  const isAuthed = authIsAuthed && enabled;
   const { invalidate } = useDataCache();
+  const vehiclesResource = useVehicles();
   const {
     maintenanceRemindersEnabled,
     maintenanceReminderTime,
@@ -211,7 +211,7 @@ export function useEmployeeNotifications() {
             const signature = `${action}:${bookingNotificationSignature(source)}`;
             if (lastEvent.get(id) !== signature) {
               lastEvent.set(id, signature);
-              notifyBooking(action, id, source || {});
+              notifyBooking(action, id, source || {}, vehiclesResource.data);
             }
           }
           if (after) previous.set(id, after);
@@ -222,7 +222,63 @@ export function useEmployeeNotifications() {
       },
       (error) => console.warn("[booking-notifications] listener failed:", error)
     );
-  }, [employeeCode, identity, invalidate, isAuthed, loading]);
+  }, [
+    employeeCode,
+    identity,
+    invalidate,
+    isAuthed,
+    loading,
+    vehiclesResource.data,
+  ]);
+
+  useEffect(() => {
+    if (!NOTIFICATIONS_ENABLED || loading || !isAuthed || !employee?.employeeId) return;
+    let cancelled = false;
+    const sync = () => {
+      if (cancelled) return;
+      syncRemoteNotificationsToInbox({ user, employee }).catch((error) =>
+        console.warn("[web-notifications] sync failed:", error)
+      );
+    };
+    sync();
+    const interval = setInterval(sync, 15_000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [employee, identity, isAuthed, loading, user]);
+
+  useEffect(() => {
+    const employeeId = String(employee?.employeeId || "").trim();
+    if (!NOTIFICATIONS_ENABLED || loading || !isAuthed || !employeeId) return;
+    const notificationsQuery = query(
+      collection(db, "employeeNotifications"),
+      // Firestore rules grant access by the authenticated user's linked
+      // employeeId. Query by that same identity so the query can be authorised
+      // without changing which notifications the employee sees.
+      where("employeeId", "==", employeeId)
+    );
+    return onSnapshot(
+      notificationsQuery,
+      (snapshot) => {
+        snapshot.docChanges().forEach((change) => {
+          if (change.type === "removed") return;
+          const data = change.doc.data() || {};
+          saveRemoteNotificationToInbox({
+            id: change.doc.id,
+            title: data.title,
+            body: data.body,
+            data: data.data,
+            source: data.source,
+            createdAt: toDateSafe(data.createdAt)?.toISOString(),
+          }).catch((error) =>
+            console.warn("[web-notifications] live inbox update failed:", error)
+          );
+        });
+      },
+      (error) => console.warn("[web-notifications] live listener failed:", error)
+    );
+  }, [employee?.employeeId, identity, isAuthed, loading]);
 
   useEffect(() => {
     if (!NOTIFICATIONS_ENABLED || loading || !isAuthed || !employeeCode) return;

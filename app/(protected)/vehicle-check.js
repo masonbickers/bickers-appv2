@@ -1,20 +1,22 @@
+import { AppText as Text, AppPressable as TouchableOpacity, FormField, SelectField, TextArea } from "../../components/ui/AppPrimitives";
 // app/vehicle-check.js  (or app/screens/vehicle-check.js)
-import { useLocalSearchParams, useRouter } from "expo-router";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  useLocalSearchParams,
+  useRouter } from "expo-router";
+import { useCallback,
+  useEffect,
+  useMemo,
+  useState } from "react";
 import {
   ActivityIndicator,
   Alert,
   Image,
   Platform,
-  SafeAreaView,
-  ScrollView,
   StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
   View,
 } from "react-native";
 import Icon from "react-native-vector-icons/Feather";
+import PageShell from "../../components/layout/PageShell";
 
 import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
@@ -24,11 +26,22 @@ import { getDownloadURL, ref, uploadBytesResumable } from "firebase/storage";
 
 // ⛽ Firebase + Auth provider
 import { auth, db, storage } from "../../firebaseConfig";
+import { useVehicles } from "../../hooks/useOperationalData";
 import { isBookingVisibleToEmployee } from "../../lib/bookingVisibility";
 import { formatDateDDMMYYYY } from "../../lib/dateFormat";
+import {
+  findVehicleRecord,
+  getBookingVehicleReferences,
+  getVehicleDisplayLabel,
+  getVehicleDisplayName,
+  getVehicleReferenceId,
+  getVehicleRegistration,
+} from "../../lib/fleetSchema";
 import { useAuth } from "../../providers/AuthProvider"; // if file is app/vehicle-check.js use "./providers/AuthProvider"
 import { useDataCache } from "../../providers/DataCacheProvider";
-import { useTheme } from "../../providers/ThemeProvider"; // 🎨 theme
+import { useTheme } from "../../providers/ThemeProvider";
+import { staticColors } from "../../lib/design/staticColors";
+import { designTokens as t } from "../../lib/design/tokens"; // 🎨 theme
 
 const IMAGES_ONLY = ImagePicker.MediaTypeOptions.Images;
 
@@ -56,10 +69,42 @@ const CHECK_ITEMS = [
   "Speedometer / Speed Limiter",
   "Operator Licence (Visible)",
   "Adblue® / DEF (If required)",
-  "Nil Defects",
+];
+
+const CHECK_SECTIONS = [
+  {
+    id: "cab",
+    title: "Cab & controls",
+    icon: "truck",
+    description: "Visibility, controls, warnings and driver equipment",
+    itemNumbers: [13, 14, 15, 16, 18, 20, 21],
+  },
+  {
+    id: "exterior",
+    title: "Exterior & body",
+    icon: "maximize",
+    description: "Leaks, bodywork, lights, plates and markers",
+    itemNumbers: [1, 2, 4, 11, 12, 17, 19, 22, 23],
+  },
+  {
+    id: "running",
+    title: "Wheels & brakes",
+    icon: "disc",
+    description: "Tyres, wheel fixings, brakes and air system",
+    itemNumbers: [3, 5, 8, 9],
+  },
+  {
+    id: "equipment",
+    title: "Load & equipment",
+    icon: "package",
+    description: "Coupling, connections, height and load security",
+    itemNumbers: [6, 7, 10],
+  },
 ];
 
 const STATUS = { SERVICEABLE: "serviceable", DEFECT: "defect", NA: "na" };
+const OK_GREEN = staticColors.hex_24c77a_6x4mf6;
+const OK_GREEN_TEXT = staticColors.hex_052e1a_89bntw;
 
 const normaliseParam = (value) => {
   if (Array.isArray(value)) return value[0] ? String(value[0]) : "";
@@ -69,23 +114,6 @@ const normaliseParam = (value) => {
 const toISO = (d) =>
   (d?.toISOString?.() || new Date(d)).split?.("T")?.[0] ??
   new Date().toISOString().split("T")[0];
-
-const dateInputToISO = (value) => {
-  const raw = String(value || "").trim();
-  const uk = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(raw);
-  if (uk) {
-    const [, dd, mm, yyyy] = uk;
-    return `${yyyy}-${mm}-${dd}`;
-  }
-
-  const iso = /^(\d{4})[-/](\d{2})[-/](\d{2})$/.exec(raw);
-  if (iso) {
-    const [, yyyy, mm, dd] = iso;
-    return `${yyyy}-${mm}-${dd}`;
-  }
-
-  return raw;
-};
 
 const ensureFileUri = async (uri) => {
   if (!uri) return null;
@@ -111,6 +139,7 @@ export default function VehicleCheckPage() {
   );
 
   const { employee, user, isAuthed, loading } = useAuth();
+  const vehiclesResource = useVehicles();
   const { invalidate } = useDataCache();
   const { colors } = useTheme(); // 🎨
 
@@ -129,6 +158,22 @@ export default function VehicleCheckPage() {
   const [job, setJob] = useState(null);
   const [vehicles, setVehicles] = useState([]); // from booking
   const [vehicle, setVehicle] = useState("");
+  const vehicleOptions = useMemo(() => {
+    const refs = jobId ? vehicles : vehiclesResource.data;
+    return refs.map((vehicleRef) => {
+      const matched = findVehicleRecord(vehicleRef, vehiclesResource.data);
+      const resolved = matched || vehicleRef;
+      return {
+        value: getVehicleReferenceId(resolved),
+        label: getVehicleDisplayLabel(resolved, vehiclesResource.data),
+        vehicle: resolved,
+      };
+    }).filter((option) => option.value);
+  }, [jobId, vehicles, vehiclesResource.data]);
+  const selectedVehicleOption = useMemo(
+    () => vehicleOptions.find((option) => option.value === vehicle) || null,
+    [vehicle, vehicleOptions]
+  );
 
   const [dateISO, setDateISO] = useState(
     () => dateISOParam || toISO(new Date())
@@ -153,6 +198,7 @@ export default function VehicleCheckPage() {
   );
 
   const [photos, setPhotos] = useState([]); // [{uri, remote?}]
+  const [expandedSection, setExpandedSection] = useState(null);
 
   // One doc per job. Standalone checks get their own generated doc ID.
   const checkDocId = useMemo(
@@ -217,9 +263,8 @@ export default function VehicleCheckPage() {
             return;
           }
           setJob(j);
-          const vs = Array.isArray(j.vehicles) ? j.vehicles : [];
+          const vs = getBookingVehicleReferences(j);
           setVehicles(vs);
-          if (!vehicle && vs.length) setVehicle(vs[0]);
         }
       }
 
@@ -234,7 +279,14 @@ export default function VehicleCheckPage() {
         setTimeStr(d.time || timeStr);
         setOdometer(d.odometer || "");
         setNotes(d.notes || "");
-        if (d.vehicle) setVehicle(d.vehicle);
+        const storedVehicle = d.vehicleId || d.vehicle;
+        const matchedVehicle = findVehicleRecord(
+          storedVehicle,
+          vehiclesResource.data
+        );
+        if (storedVehicle) {
+          setVehicle(getVehicleReferenceId(matchedVehicle || storedVehicle));
+        }
 
         if (Array.isArray(d.items) && d.items.length) {
           setItems((prev) =>
@@ -257,7 +309,6 @@ export default function VehicleCheckPage() {
   }, [
     jobId,
     checkDocId,
-    vehicle,
     loading,
     isAuthed,
     employee,
@@ -265,7 +316,12 @@ export default function VehicleCheckPage() {
     dateISO,
     timeStr,
     normalizeMaintenanceBooking,
+    vehiclesResource.data,
   ]);
+
+  useEffect(() => {
+    if (!vehicle && vehicleOptions.length === 1) setVehicle(vehicleOptions[0].value);
+  }, [vehicle, vehicleOptions]);
 
   useEffect(() => {
     loadData();
@@ -288,6 +344,17 @@ export default function VehicleCheckPage() {
   const setItemNote = (index, t) => {
     setItems((prev) =>
       prev.map((it, i) => (i === index ? { ...it, note: t } : it))
+    );
+  };
+
+  const markSectionServiceable = (section) => {
+    const sectionNumbers = new Set(section.itemNumbers);
+    setItems((prev) =>
+      prev.map((item) =>
+        !sectionNumbers.has(item.i) || item.status === STATUS.DEFECT
+          ? item
+          : { ...item, status: STATUS.SERVICEABLE }
+      )
     );
   };
 
@@ -344,8 +411,8 @@ export default function VehicleCheckPage() {
   };
 
   const validateBeforeSubmit = () => {
-    const anyAnswered = items.some((it) => it.status);
-    if (!anyAnswered) return "Please mark at least one check item.";
+    const incomplete = items.some((it) => !it.status);
+    if (incomplete) return "Please complete every check item before submitting.";
     const defectsNeedNote = items.some(
       (it) => it.status === STATUS.DEFECT && !it.note?.trim()
     );
@@ -369,7 +436,13 @@ export default function VehicleCheckPage() {
         checkId: checkDocId,
         dateISO,
         time: timeStr,
-        vehicle,
+        vehicle: selectedVehicleOption?.label || "Unknown vehicle",
+        vehicleId: selectedVehicleOption?.value || vehicle,
+        vehicleName: getVehicleDisplayName(
+          selectedVehicleOption?.vehicle,
+          vehiclesResource.data
+        ),
+        registration: getVehicleRegistration(selectedVehicleOption?.vehicle) || "",
         odometer,
         driverName,
         driverCode: userCode,
@@ -416,19 +489,12 @@ export default function VehicleCheckPage() {
 
   if (loadingDoc) {
     return (
-      <SafeAreaView
-        style={{
-          flex: 1,
-          backgroundColor: colors.background,
-          alignItems: "center",
-          justifyContent: "center",
-        }}
-      >
+      <PageShell mode="form" width="form" header={{ variant: "compact", title: "Daily Vehicle Check", onBack: router.back }}>
         <ActivityIndicator size="large" color={colors.accent} />
-        <Text style={{ color: colors.textMuted, marginTop: 10 }}>
+        <Text style={{ color: colors.textMuted, marginTop: t.spacing.xs }}>
           Loading…
         </Text>
-      </SafeAreaView>
+      </PageShell>
     );
   }
 
@@ -439,131 +505,56 @@ export default function VehicleCheckPage() {
     : saving
     ? "Submitting…"
     : "Submit Check";
+  const sectionStates = CHECK_SECTIONS.map((section) => {
+    const sectionItems = items.filter((item) => section.itemNumbers.includes(item.i));
+    return {
+      ...section,
+      items: sectionItems,
+      completed: sectionItems.every((item) => !!item.status),
+      defectCount: sectionItems.filter((item) => item.status === STATUS.DEFECT).length,
+    };
+  });
+  const completedSectionCount = sectionStates.filter((section) => section.completed).length;
+  const defectCount = items.filter((item) => item.status === STATUS.DEFECT).length;
 
   return (
-    <SafeAreaView
-      style={{ flex: 1, backgroundColor: colors.background }}
+    <PageShell
+      mode="form"
+      width="form"
+      header={{
+        variant: "compact",
+        title: "Daily Vehicle Check",
+        subtitle: job ? `Job #${job.jobNumber || "N/A"} · ${job.client || "No client"}` : undefined,
+        onBack: router.back,
+        metadata: hasExisting ? <Text style={[styles.existingBadge, { color: colors.success }]}>Existing check on file for this job</Text> : undefined,
+      }}
     >
-      <ScrollView
-        contentContainerStyle={{ padding: 14, paddingBottom: 40 }}
-        keyboardShouldPersistTaps="handled"
-      >
-        {/* Header with Back Button */}
-        <View style={styles.header}>
-          <TouchableOpacity
-            onPress={() => router.back()}
-            style={styles.backButton}
-          >
-            <Icon name="arrow-left" size={24} color={colors.text} />
-          </TouchableOpacity>
-          <View style={styles.headerTitleContainer}>
-            <Text style={[styles.title, { color: colors.text }]}>
-              Vehicle Defect Report
-            </Text>
-            <Text style={[styles.subtitle, { color: colors.textMuted }]}>
-              {job
-                ? `Job #${job.jobNumber || "N/A"} · ${
-                    job.client || "No client"
-                  }`
-                : ""}
-            </Text>
-            {hasExisting && (
-              <Text
-                style={[
-                  styles.existingBadge,
-                  { color: colors.success },
-                ]}
-              >
-                Existing check on file for this job
-              </Text>
-            )}
-          </View>
+
+        <View style={styles.checkContext}>
+          <CheckContextItem icon="user" label="Driver" value={driverName} colors={colors} />
+          <CheckContextItem
+            icon="calendar"
+            label="Check time"
+            value={`${formatDateDDMMYYYY(dateISO) || dateISO} · ${timeStr}`}
+            colors={colors}
+          />
         </View>
 
-        {/* Top fields */}
         <View style={styles.grid2}>
-          <Field label="Driver’s Name">
-            <TextInput
-              value={driverName}
-              editable={false}
-              style={[
-                styles.input,
-                {
-                  backgroundColor: colors.inputBackground,
-                  borderColor: colors.inputBorder,
-                  color: colors.text,
-                },
-              ]}
-              placeholderTextColor={colors.textMuted}
-            />
-          </Field>
-
-          <Field label="Vehicle">
-            <PickerLike
+          <SelectField
+              label="Vehicle"
               value={vehicle}
-              options={vehicles.length ? vehicles : [""]}
+              options={vehicleOptions}
               onChange={setVehicle}
+              searchable
             />
-          </Field>
-
-          <Field label="Date">
-            <TextInput
-              value={formatDateDDMMYYYY(dateISO) || dateISO}
-              onChangeText={(text) => setDateISO(dateInputToISO(text))}
-              placeholder="DD/MM/YYYY"
-              style={[
-                styles.input,
-                {
-                  backgroundColor: colors.inputBackground,
-                  borderColor: colors.inputBorder,
-                  color: colors.text,
-                },
-              ]}
-              placeholderTextColor={colors.textMuted}
-            />
-          </Field>
-
-          <Field label="Time">
-            <TextInput
-              value={timeStr}
-              onChangeText={setTimeStr}
-              placeholder="HH:MM"
-              style={[
-                styles.input,
-                {
-                  backgroundColor: colors.inputBackground,
-                  borderColor: colors.inputBorder,
-                  color: colors.text,
-                },
-              ]}
-              placeholderTextColor={colors.textMuted}
-            />
-          </Field>
-
-          <Field label="Odometer Reading">
-            <TextInput
+          <FormField
+              label="Odometer Reading"
               value={odometer}
               onChangeText={setOdometer}
               placeholder="e.g., 123456"
-              keyboardType="numeric"
-              style={[
-                styles.input,
-                {
-                  backgroundColor: colors.inputBackground,
-                  borderColor: colors.inputBorder,
-                  color: colors.text,
-                },
-              ]}
-              placeholderTextColor={colors.textMuted}
+              inputProps={{ keyboardType: "numeric" }}
             />
-          </Field>
-        </View>
-
-        {/* Legend */}
-        <View style={styles.legend}>
-          <LegendPill text="✓ Serviceable" />
-          <LegendPill text="✗ Defect" />
-          <LegendPill text="– N/A" />
         </View>
 
         {/* Checks */}
@@ -573,115 +564,181 @@ export default function VehicleCheckPage() {
             { backgroundColor: colors.surfaceAlt, borderColor: colors.border },
           ]}
         >
-          <Text style={[styles.cardTitle, { color: colors.text }]}>
-            Daily Check
-          </Text>
-          {items.map((it, idx) => (
-            <View key={it.i} style={styles.itemRow}>
-              <Text
-                style={[
-                  styles.itemIndex,
-                  { color: colors.textMuted },
-                ]}
-              >
-                {String(it.i).padStart(2, "0")}
+          <View style={styles.checkSectionHeader}>
+            <View>
+              <Text style={[styles.cardTitle, { color: colors.text }]}>Daily Check</Text>
+              <Text style={[styles.progressText, { color: colors.textMuted }]}>
+                {completedSectionCount} of {CHECK_SECTIONS.length} sections complete
+                {defectCount ? ` · ${defectCount} defect${defectCount === 1 ? "" : "s"}` : ""}
               </Text>
-              <Text style={[styles.itemLabel, { color: colors.text }]}>
-                {it.label}
-              </Text>
-
-              <TouchableOpacity
-                onPress={() => setItemStatus(idx)}
-                activeOpacity={0.85}
-                style={[
-                  styles.statusBadge,
-                  it.status === STATUS.SERVICEABLE && {
-                    borderColor: "#1db954",
-                    backgroundColor: "#bbf7d0",
-                  },
-                  it.status === STATUS.DEFECT && {
-                    borderColor: "#C8102E",
-                    backgroundColor: "#fee2e2",
-                  },
-                  it.status === STATUS.NA && {
-                    borderColor: "#666",
-                    backgroundColor: colors.surface,
-                  },
-                ]}
-              >
-                <Text
-                  style={[
-                    styles.statusText,
-                    {
-                      color:
-                        it.status === STATUS.SERVICEABLE ||
-                        it.status === STATUS.DEFECT
-                          ? "#052e16"
-                          : colors.background,
-                    },
-                  ]}
-                >
-                  {it.status === STATUS.SERVICEABLE
-                    ? "✓"
-                    : it.status === STATUS.DEFECT
-                    ? "✗"
-                    : it.status === STATUS.NA
-                    ? "–"
-                    : "Tap"}
-                </Text>
-              </TouchableOpacity>
             </View>
-          ))}
+          </View>
+          <View style={styles.sectionList}>
+            {sectionStates.map((section) => {
+              const isExpanded = expandedSection === section.id;
+              return (
+                <View
+                  key={section.id}
+                  style={[styles.checkGroup, { borderColor: colors.border }]}
+                >
+                  <View style={styles.checkGroupHeader}>
+                    <TouchableOpacity
+                      onPress={() => setExpandedSection(isExpanded ? null : section.id)}
+                      style={styles.groupMain}
+                      activeOpacity={0.8}
+                      accessibilityRole="button"
+                      accessibilityState={{ expanded: isExpanded }}
+                      accessibilityLabel={`Open ${section.title} checks`}
+                    >
+                      <View
+                        style={[
+                          styles.groupIcon,
+                          { backgroundColor: section.defectCount ? colors.danger : colors.surface },
+                        ]}
+                      >
+                        <Icon name={section.icon} size={17} color={section.defectCount ? staticColors.hex_fff_yhjmu8 : colors.textMuted} />
+                      </View>
+                      <View style={styles.groupCopy}>
+                        <Text style={[styles.groupTitle, { color: colors.text }]}>{section.title}</Text>
+                        <Text style={[styles.groupDescription, { color: colors.textMuted }]} numberOfLines={1}>
+                          {section.defectCount
+                            ? `${section.defectCount} defect${section.defectCount === 1 ? "" : "s"} reported`
+                            : section.completed
+                            ? "Completed · all items checked"
+                            : section.description}
+                        </Text>
+                      </View>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      onPress={() => markSectionServiceable(section)}
+                      style={[
+                        styles.headerOkButton,
+                        {
+                          backgroundColor:
+                            section.completed && !section.defectCount
+                              ? OK_GREEN
+                              : colors.surface,
+                          borderColor: OK_GREEN,
+                        },
+                      ]}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Mark ${section.title} all OK`}
+                    >
+                      <Icon
+                        name="check"
+                        size={15}
+                        color={section.completed && !section.defectCount ? OK_GREEN_TEXT : OK_GREEN}
+                      />
+                      <Text
+                        style={[
+                          styles.headerOkText,
+                          {
+                            color:
+                              section.completed && !section.defectCount
+                                ? OK_GREEN_TEXT
+                                : OK_GREEN,
+                          },
+                        ]}
+                      >
+                        OK
+                      </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      onPress={() => setExpandedSection(isExpanded ? null : section.id)}
+                      style={styles.expandButton}
+                      accessibilityRole="button"
+                      accessibilityLabel={`${isExpanded ? "Close" : "Open"} ${section.title} checks`}
+                    >
+                      <Icon name={isExpanded ? "chevron-up" : "chevron-down"} size={20} color={colors.textMuted} />
+                    </TouchableOpacity>
+                  </View>
+
+                  {isExpanded ? (
+                    <View style={[styles.groupItems, { borderTopColor: colors.border }]}>
+                      {section.items.map((it) => {
+                        const itemIndex = items.findIndex((item) => item.i === it.i);
+                        return (
+                          <View key={it.i} style={styles.itemRow}>
+                            <Text style={[styles.itemLabel, { color: colors.text }]}>{it.label}</Text>
+                            <TouchableOpacity
+                              onPress={() => setItemStatus(itemIndex)}
+                              activeOpacity={0.85}
+                              style={[
+                                styles.statusBadge,
+                                it.status === STATUS.SERVICEABLE && styles.statusOk,
+                                it.status === STATUS.DEFECT && styles.statusDefect,
+                                it.status === STATUS.NA && { borderColor: staticColors.hex_666_yhlfzk, backgroundColor: colors.surface },
+                              ]}
+                            >
+                              <Text
+                                style={[
+                                  styles.statusText,
+                                  {
+                                    color:
+                                      it.status === STATUS.SERVICEABLE
+                                        ? staticColors.hex_052e16_89ayk3
+                                        : it.status === STATUS.DEFECT
+                                        ? staticColors.hex_7f1d1d_81m7ef
+                                        : colors.text,
+                                  },
+                                ]}
+                              >
+                                {it.status === STATUS.SERVICEABLE
+                                  ? "OK"
+                                  : it.status === STATUS.DEFECT
+                                  ? "Defect"
+                                  : it.status === STATUS.NA
+                                  ? "N/A"
+                                  : "Set"}
+                              </Text>
+                            </TouchableOpacity>
+                          </View>
+                        );
+                      })}
+                    </View>
+                  ) : null}
+                </View>
+              );
+            })}
+          </View>
         </View>
 
-        {/* Defect notes */}
-        <View
-          style={[
-            styles.card,
-            { backgroundColor: colors.surfaceAlt, borderColor: colors.border },
-          ]}
-        >
-          <Text style={[styles.cardTitle, { color: colors.text }]}>
-            Defect Report Here
-          </Text>
+        {defectCount > 0 ? (
+          <View
+            style={[
+              styles.card,
+              styles.defectCard,
+              { backgroundColor: colors.surfaceAlt, borderColor: colors.danger },
+            ]}
+          >
+          <Text style={[styles.cardTitle, { color: colors.text }]}>Defect details</Text>
           <Text
             style={{
               color: colors.textMuted,
-              marginBottom: 6,
-              fontSize: 12,
+              marginBottom: t.spacing.xxs,
+              fontSize: t.typography.metadata.fontSize,
             }}
           >
-            Record any defects / irregularities. Add a note for every
-            item marked ✗ Defect.
+            Add a short note for every item marked as a defect.
           </Text>
 
           {items.map((it, idx) =>
             it.status === STATUS.DEFECT ? (
-              <View key={`def-${it.i}`} style={{ marginBottom: 8 }}>
+              <View key={`def-${it.i}`} style={{ marginBottom: t.spacing.xs }}>
                 <Text
                   style={{
                     color: colors.text,
                     fontWeight: "700",
-                    marginBottom: 4,
+                    marginBottom: t.spacing.xxs,
                   }}
                 >
                   {String(it.i).padStart(2, "0")} · {it.label}
                 </Text>
-                <TextInput
+                <TextArea
+                  label={`${String(it.i).padStart(2, "0")} ${it.label} defect`}
                   value={it.note}
                   onChangeText={(t) => setItemNote(idx, t)}
                   placeholder="Describe the defect, location, severity…"
-                  placeholderTextColor={colors.textMuted}
-                  multiline
-                  style={[
-                    styles.input,
-                    {
-                      minHeight: 68,
-                      backgroundColor: colors.inputBackground,
-                      borderColor: colors.inputBorder,
-                      color: colors.text,
-                    },
-                  ]}
                 />
               </View>
             ) : null
@@ -691,32 +748,30 @@ export default function VehicleCheckPage() {
             style={{
               color: colors.text,
               fontWeight: "700",
-              marginTop: 8,
-              marginBottom: 4,
+              marginTop: t.spacing.xs,
+              marginBottom: t.spacing.xxs,
             }}
           >
             Additional Notes
           </Text>
-          <TextInput
+          <TextArea
+            label="Additional Notes"
             value={notes}
             onChangeText={setNotes}
             placeholder="Anything else to report (accident damage, irregular circumstances, etc.)"
-            placeholderTextColor={colors.textMuted}
-            multiline
-            style={[
-              styles.input,
-              {
-                minHeight: 88,
-                backgroundColor: colors.inputBackground,
-                borderColor: colors.inputBorder,
-                color: colors.text,
-              },
-            ]}
           />
-        </View>
+          </View>
+        ) : (
+          <View style={[styles.allClearCard, { backgroundColor: colors.surfaceAlt }]}>
+            <Icon name="shield" size={17} color={colors.success} />
+            <Text style={[styles.allClearText, { color: colors.textMuted }]}>
+              Defect details will appear here only when an item is marked Defect.
+            </Text>
+          </View>
+        )}
 
         {/* Photos */}
-        <View
+        {(defectCount > 0 || photos.length > 0) ? <View
           style={[
             styles.card,
             { backgroundColor: colors.surfaceAlt, borderColor: colors.border },
@@ -726,13 +781,13 @@ export default function VehicleCheckPage() {
             Photos
           </Text>
           <View
-            style={{ flexDirection: "row", gap: 8, marginBottom: 10 }}
+            style={{ flexDirection: "row", gap: t.spacing.xs, marginBottom: t.spacing.xs }}
           >
             <SmallBtn icon="image" text="Library" onPress={pickPhotos} />
           </View>
 
           <View
-            style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}
+            style={{ flexDirection: "row", flexWrap: "wrap", gap: t.spacing.xs }}
           >
             {photos.map((p, idx) => (
               <View
@@ -744,7 +799,7 @@ export default function VehicleCheckPage() {
                   style={{
                     width: 86,
                     height: 86,
-                    borderRadius: 8,
+                    borderRadius: t.radius.sm,
                   }}
                 />
                 <TouchableOpacity
@@ -756,7 +811,7 @@ export default function VehicleCheckPage() {
                   style={styles.closeChip}
                 >
                   <Text
-                    style={{ color: "#fff", fontWeight: "900" }}
+                    style={{ color: staticColors.hex_fff_yhjmu8, fontWeight: "900" }}
                   >
                     ×
                   </Text>
@@ -769,10 +824,10 @@ export default function VehicleCheckPage() {
               </Text>
             )}
           </View>
-        </View>
+        </View> : null}
 
         {/* Actions */}
-        <View style={{ flexDirection: "row", gap: 10, marginTop: 8 }}>
+        <View style={{ flexDirection: "row", gap: t.spacing.xs, marginTop: t.spacing.xs }}>
           <TouchableOpacity
             onPress={() => save(false)}
             style={[
@@ -796,7 +851,7 @@ export default function VehicleCheckPage() {
             onPress={onSubmitOrUpdate}
             style={[
               styles.actionBtn,
-              { backgroundColor: "#C8102E", flex: 1 },
+              { backgroundColor: colors.accent, flex: 1 },
             ]}
             activeOpacity={0.9}
             disabled={saving}
@@ -804,65 +859,24 @@ export default function VehicleCheckPage() {
             <Text style={styles.actionText}>{primaryBtnLabel}</Text>
           </TouchableOpacity>
         </View>
-      </ScrollView>
-    </SafeAreaView>
+    </PageShell>
   );
 }
 
 /* ---------- tiny UI helpers ---------- */
-const Field = ({ label, children }) => {
-  const { colors } = useTheme();
-  return (
-    <View style={styles.field}>
-      <Text
-        style={{
-          color: colors.textMuted,
-          fontSize: 12,
-          fontWeight: "700",
-          marginBottom: 6,
-        }}
-      >
-        {label}
-      </Text>
-      {children}
+const CheckContextItem = ({ icon, label, value, colors }) => (
+  <View style={styles.checkContextItem}>
+    <View style={[styles.contextIcon, { backgroundColor: colors.surface }]}>
+      <Icon name={icon} size={15} color={colors.textMuted} />
     </View>
-  );
-};
-
-const PickerLike = ({ value, options, onChange }) => {
-  const { colors } = useTheme();
-  return (
-    <View
-      style={[
-        styles.pickerLike,
-        {
-          backgroundColor: colors.inputBackground,
-          borderColor: colors.inputBorder,
-        },
-      ]}
-    >
-      <Text
-        style={{
-          color: value ? colors.text : colors.textMuted,
-          flex: 1,
-        }}
-        numberOfLines={1}
-      >
-        {value || "Select…"}
+    <View style={styles.contextText}>
+      <Text style={[styles.contextLabel, { color: colors.textMuted }]}>{label}</Text>
+      <Text style={[styles.contextValue, { color: colors.text }]} numberOfLines={1}>
+        {value}
       </Text>
-      <TouchableOpacity
-        onPress={() => {
-          if (!options.length) return;
-          const i = Math.max(0, options.indexOf(value));
-          const next = options[(i + 1) % options.length];
-          onChange(next);
-        }}
-      >
-        <Icon name="chevron-down" size={18} color={colors.text} />
-      </TouchableOpacity>
     </View>
-  );
-};
+  </View>
+);
 
 const SmallBtn = ({ icon, text, onPress }) => {
   const { colors } = useTheme();
@@ -880,7 +894,7 @@ const SmallBtn = ({ icon, text, onPress }) => {
         style={{
           color: colors.text,
           fontWeight: "700",
-          fontSize: 12,
+          fontSize: t.typography.metadata.fontSize,
         }}
       >
         {text}
@@ -892,151 +906,202 @@ const SmallBtn = ({ icon, text, onPress }) => {
 /* ---------- styles ---------- */
 const styles = StyleSheet.create({
   header: {
-    flexDirection: "row",
+    position: "relative",
     alignItems: "center",
-    marginBottom: 10,
+    justifyContent: "center",
+    minHeight: 64,
+    marginBottom: t.spacing.xs,
   },
-  backButton: { padding: 8, marginRight: 10 },
-  headerTitleContainer: { flex: 1 },
-  title: { color: "#fff", fontSize: 20, fontWeight: "800" },
-  subtitle: { color: "#9e9e9e", marginTop: 4 },
+  backButton: { position: "absolute", left: 0, padding: t.spacing.xs, zIndex: 1 },
+  headerTitleContainer: { width: "100%", paddingHorizontal: 48, alignItems: "center" },
+  title: { color: staticColors.hex_fff_yhjmu8, fontSize: t.typography.titleSmall.fontSize, fontWeight: "800", textAlign: "center" },
+  subtitle: { color: staticColors.hex_9e9e9e_ec6lmi, marginTop: t.spacing.xxs, textAlign: "center" },
   existingBadge: {
-    marginTop: 4,
-    color: "#30D158",
-    fontSize: 12,
+    marginTop: t.spacing.xxs,
+    color: staticColors.hex_30d158_8wag71,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "700",
+    textAlign: "center",
   },
+  checkContext: {
+    marginTop: t.spacing.sm,
+    paddingHorizontal: t.spacing.none,
+    paddingVertical: t.spacing.xxs,
+    flexDirection: "row",
+    gap: t.spacing.sm,
+  },
+  checkContextItem: { flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: t.spacing.xs },
+  contextIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: t.radius.md,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  contextText: { flex: 1, minWidth: 0 },
+  contextLabel: { fontSize: t.typography.micro.fontSize, lineHeight: t.typography.micro.lineHeight, fontWeight: "700" },
+  contextValue: { marginTop: t.spacing.none, fontSize: t.typography.metadata.fontSize, lineHeight: t.typography.metadata.lineHeight, fontWeight: "800" },
 
   grid2: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 12,
-    marginTop: 12,
+    gap: t.spacing.sm,
+    marginTop: t.spacing.sm,
   },
   field: {
     flexGrow: 1,
     flexBasis: 150,
     minWidth: 0,
-    marginBottom: 10,
+    marginBottom: t.spacing.xs,
   },
   input: {
-    color: "#fff",
-    backgroundColor: "#232323",
-    borderColor: "#333",
+    color: staticColors.hex_fff_yhjmu8,
+    backgroundColor: staticColors.hex_232323_72yy4n,
+    borderColor: staticColors.hex_333_yhlln9,
     borderWidth: 1,
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 10,
+    borderRadius: t.radius.sm,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xs,
   },
   pickerLike: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    backgroundColor: "#232323",
-    borderColor: "#333",
+    gap: t.spacing.xs,
+    backgroundColor: staticColors.hex_232323_72yy4n,
+    borderColor: staticColors.hex_333_yhlln9,
     borderWidth: 1,
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 10,
+    borderRadius: t.radius.sm,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xs,
   },
 
-  legend: {
-    flexDirection: "row",
-    gap: 10,
-    marginTop: 12,
-    marginBottom: 6,
-  },
   card: {
-    backgroundColor: "#1a1a1a",
+    backgroundColor: staticColors.hex_1a1a1a_98rvna,
     borderWidth: 1,
-    borderColor: "#262626",
-    borderRadius: 10,
-    padding: 12,
-    marginTop: 12,
+    borderColor: staticColors.hex_262626_70t9oi,
+    borderRadius: t.radius.md,
+    padding: t.spacing.sm,
+    marginTop: t.spacing.sm,
   },
   cardTitle: {
-    color: "#fff",
-    fontSize: 16,
+    color: staticColors.hex_fff_yhjmu8,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "800",
-    marginBottom: 6,
+    marginBottom: t.spacing.xxs,
   },
+  checkSectionHeader: {
+    marginBottom: t.spacing.xxs,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: t.spacing.xs,
+  },
+  progressText: { fontSize: t.typography.caption.fontSize, fontWeight: "700" },
+  sectionList: { gap: t.spacing.xs, marginTop: t.spacing.xxs },
+  checkGroup: { borderWidth: 1, borderRadius: t.radius.md, overflow: "hidden" },
+  checkGroupHeader: {
+    minHeight: 66,
+    paddingLeft: t.spacing.sm,
+    paddingRight: t.spacing.xxs,
+    paddingVertical: t.spacing.xs,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: t.spacing.xxs,
+  },
+  groupMain: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: t.spacing.xs,
+  },
+  groupIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: t.radius.md,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  groupCopy: { flex: 1, minWidth: 0 },
+  groupTitle: { fontSize: t.typography.body.fontSize, lineHeight: t.typography.body.lineHeight, fontWeight: "800" },
+  groupDescription: { marginTop: t.spacing.none, fontSize: t.typography.caption.fontSize, lineHeight: t.typography.caption.lineHeight, fontWeight: "600" },
+  headerOkButton: {
+    minWidth: 54,
+    minHeight: 38,
+    paddingHorizontal: t.spacing.xs,
+    borderRadius: t.radius.md,
+    borderWidth: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: t.spacing.xxs,
+  },
+  headerOkText: { fontSize: t.typography.metadata.fontSize, fontWeight: "900" },
+  expandButton: {
+    width: 38,
+    height: 38,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  groupItems: { paddingHorizontal: t.spacing.xs, paddingVertical: t.spacing.xxs, borderTopWidth: 1 },
+  defectCard: { borderWidth: 1 },
+  allClearCard: {
+    marginTop: t.spacing.xs,
+    padding: t.spacing.sm,
+    borderRadius: t.radius.md,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: t.spacing.xs,
+  },
+  allClearText: { flex: 1, fontSize: t.typography.metadata.fontSize, lineHeight: t.typography.metadata.lineHeight, fontWeight: "600" },
 
   itemRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
-    paddingVertical: 6,
+    gap: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
   },
-  itemIndex: { width: 26, color: "#bdbdbd", fontWeight: "700" },
-  itemLabel: { flex: 1, color: "#fff" },
+  itemLabel: { flex: 1, color: staticColors.hex_fff_yhjmu8, fontSize: t.typography.metadata.fontSize, lineHeight: t.typography.metadata.lineHeight },
   statusBadge: {
-    minWidth: 56,
+    minWidth: 72,
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    borderRadius: 8,
+    paddingVertical: t.spacing.xxs,
+    paddingHorizontal: t.spacing.xs,
+    borderRadius: t.radius.sm,
     borderWidth: 1,
-    backgroundColor: "#141414",
-    borderColor: "#333",
+    backgroundColor: staticColors.hex_141414_a6icwz,
+    borderColor: staticColors.hex_333_yhlln9,
   },
-  statusText: { color: "#fff", fontWeight: "800" },
+  statusOk: { borderColor: staticColors.hex_1db954_99nzwp, backgroundColor: staticColors.hex_bbf7d0_ry6j9f },
+  statusDefect: { borderColor: staticColors.hex_c8102e_6za5cb, backgroundColor: staticColors.hex_fee2e2_pb1qh1 },
+  statusText: { color: staticColors.hex_fff_yhjmu8, fontWeight: "800" },
 
   smallBtn: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    backgroundColor: "#2E2E2E",
-    borderRadius: 8,
+    gap: t.spacing.xxs,
+    paddingVertical: t.spacing.xs,
+    paddingHorizontal: t.spacing.sm,
+    backgroundColor: staticColors.hex_2e2e2e_6o7581,
+    borderRadius: t.radius.sm,
   },
   closeChip: {
     position: "absolute",
     top: -8,
     right: -8,
-    backgroundColor: "#C8102E",
-    borderRadius: 10,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
+    backgroundColor: staticColors.hex_c8102e_6za5cb,
+    borderRadius: t.radius.md,
+    paddingHorizontal: t.spacing.xxs,
+    paddingVertical: t.spacing.none,
   },
   actionBtn: {
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    borderRadius: 10,
+    paddingVertical: t.spacing.sm,
+    paddingHorizontal: t.spacing.sm,
+    borderRadius: t.radius.md,
     alignItems: "center",
     justifyContent: "center",
   },
-  actionText: { color: "#fff", fontWeight: "800" },
+  actionText: { color: staticColors.hex_fff_yhjmu8, fontWeight: "800" },
 
-  legendPill: {
-    backgroundColor: "#232323",
-    borderColor: "#333",
-    borderWidth: 1,
-    borderRadius: 999,
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-  },
-  legendPillText: { color: "#fff", fontWeight: "700" },
 });
-
-function LegendPill({ text }) {
-  const { colors } = useTheme();
-  return (
-    <View
-      style={[
-        styles.legendPill,
-        { backgroundColor: colors.surfaceAlt, borderColor: colors.border },
-      ]}
-    >
-      <Text
-        style={[
-          styles.legendPillText,
-          { color: colors.text },
-        ]}
-      >
-        {text}
-      </Text>
-    </View>
-  );
-}

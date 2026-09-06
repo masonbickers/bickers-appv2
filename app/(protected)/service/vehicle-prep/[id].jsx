@@ -1,6 +1,11 @@
+import { AppText as Text, AppPressable as TouchableOpacity, TextArea } from "../../../../components/ui/AppPrimitives";
+import {
+  servicePalette as COLORS } from "../../../../lib/design/semantics";
 // app/(protected)/service/service-form/vehicle-prep.jsx (or your actual path)
 import { Feather } from "@expo/vector-icons";
-import { useLocalSearchParams, useNavigation, useRouter } from "expo-router";
+import { useLocalSearchParams,
+  useNavigation,
+  useRouter } from "expo-router";
 import {
   arrayUnion,
   collection,
@@ -8,37 +13,25 @@ import {
   serverTimestamp,
   setDoc,
   updateDoc,
-} from "firebase/firestore";
-import { useEffect, useMemo, useRef, useState } from "react";
+  } from "firebase/firestore";
+import { useEffect,
+  useMemo,
+  useRef,
+  useState } from "react";
 import {
   ActivityIndicator,
   Alert,
   Platform,
-  ScrollView,
   StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+
 
 import { db } from "../../../../firebaseConfig";
 import { useServiceCacheActions } from "../../../../hooks/useServiceData";
 import { runOrQueueFirestoreMutations } from "../../../../lib/sync/firestoreQueue";
-import { useTheme } from "../../../../providers/ThemeProvider";
-
-const COLORS = {
-  background: "#0D0D0D",
-  card: "#1A1A1A",
-  border: "#333333",
-  textHigh: "#FFFFFF",
-  textMid: "#E0E0E0",
-  textLow: "#888888",
-  primaryAction: "#ED1C25",
-  inputBg: "#2a2a2a",
-  lightGray: "#4a4a4a",
-};
+import { designTokens as t } from "../../../../lib/design/tokens";
+import PageShell from "../../../../components/layout/PageShell";
 
 const DEFAULT_CHECKS = [
   "Exterior walk-around (damage / dents)",
@@ -54,7 +47,6 @@ const DEFAULT_CHECKS = [
 export default function VehiclePrepScreen() {
   const router = useRouter();
   const navigation = useNavigation();
-  const { colors } = useTheme();
   const { upsertServiceRow, patchServiceRow } = useServiceCacheActions();
   const params = useLocalSearchParams();
   const allowLeaveRef = useRef(false);
@@ -309,49 +301,16 @@ export default function VehiclePrepScreen() {
   };
 
   return (
-    <SafeAreaView
-      edges={["left", "right"]}
-      style={[
-        styles.container,
-        { backgroundColor: colors.background || COLORS.background },
-      ]}
-    >
+    <PageShell mode="form" width="form" header={{
+      variant: "compact",
+      title: "Vehicle prep",
+      subtitle: "Tick off checks before this vehicle leaves the yard.",
+      onBack: () => confirmLeave(() => router.back()),
+    }}>
       {/* HEADER */}
-      <View
-        style={[
-          styles.header,
-          { borderBottomColor: colors.border || COLORS.border },
-        ]}
-      >
-        <TouchableOpacity
-          onPress={() => confirmLeave(() => router.back())}
-          style={styles.backButton}
-          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-        >
-          <Feather name="chevron-left" size={20} color={COLORS.textHigh} />
-        </TouchableOpacity>
+      
 
-        <View style={{ flex: 1 }}>
-          <Text
-            style={[
-              styles.pageTitle,
-              { color: colors.text || COLORS.textHigh },
-            ]}
-          >
-            Vehicle prep
-          </Text>
-          <Text
-            style={[
-              styles.pageSubtitle,
-              { color: colors.textMuted || COLORS.textMid },
-            ]}
-          >
-            Tick off checks before this vehicle leaves the yard.
-          </Text>
-        </View>
-      </View>
-
-      <ScrollView contentContainerStyle={styles.scrollContent}>
+      <>
         {/* SUMMARY */}
         <View style={styles.summaryCard}>
           <Text style={styles.summaryLabel}>Vehicle</Text>
@@ -362,7 +321,7 @@ export default function VehiclePrepScreen() {
 
           {dateLabel ? (
             <>
-              <Text style={[styles.summaryLabel, { marginTop: 8 }]}>
+              <Text style={[styles.summaryLabel, { marginTop: t.spacing.xs }]}>
                 Going out
               </Text>
               <Text style={styles.summaryDate}>{dateLabel}</Text>
@@ -371,7 +330,7 @@ export default function VehiclePrepScreen() {
 
           {equipmentSummary ? (
             <>
-              <Text style={[styles.summaryLabel, { marginTop: 8 }]}>
+              <Text style={[styles.summaryLabel, { marginTop: t.spacing.xs }]}>
                 Equipment on job
               </Text>
               <Text style={styles.summaryEquipment}>{equipmentSummary}</Text>
@@ -484,11 +443,9 @@ export default function VehiclePrepScreen() {
         </View>
 
         <View style={styles.card}>
-          <TextInput
-            style={styles.notesInput}
-            multiline
+          <TextArea
+            label="Notes"
             placeholder="e.g. Small scuff on rear bumper, photographed and logged."
-            placeholderTextColor={COLORS.textLow}
             value={notes}
             onChangeText={setNotes}
           />
@@ -527,14 +484,14 @@ export default function VehiclePrepScreen() {
               <ActivityIndicator
                 size="small"
                 color={COLORS.textHigh}
-                style={{ marginRight: 6 }}
+                style={{ marginRight: t.spacing.xxs }}
               />
             ) : (
               <Feather
                 name="check-circle"
                 size={16}
                 color={COLORS.textHigh}
-                style={{ marginRight: 6 }}
+                style={{ marginRight: t.spacing.xxs }}
               />
             )}
             <Text style={styles.primaryButtonText}>
@@ -544,8 +501,8 @@ export default function VehiclePrepScreen() {
         </View>
 
         <View style={{ height: 40 }} />
-      </ScrollView>
-    </SafeAreaView>
+      </>
+    </PageShell>
   );
 }
 
@@ -554,85 +511,85 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingHorizontal: t.spacing.md,
+    paddingVertical: t.spacing.sm,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
   },
   backButton: {
-    paddingRight: 10,
-    paddingVertical: 4,
+    paddingRight: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
   },
   pageTitle: {
-    fontSize: 20,
+    fontSize: t.typography.titleSmall.fontSize,
     fontWeight: "800",
   },
   pageSubtitle: {
-    fontSize: 12,
-    marginTop: 2,
+    fontSize: t.typography.metadata.fontSize,
+    marginTop: t.spacing.none,
     color: COLORS.textMid,
   },
   scrollContent: {
-    padding: 16,
+    padding: t.spacing.md,
   },
 
   summaryCard: {
     backgroundColor: COLORS.card,
-    borderRadius: 10,
-    padding: 14,
-    marginBottom: 16,
+    borderRadius: t.radius.md,
+    padding: t.spacing.sm,
+    marginBottom: t.spacing.md,
     borderWidth: 1,
     borderColor: COLORS.border,
   },
   summaryLabel: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     fontWeight: "600",
     color: COLORS.textLow,
     textTransform: "uppercase",
     letterSpacing: 0.6,
   },
   summaryMain: {
-    fontSize: 16,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "700",
     color: COLORS.textHigh,
-    marginTop: 2,
+    marginTop: t.spacing.none,
   },
   summaryDate: {
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     fontWeight: "600",
     color: COLORS.textMid,
-    marginTop: 2,
+    marginTop: t.spacing.none,
   },
   summaryEquipment: {
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
     fontWeight: "500",
     color: COLORS.textMid,
-    marginTop: 2,
+    marginTop: t.spacing.none,
   },
 
   sectionHeaderRow: {
-    marginTop: 6,
-    marginBottom: 6,
+    marginTop: t.spacing.xxs,
+    marginBottom: t.spacing.xxs,
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "flex-end",
   },
   sectionTitle: {
-    fontSize: 15,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "700",
     color: COLORS.textHigh,
   },
   sectionSubtitle: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textMid,
   },
 
   card: {
     backgroundColor: COLORS.card,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    marginBottom: 16,
+    borderRadius: t.radius.md,
+    paddingHorizontal: t.spacing.sm,
+    paddingVertical: t.spacing.xxs,
+    marginBottom: t.spacing.md,
     borderWidth: 1,
     borderColor: COLORS.border,
   },
@@ -640,77 +597,77 @@ const styles = StyleSheet.create({
   checkRow: {
     flexDirection: "row",
     alignItems: "flex-start",
-    paddingVertical: 8,
+    paddingVertical: t.spacing.xs,
     borderTopWidth: 1,
     borderTopColor: COLORS.border,
   },
   checkIconWrap: {
-    paddingRight: 10,
-    paddingTop: 4,
+    paddingRight: t.spacing.xs,
+    paddingTop: t.spacing.xxs,
   },
   checkEmpty: {
     width: 20,
     height: 20,
-    borderRadius: 10,
+    borderRadius: t.radius.pill,
     borderWidth: 1.5,
     borderColor: COLORS.textMid,
   },
   checkFilled: {
     width: 20,
     height: 20,
-    borderRadius: 10,
+    borderRadius: t.radius.pill,
     backgroundColor: COLORS.primaryAction,
     alignItems: "center",
     justifyContent: "center",
   },
   checkLabel: {
     flex: 1,
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     color: COLORS.textHigh,
     fontWeight: "500",
   },
 
   notesInput: {
     minHeight: 100,
-    paddingVertical: 10,
-    paddingHorizontal: 10,
-    borderRadius: 8,
+    paddingVertical: t.spacing.xs,
+    paddingHorizontal: t.spacing.xs,
+    borderRadius: t.radius.sm,
     borderWidth: 1,
     borderColor: COLORS.lightGray,
     backgroundColor: COLORS.inputBg,
     color: COLORS.textHigh,
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     textAlignVertical: "top",
   },
 
   buttonRow: {
     flexDirection: "row",
-    gap: 10,
-    marginTop: 4,
+    gap: t.spacing.xs,
+    marginTop: t.spacing.xxs,
   },
   secondaryButton: {
     flex: 1,
-    borderRadius: 999,
+    borderRadius: t.radius.pill,
     borderWidth: 1,
-    paddingVertical: 10,
+    paddingVertical: t.spacing.xs,
     alignItems: "center",
     justifyContent: "center",
   },
   secondaryButtonText: {
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     fontWeight: "600",
     color: COLORS.textMid,
   },
   primaryButton: {
     flex: 1.4,
-    borderRadius: 999,
-    paddingVertical: 10,
+    borderRadius: t.radius.pill,
+    paddingVertical: t.spacing.xs,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
   },
   primaryButtonText: {
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     fontWeight: "700",
     color: COLORS.textHigh,
   },

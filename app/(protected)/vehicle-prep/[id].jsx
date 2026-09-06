@@ -1,31 +1,42 @@
+import { AppText as Text, AppPressable as TouchableOpacity, TextArea } from "../../../components/ui/AppPrimitives";
 // app/(protected)/service/vehicle-prep.jsx
-import { useLocalSearchParams, useRouter } from "expo-router";
-import { useState } from "react";
 import {
-  SafeAreaView,
-  ScrollView,
+  useLocalSearchParams,
+  useRouter } from "expo-router";
+import { doc, serverTimestamp, setDoc } from "firebase/firestore";
+import { useEffect, useMemo, useState } from "react";
+import {
+  Alert,
   StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
   View,
 } from "react-native";
 import Icon from "react-native-vector-icons/Feather";
 import { useTheme } from "../../../providers/ThemeProvider";
+import { staticColors } from "../../../lib/design/staticColors";
+import { designTokens as t } from "../../../lib/design/tokens";
+import PageShell from "../../../components/layout/PageShell";
+import { db } from "../../../firebaseConfig";
+import { useCompanyCollection } from "../../../hooks/useOperationalData";
+import { runOrQueueFirestoreMutation } from "../../../lib/sync/firestoreQueue";
+import {
+  buildVehiclePrepRecordId,
+  findVehiclePrepRecord,
+} from "../../../lib/vehiclePrep";
+import { useAuth } from "../../../providers/AuthProvider";
 
 /* ---------- SAME COLOUR MAP AS SERVICE-LIST.JSX ---------- */
 
 const COLORS = {
-  background: "#0D0D0D",
-  card: "#1A1A1A",
-  border: "#333333",
-  textHigh: "#FFFFFF",
-  textMid: "#E0E0E0",
-  textLow: "#888888",
-  primaryAction: "#ED1C25",
-  inputBg: "#1A1A1A",
-  chipBg: "#1F1F1F",
-  chipBorder: "#3A3A3A",
+  background: staticColors.hex_0d0d0d_af235e,
+  card: staticColors.hex_1a1a1a_8nhjiu,
+  border: staticColors.hex_333333_8y2gva,
+  textHigh: staticColors.hex_ffffff_5c2ocm,
+  textMid: staticColors.hex_e0e0e0_5lga4z,
+  textLow: staticColors.hex_888888_dds7pi,
+  primaryAction: staticColors.hex_ed1c25_4py4qa,
+  inputBg: staticColors.hex_1a1a1a_8nhjiu,
+  chipBg: staticColors.hex_1f1f1f_8imrm9,
+  chipBorder: staticColors.hex_3a3a3a_9vb0wk,
 };
 
 const DEFAULT_CHECKS = [
@@ -43,6 +54,8 @@ export default function VehiclePrepScreen() {
   const router = useRouter();
   const params = useLocalSearchParams();
   const { colors } = useTheme();
+  const { user, employee } = useAuth();
+  const prepRecordsResource = useCompanyCollection("vehiclePrepRecords");
 
   /* ---------- CHECKLIST STATE ---------- */
 
@@ -84,15 +97,33 @@ export default function VehiclePrepScreen() {
 
   const [equipmentChecks, setEquipmentChecks] = useState(initialEquipmentChecks);
   const [notes, setNotes] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [hydratedRecordId, setHydratedRecordId] = useState("");
 
   /* ---------- PARAMS ---------- */
 
-  const vehicleName = params.vehicleName || "";
-  const registration = params.registration || "";
-  const dateStr = params.date || "";
+  const paramValue = (value) => String(Array.isArray(value) ? value[0] || "" : value || "");
+  const vehicleId = paramValue(params.vehicleId || params.id);
+  const bookingId = paramValue(params.bookingId);
+  const vehicleName = paramValue(params.vehicleName);
+  const registration = paramValue(params.registration);
+  const dateStr = paramValue(params.date);
+  const prepRecordId = useMemo(
+    () => buildVehiclePrepRecordId(bookingId, vehicleId),
+    [bookingId, vehicleId]
+  );
+  const existingRecord = useMemo(
+    () =>
+      findVehiclePrepRecord(prepRecordsResource.data, {
+        bookingId,
+        vehicleId,
+        date: dateStr,
+      }),
+    [bookingId, dateStr, prepRecordsResource.data, vehicleId]
+  );
 
   const dateLabel = dateStr
-    ? new Date(dateStr).toLocaleDateString("en-GB", {
+    ? new Date(`${dateStr}T12:00:00`).toLocaleDateString("en-GB", {
         weekday: "short",
         day: "2-digit",
         month: "short",
@@ -116,50 +147,107 @@ export default function VehiclePrepScreen() {
 
   const allDone = allVehicleChecksDone && allEquipmentDone;
 
+  useEffect(() => {
+    if (!existingRecord || hydratedRecordId === existingRecord.id) return;
+
+    const savedChecks = Array.isArray(existingRecord.checks) ? existingRecord.checks : [];
+    setChecks(
+      DEFAULT_CHECKS.map((label, idx) => {
+        const id = `check-${idx}`;
+        const saved = savedChecks.find((check) => check?.id === id || check?.label === label);
+        return { id, label, done: saved?.done === true };
+      })
+    );
+    if (Array.isArray(existingRecord.equipmentChecks)) {
+      setEquipmentChecks(existingRecord.equipmentChecks);
+    }
+    setNotes(String(existingRecord.notes || ""));
+    setHydratedRecordId(existingRecord.id);
+  }, [existingRecord, hydratedRecordId]);
+
+  const handleSave = async (markComplete) => {
+    if (saving || (markComplete && !allDone)) return;
+
+    setSaving(true);
+    try {
+      const completed = markComplete || (existingRecord?.completed === true && allDone);
+      const record = {
+        companyId: String(employee?.companyId || "bickers-action"),
+        bookingId,
+        vehicleId,
+        vehicleName,
+        registration,
+        prepDate: dateStr,
+        checks,
+        equipmentChecks,
+        notes: notes.trim(),
+        completed,
+        completedAt: completed
+          ? existingRecord?.completedAt || serverTimestamp()
+          : null,
+        completedByUid: completed
+          ? existingRecord?.completedByUid || user?.uid || null
+          : null,
+        completedByEmployeeId: completed
+          ? existingRecord?.completedByEmployeeId || employee?.employeeId || null
+          : null,
+        completedByName: completed
+          ? existingRecord?.completedByName || employee?.displayName || employee?.name || ""
+          : null,
+        completedByCode: completed
+          ? existingRecord?.completedByCode || employee?.userCode || null
+          : null,
+        createdAt: existingRecord?.createdAt || serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      };
+      const prepRef = doc(db, "vehiclePrepRecords", prepRecordId);
+      const { queued } = await runOrQueueFirestoreMutation({
+        run: () => setDoc(prepRef, record, { merge: true }),
+        mutation: {
+          operation: "set",
+          docPath: `vehiclePrepRecords/${prepRecordId}`,
+          data: record,
+          options: { merge: true },
+          entityType: "vehiclePrepRecord",
+          entityId: prepRecordId,
+        },
+      });
+
+      await prepRecordsResource.upsertRow({
+        ...record,
+        id: prepRecordId,
+        completedAt: completed ? existingRecord?.completedAt || new Date() : null,
+        updatedAt: new Date(),
+      });
+
+      Alert.alert(
+        queued ? "Saved offline" : markComplete ? "Vehicle prepped" : "Prep saved",
+        queued
+          ? "This preparation will sync automatically when the connection returns."
+          : markComplete
+          ? "This vehicle is now marked as prepped for the job."
+          : "Your progress has been saved.",
+        [{ text: "OK", onPress: () => router.back() }]
+      );
+    } catch (error) {
+      console.error("Failed to save vehicle preparation:", error);
+      Alert.alert("Couldn’t save preparation", "Please try again.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
-    <SafeAreaView
-      style={[
-        styles.container,
-        { backgroundColor: colors.background || COLORS.background },
-      ]}
-    >
+    <PageShell mode="form" width="form" header={{
+      variant: "compact",
+      title: "Vehicle prep",
+      subtitle: "Tick off checks before this vehicle leaves the yard.",
+      onBack: router.back,
+    }}>
       {/* HEADER */}
-      <View
-        style={[
-          styles.header,
-          { borderBottomColor: colors.border || COLORS.border },
-        ]}
-      >
-        <TouchableOpacity
-          onPress={() => router.back()}
-          style={styles.backButton}
-          activeOpacity={0.7}
-        >
-          <Icon
-            name="chevron-left"
-            size={20}
-            color={colors.text || COLORS.textHigh}
-          />
-        </TouchableOpacity>
+      
 
-        <View style={{ flex: 1 }}>
-          <Text
-            style={[styles.pageTitle, { color: colors.text || COLORS.textHigh }]}
-          >
-            Vehicle prep
-          </Text>
-          <Text
-            style={[
-              styles.pageSubtitle,
-              { color: colors.textMuted || COLORS.textMid },
-            ]}
-          >
-            Tick off checks before this vehicle leaves the yard.
-          </Text>
-        </View>
-      </View>
-
-      <ScrollView contentContainerStyle={styles.scrollContent}>
+      <>
         {/* SUMMARY CARD */}
         <View
           style={[
@@ -188,7 +276,7 @@ export default function VehiclePrepScreen() {
               <Text
                 style={[
                   styles.summaryLabel,
-                  { marginTop: 8, color: colors.textLow || COLORS.textLow },
+                  { marginTop: t.spacing.xs, color: colors.textLow || COLORS.textLow },
                 ]}
               >
                 Going out
@@ -200,6 +288,32 @@ export default function VehiclePrepScreen() {
               </Text>
             </>
           )}
+
+          {existingRecord?.completed ? (
+            <View
+              style={[
+                styles.completionMeta,
+                {
+                  backgroundColor: colors.successSoft,
+                  borderColor: colors.success,
+                },
+              ]}
+            >
+              <Icon name="check-circle" size={16} color={colors.success} />
+              <View style={styles.completionMetaCopy}>
+                <Text style={[styles.completionMetaTitle, { color: colors.success }]}>Prepped</Text>
+                <Text style={[styles.completionMetaText, { color: colors.textMuted }]}>
+                  {existingRecord.completedByName
+                    ? `Completed by ${existingRecord.completedByName}${
+                        existingRecord.completedByCode
+                          ? ` · ${existingRecord.completedByCode}`
+                          : ""
+                      }`
+                    : "Completion recorded"}
+                </Text>
+              </View>
+            </View>
+          ) : null}
         </View>
 
         {/* SECTION HEADER */}
@@ -246,7 +360,7 @@ export default function VehiclePrepScreen() {
                       { backgroundColor: colors.accent || COLORS.primaryAction },
                     ]}
                   >
-                    <Icon name="check" size={14} color={"#fff"} />
+                    <Icon name="check" size={14} color={staticColors.hex_fff_yhjmu8} />
                   </View>
                 ) : (
                   <View
@@ -323,7 +437,7 @@ export default function VehiclePrepScreen() {
                           { backgroundColor: colors.accent || COLORS.primaryAction },
                         ]}
                       >
-                        <Icon name="check" size={14} color={"#fff"} />
+                        <Icon name="check" size={14} color={staticColors.hex_fff_yhjmu8} />
                       </View>
                     ) : (
                       <View
@@ -371,18 +485,9 @@ export default function VehiclePrepScreen() {
             },
           ]}
         >
-          <TextInput
-            style={[
-              styles.notesInput,
-              {
-                backgroundColor: colors.inputBackground || COLORS.inputBg,
-                borderColor: colors.inputBorder || COLORS.border,
-                color: colors.text || COLORS.textHigh,
-              },
-            ]}
-            multiline
+          <TextArea
+            label="Notes"
             placeholder="e.g. Small scuff on rear bumper."
-            placeholderTextColor={colors.textLow || COLORS.textLow}
             value={notes}
             onChangeText={setNotes}
           />
@@ -395,7 +500,8 @@ export default function VehiclePrepScreen() {
               styles.secondaryButton,
               { borderColor: colors.border || COLORS.border },
             ]}
-            onPress={() => router.back()}
+            onPress={() => handleSave(false)}
+            disabled={saving}
             activeOpacity={0.85}
           >
             <Text
@@ -417,19 +523,19 @@ export default function VehiclePrepScreen() {
                   : colors.border || COLORS.border,
               },
             ]}
-            onPress={() => router.back()}
-            disabled={!allDone}
+            onPress={() => handleSave(true)}
+            disabled={!allDone || saving}
           >
-            <Icon name="check-circle" size={16} color={"#fff"} style={{ marginRight: 6 }} />
-            <Text style={[styles.primaryButtonText, { color: "#fff" }]}>
-              Mark vehicle prepped
+            <Icon name="check-circle" size={16} color={staticColors.hex_fff_yhjmu8} style={{ marginRight: t.spacing.xxs }} />
+            <Text style={[styles.primaryButtonText, { color: staticColors.hex_fff_yhjmu8 }]}>
+              {saving ? "Saving…" : existingRecord?.completed ? "Update preparation" : "Mark vehicle prepped"}
             </Text>
           </TouchableOpacity>
         </View>
 
         <View style={{ height: 40 }} />
-      </ScrollView>
-    </SafeAreaView>
+      </>
+    </PageShell>
   );
 }
 
@@ -441,75 +547,95 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingHorizontal: t.spacing.md,
+    paddingVertical: t.spacing.sm,
     borderBottomWidth: 1,
   },
 
   backButton: {
-    paddingRight: 12,
-    paddingVertical: 6,
+    paddingRight: t.spacing.sm,
+    paddingVertical: t.spacing.xxs,
   },
 
   pageTitle: {
-    fontSize: 20,
+    fontSize: t.typography.titleSmall.fontSize,
     fontWeight: "800",
   },
   pageSubtitle: {
-    fontSize: 12,
-    marginTop: 2,
+    fontSize: t.typography.metadata.fontSize,
+    marginTop: t.spacing.none,
   },
 
   scrollContent: {
-    padding: 16,
+    padding: t.spacing.md,
   },
 
   /* SUMMARY */
   summaryCard: {
-    borderRadius: 10,
-    padding: 14,
-    marginBottom: 16,
+    borderRadius: t.radius.md,
+    padding: t.spacing.sm,
+    marginBottom: t.spacing.md,
     borderWidth: 1,
   },
   summaryLabel: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     fontWeight: "600",
     textTransform: "uppercase",
     letterSpacing: 0.6,
   },
   summaryMain: {
-    fontSize: 16,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "700",
-    marginTop: 2,
+    marginTop: t.spacing.none,
   },
   summaryDate: {
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     fontWeight: "600",
-    marginTop: 2,
+    marginTop: t.spacing.none,
+  },
+  completionMeta: {
+    marginTop: t.spacing.sm,
+    padding: t.spacing.xs,
+    borderRadius: t.radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: t.spacing.xs,
+  },
+  completionMetaCopy: { flex: 1, minWidth: 0 },
+  completionMetaTitle: {
+    fontSize: t.typography.metadata.fontSize,
+    lineHeight: t.typography.metadata.lineHeight,
+    fontWeight: "900",
+  },
+  completionMetaText: {
+    fontSize: t.typography.caption.fontSize,
+    lineHeight: t.typography.caption.lineHeight,
+    fontWeight: "600",
   },
 
   /* SECTION TITLES */
   sectionHeaderRow: {
-    marginTop: 8,
-    marginBottom: 6,
+    marginTop: t.spacing.xs,
+    marginBottom: t.spacing.xxs,
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "flex-end",
   },
   sectionTitle: {
-    fontSize: 15,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "700",
   },
   sectionSubtitle: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
   },
 
   /* CARDS */
   card: {
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    marginBottom: 16,
+    borderRadius: t.radius.md,
+    paddingHorizontal: t.spacing.sm,
+    paddingVertical: t.spacing.xxs,
+    marginBottom: t.spacing.md,
     borderWidth: 1,
   },
 
@@ -517,68 +643,68 @@ const styles = StyleSheet.create({
   checkRow: {
     flexDirection: "row",
     alignItems: "flex-start",
-    paddingVertical: 8,
+    paddingVertical: t.spacing.xs,
   },
   checkIconWrap: {
-    paddingRight: 10,
-    paddingTop: 4,
+    paddingRight: t.spacing.xs,
+    paddingTop: t.spacing.xxs,
   },
   checkEmpty: {
     width: 20,
     height: 20,
-    borderRadius: 10,
+    borderRadius: t.radius.pill,
     borderWidth: 1.5,
   },
   checkFilled: {
     width: 20,
     height: 20,
-    borderRadius: 10,
+    borderRadius: t.radius.pill,
     alignItems: "center",
     justifyContent: "center",
   },
   checkLabel: {
     flex: 1,
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     fontWeight: "500",
   },
 
   /* NOTES */
   notesInput: {
     minHeight: 100,
-    padding: 10,
-    borderRadius: 8,
+    padding: t.spacing.xs,
+    borderRadius: t.radius.sm,
     borderWidth: 1,
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     textAlignVertical: "top",
   },
 
   /* BUTTONS */
   buttonRow: {
     flexDirection: "row",
-    gap: 10,
-    marginTop: 4,
+    gap: t.spacing.xs,
+    marginTop: t.spacing.xxs,
   },
   secondaryButton: {
     flex: 1,
-    borderRadius: 999,
+    borderRadius: t.radius.pill,
     borderWidth: 1,
-    paddingVertical: 10,
+    paddingVertical: t.spacing.xs,
     alignItems: "center",
   },
   secondaryButtonText: {
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     fontWeight: "600",
   },
   primaryButton: {
     flex: 1.4,
-    borderRadius: 999,
-    paddingVertical: 10,
+    borderRadius: t.radius.pill,
+    paddingVertical: t.spacing.xs,
     flexDirection: "row",
     justifyContent: "center",
     alignItems: "center",
   },
   primaryButtonText: {
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     fontWeight: "700",
   },
 });

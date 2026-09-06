@@ -1,34 +1,26 @@
+import { AppText as Text, AppPressable as TouchableOpacity } from "../../../../components/ui/AppPrimitives";
+import {
+  servicePalette as COLORS } from "../../../../lib/design/semantics";
 // app/(protected)/service/inspections/index.js
 import { useRouter } from "expo-router";
 import {
   ActivityIndicator,
-  ScrollView,
   StyleSheet,
-  Text,
-  TouchableOpacity,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+
 import Icon from "react-native-vector-icons/Feather";
 
 import { useServiceCollection } from "../../../../hooks/useServiceData";
 import { useTheme } from "../../../../providers/ThemeProvider";
-
-const COLORS = {
-  background: "#0D0D0D",
-  card: "#1A1A1A",
-  border: "#333333",
-  textHigh: "#FFFFFF",
-  textMid: "#E0E0E0",
-  textLow: "#888888",
-  primaryAction: "#ED1C25",
-  inputBg: "#2a2a2a",
-};
+import { staticColors } from "../../../../lib/design/staticColors";
+import { designTokens as t } from "../../../../lib/design/tokens";
+import PageShell from "../../../../components/layout/PageShell";
 
 const STATUS_COLORS = {
-  pass: { bg: "rgba(34,197,94,0.15)", fg: "#22C55E" },
-  fail: { bg: "rgba(239,68,68,0.15)", fg: "#EF4444" },
-  incomplete: { bg: "rgba(245,158,11,0.15)", fg: "#F59E0B" },
+  pass: { bg: staticColors.rgba_1bnty8h, fg: staticColors.hex_22c55e_740if4 },
+  fail: { bg: staticColors.rgba_rveml8, fg: staticColors.hex_ef4444_4oizhh },
+  incomplete: { bg: staticColors.rgba_iz9ft7, fg: staticColors.hex_f59e0b_4zbh7f },
 };
 
 function formatDate(raw) {
@@ -59,15 +51,7 @@ export default function InspectionsScreen() {
   };
 
   return (
-    <SafeAreaView
-      edges={["left", "right"]}
-      style={[
-        styles.container,
-        { backgroundColor: colors.background || COLORS.background },
-      ]}
-    >
-      {/* HEADER */}
-      <View
+    <PageShell customHeader={<View
         style={[
           styles.header,
           { borderBottomColor: colors.border || COLORS.border },
@@ -96,14 +80,16 @@ export default function InspectionsScreen() {
           <Icon name="plus" size={18} color={COLORS.textHigh} />
           <Text style={styles.newButtonText}>New</Text>
         </TouchableOpacity>
-      </View>
+      </View>} customHeaderPlacement="fixed">
+      {/* HEADER */}
+      
 
       {loading ? (
         <View style={styles.center}>
           <ActivityIndicator size="large" color={COLORS.primaryAction} />
         </View>
       ) : (
-        <ScrollView contentContainerStyle={styles.scrollContent}>
+        <>
           {inspections.length === 0 ? (
             <View style={styles.emptyState}>
               <Icon
@@ -190,7 +176,7 @@ export default function InspectionsScreen() {
                         name="calendar"
                         size={12}
                         color={colors.textMuted || COLORS.textLow}
-                        style={{ marginRight: 4 }}
+                        style={{ marginRight: t.spacing.xxs }}
                       />
                       <Text
                         style={[
@@ -207,7 +193,7 @@ export default function InspectionsScreen() {
                           name="user"
                           size={12}
                           color={colors.textMuted || COLORS.textLow}
-                          style={{ marginRight: 4 }}
+                          style={{ marginRight: t.spacing.xxs }}
                         />
                         <Text
                           style={[
@@ -232,9 +218,9 @@ export default function InspectionsScreen() {
             })
           )}
           <View style={{ height: 40 }} />
-        </ScrollView>
+        </>
       )}
-    </SafeAreaView>
+    </PageShell>
   );
 }
 
@@ -243,61 +229,61 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 16,
-    paddingVertical: 14,
+    paddingHorizontal: t.spacing.md,
+    paddingVertical: t.spacing.sm,
     borderBottomWidth: 1,
   },
-  pageTitle: { fontSize: 22, fontWeight: "800" },
-  pageSubtitle: { marginTop: 2, fontSize: 13 },
+  pageTitle: { fontSize: t.typography.titleSmall.fontSize, fontWeight: "800" },
+  pageSubtitle: { marginTop: t.spacing.none, fontSize: t.typography.bodySmall.fontSize },
   newButton: {
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: COLORS.primaryAction,
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    marginLeft: 12,
+    borderRadius: t.radius.sm,
+    paddingHorizontal: t.spacing.sm,
+    paddingVertical: t.spacing.xs,
+    marginLeft: t.spacing.sm,
   },
   newButtonText: {
     color: COLORS.textHigh,
     fontWeight: "700",
-    fontSize: 14,
-    marginLeft: 4,
+    fontSize: t.typography.body.fontSize,
+    marginLeft: t.spacing.xxs,
   },
   center: { flex: 1, alignItems: "center", justifyContent: "center" },
-  scrollContent: { padding: 16, paddingTop: 12 },
+  scrollContent: { padding: t.spacing.md, paddingTop: t.spacing.sm },
   emptyState: {
     alignItems: "center",
     justifyContent: "center",
     paddingTop: 60,
-    paddingHorizontal: 24,
+    paddingHorizontal: t.spacing.xl,
   },
-  emptyTitle: { marginTop: 14, fontSize: 17, fontWeight: "700" },
-  emptySubtitle: { marginTop: 6, fontSize: 13, textAlign: "center" },
+  emptyTitle: { marginTop: t.spacing.sm, fontSize: t.typography.sectionTitle.fontSize, fontWeight: "700" },
+  emptySubtitle: { marginTop: t.spacing.xxs, fontSize: t.typography.bodySmall.fontSize, textAlign: "center" },
   card: {
-    borderRadius: 10,
+    borderRadius: t.radius.md,
     borderWidth: 1,
-    padding: 12,
-    marginBottom: 10,
+    padding: t.spacing.sm,
+    marginBottom: t.spacing.xs,
     position: "relative",
   },
   cardHeader: {
     flexDirection: "row",
     alignItems: "flex-start",
-    marginBottom: 8,
+    marginBottom: t.spacing.xs,
   },
-  cardTitle: { fontSize: 15, fontWeight: "700" },
-  cardSub: { fontSize: 12, marginTop: 2 },
+  cardTitle: { fontSize: t.typography.bodyLarge.fontSize, fontWeight: "700" },
+  cardSub: { fontSize: t.typography.metadata.fontSize, marginTop: t.spacing.none },
   statusPill: {
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 3,
-    marginLeft: 8,
+    borderRadius: t.radius.pill,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
+    marginLeft: t.spacing.xs,
     alignSelf: "flex-start",
   },
-  statusPillText: { fontSize: 11, fontWeight: "700" },
-  cardMeta: { flexDirection: "row", gap: 14 },
+  statusPillText: { fontSize: t.typography.caption.fontSize, fontWeight: "700" },
+  cardMeta: { flexDirection: "row", gap: t.spacing.sm },
   metaItem: { flexDirection: "row", alignItems: "center" },
-  metaText: { fontSize: 12 },
+  metaText: { fontSize: t.typography.metadata.fontSize },
   cardChevron: { position: "absolute", right: 12, top: "50%" },
 });

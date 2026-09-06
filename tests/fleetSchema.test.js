@@ -5,11 +5,16 @@ import {
   buildVehicleIdentityMirrorUpdate,
   buildVehicleMotDateMirrorUpdate,
   buildVehicleOdometerMirrorUpdate,
+  getBookingVehicleReferences,
+  getVehicleDisplayLabel,
+  getVehicleDisplayList,
+  getVehicleDisplayName,
   getVehicleName,
   getVehicleRegistration,
   isVehicleActiveForMaintenance,
   isVehicleMotApplicable,
   isVehicleServiceApplicable,
+  resolveNotificationVehicleBody,
 } from "../lib/fleetSchema.js";
 
 test("legacy vehicle identity fields resolve consistently", () => {
@@ -75,5 +80,75 @@ test("odometer and MOT mirrors write all supported aliases", () => {
       nextMotDate: "2027-01-01",
       motDueDate: "2027-01-01",
     }
+  );
+});
+
+test("vehicle display resolves booking ids to vehicle names", () => {
+  const vehicles = [
+    {
+      id: "firestore-vehicle-id",
+      name: "Camera Tracking Van",
+      registration: "AB12 CDE",
+    },
+  ];
+
+  assert.equal(
+    getVehicleDisplayName("firestore-vehicle-id", vehicles),
+    "Camera Tracking Van"
+  );
+  assert.equal(
+    getVehicleDisplayLabel({ vehicleId: "firestore-vehicle-id" }, vehicles),
+    "Camera Tracking Van · AB12 CDE"
+  );
+  assert.equal(
+    getVehicleDisplayName(
+      { id: "service-record-id", vehicleId: "firestore-vehicle-id" },
+      vehicles
+    ),
+    "Camera Tracking Van"
+  );
+});
+
+test("vehicle display never exposes an unresolved id", () => {
+  assert.equal(getVehicleDisplayName("unresolved-firestore-id", []), "Unknown vehicle");
+  assert.deepEqual(getVehicleDisplayList(["unresolved-firestore-id"], []), [
+    "Unknown vehicle",
+  ]);
+});
+
+test("vehicle display supports embedded and legacy booking references", () => {
+  const booking = {
+    vehicles: [],
+    vehicleIds: [{ id: "van-1", vehicleName: "Rigging Van", reg: "XY99 ZZZ" }],
+  };
+  assert.deepEqual(getBookingVehicleReferences(booking), booking.vehicleIds);
+  assert.deepEqual(getVehicleDisplayList(booking.vehicleIds), [
+    "Rigging Van · XY99 ZZZ",
+  ]);
+});
+
+test("stored notification bodies replace vehicle ids with current names", () => {
+  const body =
+    "Job 9213 • Mon 10 Aug • Client • Brighton • Vehicles: I6MObWIlfW1UgNRTP1BI";
+  assert.equal(
+    resolveNotificationVehicleBody(body, [
+      {
+        id: "I6MObWIlfW1UgNRTP1BI",
+        name: "Camera Tracking Van",
+        registration: "AB12 CDE",
+      },
+    ]),
+    "Job 9213 • Mon 10 Aug • Client • Brighton • Vehicles: Camera Tracking Van · AB12 CDE"
+  );
+  assert.equal(
+    resolveNotificationVehicleBody(body, []),
+    "Job 9213 • Mon 10 Aug • Client • Brighton • Vehicles: Vehicle"
+  );
+  assert.equal(
+    resolveNotificationVehicleBody(
+      "Job 9213 • Vehicles: Low Loader 01 · AY65 LNO",
+      []
+    ),
+    "Job 9213 • Vehicles: Low Loader 01 · AY65 LNO"
   );
 });

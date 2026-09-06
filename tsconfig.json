@@ -10,6 +10,10 @@
     "**/*.ts",
     "**/*.tsx",
     ".expo/types/**/*.ts",
-    "expo-env.d.ts"
-, "app/me.js", "firebaseConfig.js", "app/_layout.jsx"  ]
+    "expo-env.d.ts",
+    "app/me.js",
+    "firebaseConfig.js",
+    "app/_layout.jsx"
+  ],
+  "exclude": ["node_modules", "node_modules 2", "server/node_modules"]
 }

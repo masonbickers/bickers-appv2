@@ -1,17 +1,22 @@
+import { AppText as Text, AppPressable as TouchableOpacity } from "../../../../components/ui/AppPrimitives";
+import {
+  servicePalette as COLORS } from "../../../../lib/design/semantics";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useLocalSearchParams, useRouter } from "expo-router";
-import { doc, serverTimestamp, updateDoc } from "firebase/firestore";
-import { useEffect, useMemo, useState } from "react";
+import { useLocalSearchParams,
+  useRouter } from "expo-router";
+import { doc,
+  serverTimestamp,
+  updateDoc } from "firebase/firestore";
+import { useEffect,
+  useMemo,
+  useState } from "react";
 import {
   ActivityIndicator,
   Alert,
-  ScrollView,
   StyleSheet,
-  Text,
-  TouchableOpacity,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+
 import Icon from "react-native-vector-icons/Feather";
 
 import { db } from "../../../../firebaseConfig";
@@ -32,19 +37,11 @@ import {
   isVehicleServiceApplicable,
 } from "../../../../lib/fleetSchema";
 import { useTheme } from "../../../../providers/ThemeProvider";
+import { staticColors } from "../../../../lib/design/staticColors";
+import { designTokens as t } from "../../../../lib/design/tokens";
+import PageShell from "../../../../components/layout/PageShell";
 
 /* ---------- CONSTANTS ---------- */
-
-const COLORS = {
-  background: "#000000",
-  card: "#151517",
-  border: "#2B2B31",
-  textHigh: "#F5F5F5",
-  textMid: "#D4D4D8",
-  textLow: "#A1A1AA",
-  chipBg: "#1D1D21",
-  primaryAction: "#D94B52",
-};
 
 const SERVICE_DRAFTS_KEY = "serviceFormDrafts_v1";
 const MINOR_SERVICE_DRAFTS_KEY = "minorServiceFormDrafts_v1";
@@ -456,51 +453,14 @@ export default function VehicleDetailScreen() {
   };
 
   return (
-    <SafeAreaView
-      edges={["left", "right"]}
-      style={[
-        styles.container,
-        { backgroundColor: colors.background || COLORS.background },
-      ]}
-    >
+    <PageShell header={{
+      variant: "compact",
+      title: "Vehicle overview",
+      subtitle: "Snapshot of maintenance, status and notes.",
+      onBack: router.back,
+    }}>
       {/* HEADER */}
-      <View
-        style={[
-          styles.header,
-          { borderBottomColor: colors.border || COLORS.border },
-        ]}
-      >
-        <TouchableOpacity
-          style={styles.backButton}
-          onPress={() => router.back()}
-          activeOpacity={0.8}
-        >
-          <Icon
-            name="chevron-left"
-            size={22}
-            color={colors.text || COLORS.textHigh}
-          />
-        </TouchableOpacity>
-
-        <View style={{ flex: 1 }}>
-          <Text
-            style={[
-              styles.title,
-              { color: colors.text || COLORS.textHigh },
-            ]}
-          >
-            Vehicle overview
-          </Text>
-          <Text
-            style={[
-              styles.subtitle,
-              { color: colors.textMuted || COLORS.textMid },
-            ]}
-          >
-            Snapshot of maintenance, status and notes.
-          </Text>
-        </View>
-      </View>
+      
 
       {loading ? (
         <View style={styles.loadingContainer}>
@@ -526,7 +486,7 @@ export default function VehicleDetailScreen() {
           </Text>
         </View>
       ) : (
-        <ScrollView contentContainerStyle={styles.content}>
+        <>
           {/* OVERVIEW CARD */}
           <View
             style={[
@@ -580,17 +540,17 @@ export default function VehicleDetailScreen() {
                       name="truck"
                       size={12}
                       color={COLORS.textMid}
-                      style={{ marginRight: 4 }}
+                      style={{ marginRight: t.spacing.xxs }}
                     />
                     <Text style={styles.chipText}>{vehicle.category}</Text>
                   </View>
                 )}
-                <View style={[styles.chip, { marginTop: 6 }]}>
+                <View style={[styles.chip, { marginTop: t.spacing.xxs }]}>
                   <Icon
                     name="activity"
                     size={12}
                     color={COLORS.textMid}
-                    style={{ marginRight: 4 }}
+                    style={{ marginRight: t.spacing.xxs }}
                   />
                   <Text style={styles.chipText}>{mileageDisplay}</Text>
                 </View>
@@ -727,7 +687,7 @@ export default function VehicleDetailScreen() {
                   name="tool"
                   size={16}
                   color={COLORS.textHigh}
-                  style={{ marginRight: 6 }}
+                  style={{ marginRight: t.spacing.xxs }}
                 />
                 <View>
                   <Text style={styles.actionLabel}>Full service</Text>
@@ -746,7 +706,7 @@ export default function VehicleDetailScreen() {
                   name="refresh-ccw"
                   size={16}
                   color={COLORS.textHigh}
-                  style={{ marginRight: 6 }}
+                  style={{ marginRight: t.spacing.xxs }}
                 />
                 <View>
                   <Text style={styles.actionLabel}>Minor / interim</Text>
@@ -823,7 +783,7 @@ export default function VehicleDetailScreen() {
                 name="list"
                 size={16}
                 color={COLORS.textHigh}
-                style={{ marginRight: 8 }}
+                style={{ marginRight: t.spacing.xs }}
               />
               <Text style={styles.viewAllButtonText}>
                 View all service history
@@ -837,7 +797,7 @@ export default function VehicleDetailScreen() {
                     style={[
                       styles.notesText,
                       {
-                        marginBottom: 8,
+                        marginBottom: t.spacing.xs,
                         color: colors.textMuted || COLORS.textMid,
                       },
                     ]}
@@ -1284,9 +1244,9 @@ export default function VehicleDetailScreen() {
           )}
 
           <View style={{ height: 40 }} />
-        </ScrollView>
+        </>
       )}
-    </SafeAreaView>
+    </PageShell>
   );
 }
 
@@ -1338,18 +1298,18 @@ function StatusPill({ label, status }) {
   const code = status.code;
   if (code === "unknown") return null;
 
-  let bg = "rgba(74,74,74,0.7)";
+  let bg = staticColors.rgba_1jg4kes;
   let fg = COLORS.textHigh;
 
   if (code === "overdue") {
-    bg = "rgba(255,59,48,0.22)";
-    fg = "#ED1C25";
+    bg = staticColors.rgba_mxg8sy;
+    fg = staticColors.hex_ed1c25_4py4qa;
   } else if (code === "due-soon") {
-    bg = "rgba(255,149,0,0.22)";
-    fg = "#FF9500";
+    bg = staticColors.rgba_nffwhq;
+    fg = staticColors.hex_ff9500_5c3jxm;
   } else if (code === "ok") {
-    bg = "rgba(52,199,89,0.22)";
-    fg = "#34C759";
+    bg = staticColors.rgba_dg0wlz;
+    fg = staticColors.hex_34c759_8tm7fd;
   }
 
   return (
@@ -1380,7 +1340,7 @@ function AttachmentList({ label, files, colors }) {
   };
 
   return (
-    <View style={{ marginTop: 12 }}>
+    <View style={{ marginTop: t.spacing.sm }}>
       <Text
         style={[
           styles.attachmentsLabel,
@@ -1395,7 +1355,7 @@ function AttachmentList({ label, files, colors }) {
           style={[
             styles.attachmentButton,
             {
-              backgroundColor: colors?.surfaceAlt || "#191919",
+              backgroundColor: colors?.surfaceAlt || staticColors.hex_191919_acxwha,
               borderColor: colors?.border || COLORS.border,
             },
           ]}
@@ -1448,21 +1408,21 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingHorizontal: t.spacing.md,
+    paddingVertical: t.spacing.sm,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
   },
   backButton: {
-    paddingRight: 10,
+    paddingRight: t.spacing.xs,
   },
   title: {
-    fontSize: 22,
+    fontSize: t.typography.titleSmall.fontSize,
     fontWeight: "800",
   },
   subtitle: {
-    fontSize: 13,
-    marginTop: 2,
+    fontSize: t.typography.bodySmall.fontSize,
+    marginTop: t.spacing.none,
     color: COLORS.textMid,
   },
   loadingContainer: {
@@ -1471,18 +1431,18 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   loadingText: {
-    marginTop: 8,
-    fontSize: 14,
+    marginTop: t.spacing.xs,
+    fontSize: t.typography.body.fontSize,
     color: COLORS.textMid,
   },
   content: {
-    padding: 16,
+    padding: t.spacing.md,
   },
   card: {
     backgroundColor: COLORS.card,
-    borderRadius: 10,
-    padding: 14,
-    marginBottom: 12,
+    borderRadius: t.radius.md,
+    padding: t.spacing.sm,
+    marginBottom: t.spacing.sm,
     borderWidth: 1,
     borderColor: COLORS.border,
   },
@@ -1491,70 +1451,70 @@ const styles = StyleSheet.create({
     alignItems: "flex-start",
   },
   mainName: {
-    fontSize: 18,
+    fontSize: t.typography.sectionTitle.fontSize,
     fontWeight: "800",
     color: COLORS.textHigh,
   },
   reg: {
-    marginTop: 4,
-    fontSize: 14,
+    marginTop: t.spacing.xxs,
+    fontSize: t.typography.body.fontSize,
     color: COLORS.textMid,
   },
   sub: {
-    marginTop: 2,
-    fontSize: 13,
+    marginTop: t.spacing.none,
+    fontSize: t.typography.bodySmall.fontSize,
     color: COLORS.textLow,
   },
   chip: {
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: COLORS.chipBg,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 999,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
+    borderRadius: t.radius.pill,
   },
   chipText: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     color: COLORS.textMid,
     fontWeight: "600",
   },
   statusControlCard: {
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 12,
+    borderRadius: t.radius.md,
+    padding: t.spacing.sm,
+    marginBottom: t.spacing.sm,
     borderWidth: 1,
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
+    gap: t.spacing.xs,
   },
   statusControlTitle: {
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     fontWeight: "800",
   },
   statusControlSub: {
-    marginTop: 2,
-    fontSize: 12,
-    lineHeight: 16,
+    marginTop: t.spacing.none,
+    fontSize: t.typography.metadata.fontSize,
+    lineHeight: t.typography.metadata.lineHeight,
   },
   statusToggle: {
     flexDirection: "row",
-    padding: 3,
-    borderRadius: 999,
-    backgroundColor: "rgba(100,116,139,0.14)",
+    padding: t.spacing.xxs,
+    borderRadius: t.radius.pill,
+    backgroundColor: staticColors.rgba_z8bbyx,
   },
   statusToggleButton: {
     minWidth: 72,
     minHeight: 34,
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: 999,
-    paddingHorizontal: 10,
+    borderRadius: t.radius.pill,
+    paddingHorizontal: t.spacing.xs,
   },
   statusToggleButtonActive: {
     backgroundColor: COLORS.primaryAction,
   },
   statusToggleText: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "800",
     color: COLORS.textLow,
   },
@@ -1562,72 +1522,72 @@ const styles = StyleSheet.create({
     color: COLORS.textHigh,
   },
   sectionHeaderRow: {
-    marginTop: 6,
-    marginBottom: 4,
+    marginTop: t.spacing.xxs,
+    marginBottom: t.spacing.xxs,
   },
   sectionTitle: {
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     fontWeight: "700",
     color: COLORS.textHigh,
   },
   fieldRow: {
     flexDirection: "row",
     justifyContent: "space-between",
-    paddingVertical: 4,
+    paddingVertical: t.spacing.xxs,
   },
   fieldLabel: {
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
     color: COLORS.textLow,
   },
   fieldValue: {
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
     color: COLORS.textMid,
   },
   notesText: {
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
     color: COLORS.textMid,
-    lineHeight: 18,
-    marginTop: 6,
+    lineHeight: t.typography.bodySmall.lineHeight,
+    marginTop: t.spacing.xxs,
   },
   statusRow: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 6,
-    marginBottom: 8,
+    gap: t.spacing.xxs,
+    marginBottom: t.spacing.xs,
   },
   statusPill: {
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
+    borderRadius: t.radius.pill,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
   },
   statusPillText: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     fontWeight: "600",
   },
   divider: {
     height: 1,
     backgroundColor: COLORS.border,
-    marginVertical: 8,
+    marginVertical: t.spacing.xs,
     opacity: 0.6,
   },
 
   /* ACTIONS */
   actionsHint: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textMid,
-    marginBottom: 10,
+    marginBottom: t.spacing.xs,
   },
   actionsRow: {
     flexDirection: "row",
-    gap: 10,
+    gap: t.spacing.xs,
     flexWrap: "wrap",
   },
   actionButton: {
     flex: 1,
     minWidth: "48%",
-    borderRadius: 10,
-    paddingVertical: 10,
-    paddingHorizontal: 10,
+    borderRadius: t.radius.md,
+    paddingVertical: t.spacing.xs,
+    paddingHorizontal: t.spacing.xs,
     flexDirection: "row",
     alignItems: "center",
   },
@@ -1635,128 +1595,128 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.primaryAction,
   },
   actionMinor: {
-    backgroundColor: "#444",
+    backgroundColor: staticColors.hex_444_yhlhma,
   },
   actionLabel: {
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
     fontWeight: "700",
     color: COLORS.textHigh,
   },
   actionSub: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     color: COLORS.textMid,
-    marginTop: 1,
+    marginTop: t.spacing.none,
   },
   timelineButton: {
     minHeight: 58,
     flexDirection: "row",
     alignItems: "center",
     borderWidth: 1,
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 12,
+    borderRadius: t.radius.md,
+    padding: t.spacing.sm,
+    marginBottom: t.spacing.sm,
   },
   timelineIconWrap: {
     width: 34,
     height: 34,
-    borderRadius: 17,
+    borderRadius: t.radius.pill,
     alignItems: "center",
     justifyContent: "center",
-    marginRight: 10,
+    marginRight: t.spacing.xs,
     backgroundColor: COLORS.primaryAction,
   },
   timelineButtonTitle: {
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     fontWeight: "800",
   },
   timelineButtonSub: {
-    marginTop: 2,
-    fontSize: 12,
+    marginTop: t.spacing.none,
+    fontSize: t.typography.metadata.fontSize,
   },
 
   /* SERVICE HISTORY LIST */
   historyItem: {
-    paddingVertical: 6,
+    paddingVertical: t.spacing.xxs,
     borderBottomWidth: 1,
-    borderBottomColor: "rgba(255,255,255,0.03)",
+    borderBottomColor: staticColors.rgba_5ns8wh,
   },
   historyHeaderRow: {
     flexDirection: "row",
     justifyContent: "space-between",
-    marginBottom: 2,
+    marginBottom: t.spacing.none,
   },
   historyTitle: {
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
     fontWeight: "700",
     color: COLORS.textHigh,
   },
   historyMeta: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     color: COLORS.textLow,
   },
   historySummary: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textMid,
   },
 
   /* FULL-WIDTH VIEW ALL BUTTON */
   viewAllButton: {
     width: "100%",
-    borderRadius: 8,
+    borderRadius: t.radius.sm,
     borderWidth: 1,
     borderColor: COLORS.border,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
+    paddingVertical: t.spacing.xs,
+    paddingHorizontal: t.spacing.sm,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#191919",
+    backgroundColor: staticColors.hex_191919_acxwha,
   },
   viewAllButtonText: {
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
     fontWeight: "700",
     color: COLORS.textHigh,
   },
 
   /* ATTACHMENTS */
   attachmentsLabel: {
-    marginTop: 12,
-    marginBottom: 4,
-    fontSize: 12,
+    marginTop: t.spacing.sm,
+    marginBottom: t.spacing.xxs,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "600",
     color: COLORS.textLow,
   },
   attachmentButton: {
     flexDirection: "row",
     alignItems: "center",
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    borderRadius: 8,
-    backgroundColor: "#191919",
+    paddingVertical: t.spacing.xs,
+    paddingHorizontal: t.spacing.xs,
+    borderRadius: t.radius.sm,
+    backgroundColor: staticColors.hex_191919_acxwha,
     borderWidth: 1,
     borderColor: COLORS.border,
-    marginTop: 6,
+    marginTop: t.spacing.xxs,
   },
   attachmentIconWrap: {
     width: 28,
     height: 28,
-    borderRadius: 14,
+    borderRadius: t.radius.pill,
     backgroundColor: COLORS.chipBg,
     alignItems: "center",
     justifyContent: "center",
-    marginRight: 8,
+    marginRight: t.spacing.xs,
   },
   attachmentName: {
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
     color: COLORS.textHigh,
     fontWeight: "600",
   },
   attachmentSub: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     color: COLORS.textLow,
-    marginTop: 1,
+    marginTop: t.spacing.none,
   },
   attachmentChevron: {
-    marginLeft: 8,
+    marginLeft: t.spacing.xs,
   },
 });

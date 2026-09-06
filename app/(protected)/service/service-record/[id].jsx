@@ -1,39 +1,44 @@
+import { AppText as Text, AppPressable as TouchableOpacity } from "../../../../components/ui/AppPrimitives";
+import {
+  servicePalette as COLORS } from "../../../../lib/design/semantics";
 // app/(protected)/service/service-record/[id].jsx
 import { Feather } from "@expo/vector-icons";
-import { useLocalSearchParams, useRouter } from "expo-router";
-import { deleteDoc, deleteField, doc, getDoc, updateDoc } from "firebase/firestore";
-import { useEffect, useMemo, useState } from "react";
+import { useLocalSearchParams,
+  useRouter } from "expo-router";
+import { deleteDoc,
+  deleteField,
+  doc,
+  getDoc,
+  updateDoc } from "firebase/firestore";
+import { useEffect,
+  useMemo,
+  useState } from "react";
 import {
   ActivityIndicator,
   Alert,
   Image,
   ScrollView,
   StyleSheet,
-  Text,
-  TouchableOpacity,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+
 
 import { db } from "../../../../firebaseConfig";
 import { useServiceCacheActions, useServiceCollection } from "../../../../hooks/useServiceData";
+import {
+  findVehicleRecord,
+  getVehicleDisplayName,
+  getVehicleRegistration,
+} from "../../../../lib/fleetSchema";
 import { useTheme } from "../../../../providers/ThemeProvider";
-
-const COLORS = {
-  background: "#0D0D0D",
-  card: "#1A1A1A",
-  border: "#333333",
-  textHigh: "#FFFFFF",
-  textMid: "#E0E0E0",
-  textLow: "#888888",
-  chipBg: "#262626",
-  primaryAction: "#ED1C25",
-};
+import { staticColors } from "../../../../lib/design/staticColors";
+import { designTokens as t } from "../../../../lib/design/tokens";
+import PageShell from "../../../../components/layout/PageShell";
 
 const CHECK_STATUS_META = {
-  green: { label: "Green", color: "#22C55E" },
-  amber: { label: "Amber", color: "#F59E0B" },
-  red: { label: "Red", color: "#EF4444" },
+  green: { label: "Green", color: staticColors.hex_22c55e_740if4 },
+  amber: { label: "Amber", color: staticColors.hex_f59e0b_4zbh7f },
+  red: { label: "Red", color: staticColors.hex_ef4444_4oizhh },
 };
 
 const WHEEL_POSITIONS = [
@@ -168,6 +173,7 @@ export default function ServiceRecordViewScreen() {
   const { colors } = useTheme();
   const { removeServiceRow } = useServiceCacheActions();
   const recordsResource = useServiceCollection("serviceRecords");
+  const vehiclesResource = useServiceCollection("vehicles");
 
   const [record, setRecord] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -182,8 +188,12 @@ export default function ServiceRecordViewScreen() {
   }, [id, recordsResource.data, recordsResource.isInitialLoading]);
 
   const title = record?.serviceType || "Service record";
-  const vehicleName = record?.vehicleName || "Vehicle";
-  const reg = record?.registration || "";
+  const matchedVehicle = findVehicleRecord(record, vehiclesResource.data);
+  const vehicleName = getVehicleDisplayName(
+    matchedVehicle || record,
+    vehiclesResource.data
+  );
+  const reg = getVehicleRegistration(matchedVehicle || record) || "";
   const serviceFormNumber = record?.serviceFormNumber || "";
   const wheelInspection = normalizeWheelInspection(record?.wheelInspection);
   const hasWheelInspection = hasWheelInspectionData(wheelInspection);
@@ -302,80 +312,28 @@ export default function ServiceRecordViewScreen() {
   };
 
   return (
-    <SafeAreaView
-      edges={["left", "right"]}
-      style={[
-        styles.container,
-        { backgroundColor: colors.background || COLORS.background },
-      ]}
-    >
-      {/* HEADER */}
-      <View
-        style={[
-          styles.header,
-          { borderBottomColor: colors.border || COLORS.border },
-        ]}
-      >
-        <TouchableOpacity
-          style={styles.backButton}
-          onPress={() => router.back()}
-          activeOpacity={0.8}
-        >
-          <Feather
-            name="chevron-left"
-            size={20}
-            color={colors.text || COLORS.textHigh}
-          />
-        </TouchableOpacity>
-        <View style={{ flex: 1 }}>
-          <Text
-            style={[
-              styles.title,
-              { color: colors.text || COLORS.textHigh },
-            ]}
-            numberOfLines={1}
-          >
-            {title}
-          </Text>
-          <Text
-            style={[
-              styles.subtitle,
-              { color: colors.textMuted || COLORS.textMid },
-            ]}
-            numberOfLines={1}
-          >
-            {reg}
-            {reg && vehicleName ? " · " : ""}
-            {vehicleName}
-          </Text>
-        </View>
-        {record && (
-          <TouchableOpacity
-            style={[
-              styles.editButton,
-              {
-                backgroundColor: colors.surfaceAlt || COLORS.chipBg,
-                borderColor: colors.border || COLORS.border,
-              },
-            ]}
-            onPress={() =>
+    <PageShell header={{
+      variant: "compact",
+      title,
+      subtitle: [reg, vehicleName].filter(Boolean).join(" · "),
+      onBack: router.back,
+      action: record
+        ? {
+            label: "Edit service record",
+            icon: "edit-3",
+            onPress: () =>
               router.push({
                 pathname: "/service/service-form/[id]",
                 params: {
                   id: `edit-${record.id}`,
                   recordId: record.id,
                 },
-              })
-            }
-            activeOpacity={0.85}
-          >
-            <Feather name="edit-3" size={15} color={colors.text || COLORS.textHigh} />
-            <Text style={[styles.editButtonText, { color: colors.text || COLORS.textHigh }]}>
-              Edit
-            </Text>
-          </TouchableOpacity>
-        )}
-      </View>
+              }),
+          }
+        : undefined,
+    }}>
+      {/* HEADER */}
+      
 
       {loading ? (
         <View style={styles.loadingContainer}>
@@ -404,7 +362,7 @@ export default function ServiceRecordViewScreen() {
           </Text>
         </View>
       ) : (
-        <ScrollView contentContainerStyle={styles.content}>
+        <>
           {/* SUMMARY CARD */}
           <View
             style={[
@@ -440,7 +398,7 @@ export default function ServiceRecordViewScreen() {
                     name="activity"
                     size={12}
                     color={colors.textMuted || COLORS.textMid}
-                    style={{ marginRight: 6 }}
+                    style={{ marginRight: t.spacing.xxs }}
                   />
                   <Text style={[styles.chipText, { color: colors.textMuted || COLORS.textMid }]}>
                     {record.odometer.toLocaleString("en-GB")} mi
@@ -747,7 +705,7 @@ export default function ServiceRecordViewScreen() {
                     <ScrollView
                       horizontal
                       showsHorizontalScrollIndicator={false}
-                      style={{ marginTop: 6 }}
+                      style={{ marginTop: t.spacing.xxs }}
                     >
                       {item.photos.map((uri) => (
                         <View
@@ -785,7 +743,7 @@ export default function ServiceRecordViewScreen() {
               <ScrollView
                 horizontal
                 showsHorizontalScrollIndicator={false}
-                style={{ marginTop: 8 }}
+                style={{ marginTop: t.spacing.xs }}
               >
                 {(record.photoURIs || record.photoURLs).map((uri) => (
                   <View key={uri} style={styles.photoThumbWrapper}>
@@ -810,14 +768,14 @@ export default function ServiceRecordViewScreen() {
               <ActivityIndicator
                 size="small"
                 color={COLORS.primaryAction}
-                style={{ marginRight: 8 }}
+                style={{ marginRight: t.spacing.xs }}
               />
             ) : (
               <Feather
                 name="trash-2"
                 size={17}
                 color={COLORS.primaryAction}
-                style={{ marginRight: 8 }}
+                style={{ marginRight: t.spacing.xs }}
               />
             )}
             <Text style={styles.deleteButtonText}>
@@ -826,9 +784,9 @@ export default function ServiceRecordViewScreen() {
           </TouchableOpacity>
 
           <View style={{ height: 24 }} />
-        </ScrollView>
+        </>
       )}
-    </SafeAreaView>
+    </PageShell>
   );
 }
 
@@ -896,35 +854,35 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingHorizontal: t.spacing.md,
+    paddingVertical: t.spacing.sm,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
   },
   backButton: {
-    paddingRight: 10,
+    paddingRight: t.spacing.xs,
   },
   editButton: {
     flexDirection: "row",
     alignItems: "center",
-    borderRadius: 999,
+    borderRadius: t.radius.pill,
     borderWidth: 1,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-    marginLeft: 8,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xs,
+    marginLeft: t.spacing.xs,
   },
   editButtonText: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "700",
-    marginLeft: 5,
+    marginLeft: t.spacing.xxs,
   },
   title: {
-    fontSize: 22,
+    fontSize: t.typography.titleSmall.fontSize,
     fontWeight: "800",
   },
   subtitle: {
-    fontSize: 13,
-    marginTop: 2,
+    fontSize: t.typography.bodySmall.fontSize,
+    marginTop: t.spacing.none,
     color: COLORS.textMid,
   },
   loadingContainer: {
@@ -933,26 +891,26 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   loadingText: {
-    marginTop: 8,
-    fontSize: 14,
+    marginTop: t.spacing.xs,
+    fontSize: t.typography.body.fontSize,
     color: COLORS.textMid,
   },
   content: {
-    padding: 16,
-    paddingBottom: 28,
+    padding: t.spacing.md,
+    paddingBottom: t.spacing.xl,
   },
   card: {
     backgroundColor: COLORS.card,
-    borderRadius: 10,
-    padding: 14,
-    marginBottom: 12,
+    borderRadius: t.radius.md,
+    padding: t.spacing.sm,
+    marginBottom: t.spacing.sm,
     borderWidth: 1,
     borderColor: COLORS.border,
   },
   emptyCard: {
-    borderRadius: 10,
-    padding: 14,
-    marginBottom: 12,
+    borderRadius: t.radius.md,
+    padding: t.spacing.sm,
+    marginBottom: t.spacing.sm,
     borderWidth: 1,
     borderStyle: "dashed",
   },
@@ -961,212 +919,212 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   mainTitle: {
-    fontSize: 16,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "700",
     color: COLORS.textHigh,
   },
   summaryMeta: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textMid,
-    marginTop: 2,
+    marginTop: t.spacing.none,
   },
   chip: {
     flexDirection: "row",
     alignItems: "center",
     borderWidth: 1,
-    paddingHorizontal: 9,
-    paddingVertical: 5,
-    borderRadius: 999,
-    marginLeft: 10,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
+    borderRadius: t.radius.pill,
+    marginLeft: t.spacing.xs,
   },
   chipText: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     fontWeight: "700",
   },
   divider: {
     height: 1,
     backgroundColor: COLORS.border,
     opacity: 0.6,
-    marginVertical: 8,
+    marginVertical: t.spacing.xs,
   },
   sectionTitle: {
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     fontWeight: "700",
     color: COLORS.textHigh,
-    marginBottom: 6,
+    marginBottom: t.spacing.xxs,
   },
   fieldRow: {
     flexDirection: "row",
     justifyContent: "space-between",
-    paddingVertical: 4,
+    paddingVertical: t.spacing.xxs,
   },
   fieldLabel: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textLow,
   },
   fieldValue: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textMid,
     textAlign: "right",
     flex: 1,
-    marginLeft: 10,
+    marginLeft: t.spacing.xs,
   },
   noteField: {
-    paddingTop: 8,
+    paddingTop: t.spacing.xs,
   },
   noteLabel: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textLow,
-    marginBottom: 3,
+    marginBottom: t.spacing.xxs,
   },
   noteValue: {
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
     color: COLORS.textMid,
-    lineHeight: 18,
+    lineHeight: t.typography.bodySmall.lineHeight,
     textAlign: "left",
   },
   checkSummaryText: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textMid,
   },
   wheelGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 8,
+    gap: t.spacing.xs,
   },
   wheelRecordCard: {
     width: "48%",
     minWidth: 132,
     flexGrow: 1,
-    borderRadius: 10,
+    borderRadius: t.radius.md,
     borderWidth: 1,
     borderColor: COLORS.border,
     backgroundColor: COLORS.background,
-    padding: 10,
+    padding: t.spacing.xs,
   },
   wheelRecordHeader: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 7,
-    marginBottom: 8,
+    gap: t.spacing.xs,
+    marginBottom: t.spacing.xs,
   },
   wheelRecordBadge: {
     width: 26,
     height: 26,
-    borderRadius: 13,
+    borderRadius: t.radius.pill,
     backgroundColor: COLORS.primaryAction,
     alignItems: "center",
     justifyContent: "center",
   },
   wheelRecordBadgeText: {
     color: COLORS.textHigh,
-    fontSize: 10,
+    fontSize: t.typography.micro.fontSize,
     fontWeight: "900",
   },
   wheelRecordTitle: {
     flex: 1,
     color: COLORS.textHigh,
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "800",
   },
   wheelRecordMetric: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    gap: 8,
-    paddingVertical: 3,
+    gap: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
   },
   wheelRecordMetricLabelRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 5,
+    gap: t.spacing.xxs,
   },
   wheelRecordMetricLabel: {
     color: COLORS.textLow,
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     fontWeight: "700",
   },
   wheelRecordStatusDot: {
     width: 8,
     height: 8,
-    borderRadius: 4,
+    borderRadius: t.radius.pill,
   },
   wheelRecordMetricValue: {
     color: COLORS.textMid,
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     fontWeight: "800",
   },
   wheelRecordNote: {
-    marginTop: 6,
-    paddingTop: 6,
+    marginTop: t.spacing.xxs,
+    paddingTop: t.spacing.xxs,
     borderTopWidth: 1,
-    borderTopColor: "rgba(255,255,255,0.06)",
+    borderTopColor: staticColors.rgba_5ns92s,
     color: COLORS.textMid,
-    fontSize: 11,
-    lineHeight: 15,
+    fontSize: t.typography.caption.fontSize,
+    lineHeight: t.typography.caption.lineHeight,
   },
   defectActionRecordRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
-    paddingVertical: 8,
+    gap: t.spacing.xs,
+    paddingVertical: t.spacing.xs,
     borderBottomWidth: 1,
-    borderBottomColor: "rgba(255,255,255,0.05)",
+    borderBottomColor: staticColors.rgba_5ns91z,
   },
   defectActionRecordTitle: {
     color: COLORS.textHigh,
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "800",
   },
   defectActionRecordMeta: {
     color: COLORS.textLow,
-    fontSize: 11,
-    marginTop: 2,
+    fontSize: t.typography.caption.fontSize,
+    marginTop: t.spacing.none,
   },
   defectActionRecordBadge: {
     color: COLORS.textMid,
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     fontWeight: "900",
     textAlign: "right",
   },
   monitorRecordRow: {
     flexDirection: "row",
     alignItems: "flex-start",
-    gap: 9,
-    paddingVertical: 8,
+    gap: t.spacing.xs,
+    paddingVertical: t.spacing.xs,
     borderBottomWidth: 1,
-    borderBottomColor: "rgba(255,255,255,0.05)",
+    borderBottomColor: staticColors.rgba_5ns91z,
   },
   monitorRecordBadge: {
     width: 26,
     height: 26,
-    borderRadius: 13,
-    backgroundColor: "#F59E0B",
+    borderRadius: t.radius.pill,
+    backgroundColor: staticColors.hex_f59e0b_4zbh7f,
     alignItems: "center",
     justifyContent: "center",
   },
   monitorRecordBadgeText: {
     color: COLORS.textHigh,
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     fontWeight: "900",
   },
   monitorRecordTitle: {
     color: COLORS.textHigh,
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "800",
   },
   monitorRecordDetails: {
     color: COLORS.textLow,
-    fontSize: 11,
-    marginTop: 2,
-    lineHeight: 16,
+    fontSize: t.typography.caption.fontSize,
+    marginTop: t.spacing.none,
+    lineHeight: t.typography.caption.lineHeight,
   },
 
   /* Checklist details */
   checkRowWrapper: {
-    paddingVertical: 6,
+    paddingVertical: t.spacing.xxs,
     borderBottomWidth: 1,
-    borderBottomColor: "rgba(255,255,255,0.04)",
+    borderBottomColor: staticColors.rgba_5ns94m,
   },
   checkRowTop: {
     flexDirection: "row",
@@ -1176,22 +1134,22 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     flex: 1,
-    paddingRight: 8,
+    paddingRight: t.spacing.xs,
   },
   checkIconWrap: {
-    marginRight: 8,
+    marginRight: t.spacing.xs,
   },
   checkIconEmpty: {
     width: 22,
     height: 22,
-    borderRadius: 11,
+    borderRadius: t.radius.pill,
     borderWidth: 2,
     borderColor: COLORS.textLow,
   },
   checkIconFilled: {
     width: 22,
     height: 22,
-    borderRadius: 11,
+    borderRadius: t.radius.pill,
     backgroundColor: COLORS.primaryAction,
     alignItems: "center",
     justifyContent: "center",
@@ -1199,22 +1157,22 @@ const styles = StyleSheet.create({
   naIcon: {
     minWidth: 32,
     height: 22,
-    borderRadius: 11,
+    borderRadius: t.radius.md,
     borderWidth: 1,
     borderColor: COLORS.textMid,
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 4,
-    backgroundColor: "rgba(142,142,147,0.15)",
+    paddingHorizontal: t.spacing.xxs,
+    backgroundColor: staticColors.rgba_y8iv92,
   },
   naIconText: {
-    fontSize: 10,
+    fontSize: t.typography.micro.fontSize,
     color: COLORS.textMid,
     fontWeight: "600",
   },
   checkLabel: {
     flex: 1,
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textMid,
   },
   checkRight: {
@@ -1222,51 +1180,51 @@ const styles = StyleSheet.create({
     alignItems: "flex-end",
   },
   checkRightText: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     color: COLORS.textLow,
   },
 
   checkNoteText: {
-    marginTop: 4,
-    fontSize: 12,
+    marginTop: t.spacing.xxs,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textMid,
   },
 
   checkPhotoThumbWrapper: {
-    marginRight: 8,
+    marginRight: t.spacing.xs,
   },
   checkPhotoThumb: {
     width: 70,
     height: 70,
-    borderRadius: 8,
+    borderRadius: t.radius.sm,
   },
 
   // Overall photos section
   photoThumbWrapper: {
-    marginRight: 10,
+    marginRight: t.spacing.xs,
   },
   photoThumb: {
     width: 90,
     height: 90,
-    borderRadius: 8,
+    borderRadius: t.radius.sm,
   },
   deleteButton: {
     minHeight: 48,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: 10,
+    borderRadius: t.radius.md,
     backgroundColor: "transparent",
     borderWidth: 1,
-    paddingHorizontal: 14,
-    marginTop: 10,
+    paddingHorizontal: t.spacing.sm,
+    marginTop: t.spacing.xs,
   },
   deleteButtonDisabled: {
     opacity: 0.7,
   },
   deleteButtonText: {
     color: COLORS.primaryAction,
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     fontWeight: "800",
   },
 });

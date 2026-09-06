@@ -1,7 +1,7 @@
 // providers/AuthProvider.tsx
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import type { User } from "firebase/auth";
-import { onAuthStateChanged, signInAnonymously } from "firebase/auth";
+import { onAuthStateChanged } from "firebase/auth";
 import {
   collection,
   doc,
@@ -21,6 +21,7 @@ import React, {
   useState,
 } from "react";
 import { resolveWorkspaceAccess } from "../lib/access";
+import { loadWorkingTermsAcceptance } from "../lib/workingTermsApi";
 import { auth, db } from "../firebaseConfig";
 
 const DEFAULT_COMPANY_ID = "bickers-action";
@@ -35,6 +36,7 @@ type EmployeeSession = {
   companyId?: string;
   uid?: string;
   isEnabled?: boolean;
+  mobileAccessStatus?: string;
   displayName?: string;
   email?: string;
   employeeId?: string;
@@ -63,6 +65,9 @@ type Ctx = {
   isAuthed: boolean;
   employee: EmployeeSession | null;
   reloadSession: () => Promise<void>;
+  workingTermsAccepted: boolean;
+  workingTermsAcceptance: Record<string, any> | null;
+  refreshWorkingTermsAcceptance: () => Promise<boolean>;
 
   // 🔥 NEW — used for LIVE REFRESH across ALL screens
   jobsUpdatedAt: number;
@@ -75,6 +80,9 @@ const AuthCtx = createContext<Ctx>({
   isAuthed: false,
   employee: null,
   reloadSession: async () => {},
+  workingTermsAccepted: false,
+  workingTermsAcceptance: null,
+  refreshWorkingTermsAcceptance: async () => false,
 
   // defaults for new state
   jobsUpdatedAt: Date.now(),
@@ -204,6 +212,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const [employee, setEmployee] = useState<EmployeeSession | null>(null);
   const [sessionReady, setSessionReady] = useState(false);
+  const [workingTermsAcceptance, setWorkingTermsAcceptance] = useState<Record<
+    string,
+    any
+  > | null>(null);
 
   // 🔥 NEW — Whenever this value changes, all pages listening will update
   const [jobsUpdatedAt, setJobsUpdatedAt] = useState(Date.now());
@@ -241,14 +253,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       const m = Object.fromEntries(entries);
       const userProfile = await loadUserProfile(firebaseUser);
+      let termsAcceptance = null;
+      try {
+        termsAcceptance = await loadWorkingTermsAcceptance(firebaseUser);
+      } catch {
+        termsAcceptance = null;
+      }
+      setWorkingTermsAcceptance(termsAcceptance);
       const storedEmployeeId = String(m.employeeId || "").trim();
       const profileEmployeeId = String(userProfile?.employeeId || "").trim();
-      const employeeProfile =
-        !storedEmployeeId && profileEmployeeId
-          ? await loadEmployeeProfile(profileEmployeeId)
-          : !storedEmployeeId
-          ? await findEmployeeForPersistedUser(firebaseUser, userProfile)
-          : null;
+      const authoritativeEmployeeId = profileEmployeeId || storedEmployeeId;
+      const employeeProfile = authoritativeEmployeeId
+        ? await loadEmployeeProfile(authoritativeEmployeeId)
+        : await findEmployeeForPersistedUser(firebaseUser, userProfile);
       const employeeSource = employeeProfile || {};
       const profileAccess =
         userProfile?.appAccess && typeof userProfile.appAccess === "object"
@@ -273,7 +290,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           DEFAULT_COMPANY_ID
       ).trim();
       const employeeId =
-        storedEmployeeId || profileEmployeeId || String(employeeSource?.id || "").trim();
+        profileEmployeeId || String(employeeSource?.id || "").trim() || storedEmployeeId;
 
       if (employeeId) {
         const yardStart =
@@ -336,6 +353,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             employeeSource?.isEnabled !== false &&
             employeeSource?.disabled !== true &&
             employeeSource?.active !== false,
+          mobileAccessStatus:
+            userProfile?.mobileAccessStatus === "active" &&
+            employeeSource?.mobileAccess?.status === "active"
+              ? "active"
+              : String(userProfile?.mobileAccessStatus || employeeSource?.mobileAccess?.status || ""),
           displayName:
             m.displayName ||
             employeeSource?.name ||
@@ -372,6 +394,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     } catch {
       setEmployee(null);
+      setWorkingTermsAcceptance(null);
     } finally {
       setSessionReady(true);
     }
@@ -380,39 +403,39 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!authReady) return;
     setSessionReady(false);
+    setWorkingTermsAcceptance(null);
     loadSession(user);
   }, [authReady, loadSession, user]);
 
-  useEffect(() => {
-    if (!authReady || user) return;
-
-    let cancelled = false;
-
-    const restoreAnonymousAuthForStoredSession = async () => {
-      const employeeId = await AsyncStorage.getItem("employeeId");
-      if (cancelled || !employeeId) return;
-      await signInAnonymously(auth).catch(() => {});
-    };
-
-    restoreAnonymousAuthForStoredSession();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [authReady, user]);
-
   const reloadSession = async () => {
     setSessionReady(false);
-    await loadSession(user || auth.currentUser);
+    // Firebase updates auth.currentUser synchronously for sign-in and sign-out,
+    // while the React auth listener may still expose the previous user for one
+    // render. Never fall back to that stale user or logout can restore the
+    // employee session it just cleared.
+    await loadSession(auth.currentUser);
   };
 
-  // Code/email login uses anonymous Firebase Auth plus the validated employee session.
+  const refreshWorkingTermsAcceptance = useCallback(async () => {
+    try {
+      const acceptance = await loadWorkingTermsAcceptance(auth.currentUser);
+      setWorkingTermsAcceptance(acceptance);
+      return !!acceptance;
+    } catch {
+      setWorkingTermsAcceptance(null);
+      return false;
+    }
+  }, []);
+
+  // Only an approved account that has completed the server-side identity check
+  // may enter protected routes. A Firebase password on its own is insufficient.
   const isAuthed = useMemo(() => {
-    const firebaseUserOK = !!user;
+    const firebaseUserOK = !!user && user.isAnonymous !== true;
     const employeeOK = !!employee?.employeeId;
     const tenantOK = !!employee?.companyId;
     const enabledOK = employee?.isEnabled !== false;
-    return firebaseUserOK && employeeOK && tenantOK && enabledOK;
+    const mobileAccessOK = employee?.mobileAccessStatus === "active";
+    return firebaseUserOK && employeeOK && tenantOK && enabledOK && mobileAccessOK;
   }, [user, employee]);
 
   const loading = !(authReady && sessionReady);
@@ -425,6 +448,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         isAuthed,
         employee,
         reloadSession,
+        workingTermsAccepted: !!workingTermsAcceptance,
+        workingTermsAcceptance,
+        refreshWorkingTermsAcceptance,
 
         // NEW live update state
         jobsUpdatedAt,

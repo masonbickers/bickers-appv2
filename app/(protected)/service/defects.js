@@ -1,33 +1,26 @@
+import { AppText as Text, AppPressable as TouchableOpacity } from "../../../components/ui/AppPrimitives";
+import {
+  servicePalette as COLORS } from "../../../lib/design/semantics";
 // app/(protected)/service/defects.jsx
 import { useRouter } from "expo-router";
 import { useMemo } from "react";
 import {
   ActivityIndicator,
-  ScrollView,
   StyleSheet,
-  Text,
-  TouchableOpacity,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+
 import Icon from "react-native-vector-icons/Feather";
 
 import { designTokens as t } from "../../../lib/design/tokens";
 import { useServiceCollection } from "../../../hooks/useServiceData";
+import {
+  getVehicleDisplayName,
+  getVehicleRegistration,
+} from "../../../lib/fleetSchema";
 import { useTheme } from "../../../providers/ThemeProvider";
-
-const COLORS = {
-  background: "#0D0D0D",
-  card: "#1A1A1A",
-  border: "#333333",
-  textHigh: "#FFFFFF",
-  textMid: "#E0E0E0",
-  textLow: "#888888",
-  primaryAction: "#ED1C25",
-  recceAction: "#ED1C25",
-  inputBg: "#2a2a2a",
-  lightGray: "#4a4a4a",
-};
+import { staticColors } from "../../../lib/design/staticColors";
+import PageShell from "../../../components/layout/PageShell";
 
 /* ---------- DEFECT HELPERS ---------- */
 
@@ -70,6 +63,15 @@ function getVehicleLabel(record) {
     record?.registration ||
     record?.reg ||
     "Unknown vehicle"
+  );
+}
+
+function getIssueAssetLabel(issue) {
+  if (issue?.assetType !== "equipment") return getVehicleLabel(issue);
+  return (
+    [issue?.equipmentName || issue?.assetName, issue?.serialNumber || issue?.equipmentId]
+      .filter(Boolean)
+      .join(" · ") || "Unknown equipment"
   );
 }
 
@@ -147,9 +149,16 @@ function buildApprovedIssueDefects(issueDocs) {
         docId: issue.id,
         category: normaliseKey(issue.review.category),
         text,
-        vehicleId: issue.vehicleId || issue.vehicleDocId || null,
-        vehicleName: getVehicleLabel(issue),
-        registration: issue.registration || issue.reg || "",
+        assetType: issue.assetType || "vehicle",
+        vehicleId:
+          issue.assetType === "equipment"
+            ? null
+            : issue.vehicleId || issue.vehicleDocId || null,
+        vehicleName: getIssueAssetLabel(issue),
+        registration:
+          issue.assetType === "equipment"
+            ? issue.serialNumber || issue.equipmentId || issue.asset || ""
+            : issue.registration || issue.reg || "",
         reporter: issue.reporterName || issue.driverName || "",
         jobNumber: issue.jobNumber || "",
         dateValue: getDateValue(issue.createdAt || issue.dateISO || issue.date),
@@ -198,7 +207,7 @@ export default function DefectsScreen() {
   const cardBg = colors.surfaceAlt || COLORS.card;
   const borderColor = colors.border || COLORS.border;
   const dangerColor = colors.danger || COLORS.primaryAction;
-  const warningColor = colors.warning || "#FFCC00";
+  const warningColor = colors.warning || staticColors.hex_ffcc00_5c6g4m;
 
   const { rows: vehicles, loading: vehiclesLoading } = useServiceCollection("vehicles", {
     label: "vehicles for defects",
@@ -230,17 +239,17 @@ export default function DefectsScreen() {
 
     approvedDefects.forEach((defect) => {
       const matchedVehicle = findVehicleForDefect(defect, vehicles);
-      const vehicleName =
-        matchedVehicle?.name ||
-        matchedVehicle?.vehicleName ||
-        defect.vehicleName ||
-        "Unknown vehicle";
+      const embeddedVehicle =
+        defect.vehicleName && defect.vehicleName !== defect.vehicleId
+          ? { vehicleName: defect.vehicleName, registration: defect.registration }
+          : {};
+      const vehicleName = getVehicleDisplayName(
+        matchedVehicle || embeddedVehicle,
+        vehicles
+      );
       const registration =
         cleanRegistration(
-          matchedVehicle?.registration ||
-            matchedVehicle?.reg ||
-            defect.registration ||
-            ""
+          getVehicleRegistration(matchedVehicle || embeddedVehicle) || ""
         );
       const groupKey =
         matchedVehicle?.id ||
@@ -298,45 +307,13 @@ export default function DefectsScreen() {
   };
 
   return (
-    <SafeAreaView
-      edges={["left", "right"]}
-      style={[
-        styles.container,
-        { backgroundColor: colors.background || COLORS.background },
-      ]}
-    >
-      <View
-        style={[
-          styles.header,
-          { borderBottomColor: colors.border || COLORS.border },
-        ]}
-      >
-        <TouchableOpacity onPress={router.back} style={styles.backButton}>
-          <Icon
-            name="chevron-left"
-            size={22}
-            color={colors.text || COLORS.textHigh}
-          />
-        </TouchableOpacity>
-        <View style={{ flex: 1 }}>
-          <Text
-            style={[
-              styles.pageTitle,
-              { color: colors.text || COLORS.textHigh },
-            ]}
-          >
-            Defects & Issues
-          </Text>
-          <Text
-            style={[
-              styles.pageSubtitle,
-              { color: colors.textMuted || COLORS.textMid },
-            ]}
-          >
-            Split into immediate maintenance and general follow-up.
-          </Text>
-        </View>
-      </View>
+    <PageShell header={{
+      variant: "compact",
+      title: "Defects & Issues",
+      subtitle: "Split into immediate maintenance and general follow-up.",
+      onBack: router.back,
+    }}>
+      
 
       {loading ? (
         <View style={styles.loadingContainer}>
@@ -368,12 +345,12 @@ export default function DefectsScreen() {
           </Text>
         </View>
       ) : (
-        <ScrollView contentContainerStyle={styles.scrollContent}>
+        <>
           {/* SUMMARY CARD */}
           <View style={styles.summaryRow}>
             <View style={styles.summaryPill}>
               <View
-                style={[styles.summaryDot, { backgroundColor: "#ED1C25" }]}
+                style={[styles.summaryDot, { backgroundColor: staticColors.hex_ed1c25_4py4qa }]}
               />
               <Text style={styles.summaryText}>
                 {totalImmediate} immediate
@@ -381,7 +358,7 @@ export default function DefectsScreen() {
             </View>
             <View style={styles.summaryPill}>
               <View
-                style={[styles.summaryDot, { backgroundColor: "#FFCC00" }]}
+                style={[styles.summaryDot, { backgroundColor: staticColors.hex_ffcc00_5c6g4m }]}
               />
               <Text style={styles.summaryText}>
                 {totalGeneral} general
@@ -446,7 +423,7 @@ export default function DefectsScreen() {
                           name="alert-triangle"
                           size={14}
                           color={dangerColor}
-                          style={{ marginRight: 6 }}
+                          style={{ marginRight: t.spacing.xxs }}
                         />
                         <Text style={[styles.defectText, { color: textColor }]}>{defect.text}</Text>
                         <Icon name="chevron-right" size={14} color={mutedColor} />
@@ -454,14 +431,14 @@ export default function DefectsScreen() {
                     ))}
 
                     {general.length > 0 && (
-                      <View style={{ marginTop: 6 }}>
+                      <View style={{ marginTop: t.spacing.xxs }}>
                         <Text style={[styles.subSectionLabel, { color: mutedColor }]}>
                           Related general issue{general.length > 1 ? "s" : ""}
                         </Text>
                         {general.slice(0, 2).map((defect) => (
                           <TouchableOpacity
                             key={defect.id}
-                            style={[styles.defectRow, { marginTop: 2 }]}
+                            style={[styles.defectRow, { marginTop: t.spacing.none }]}
                             onPress={() => goDefect(defect.routeId)}
                             activeOpacity={0.75}
                           >
@@ -469,7 +446,7 @@ export default function DefectsScreen() {
                               name="minus-circle"
                               size={13}
                               color={warningColor}
-                              style={{ marginRight: 6 }}
+                              style={{ marginRight: t.spacing.xxs }}
                             />
                             <Text style={[styles.defectText, { color: textColor }]}>{defect.text}</Text>
                             <Icon name="chevron-right" size={14} color={mutedColor} />
@@ -549,7 +526,7 @@ export default function DefectsScreen() {
                           name="minus-circle"
                           size={14}
                           color={warningColor}
-                          style={{ marginRight: 6 }}
+                          style={{ marginRight: t.spacing.xxs }}
                         />
                         <Text style={[styles.defectText, { color: textColor }]}>{defect.text}</Text>
                         <Icon name="chevron-right" size={14} color={mutedColor} />
@@ -568,9 +545,9 @@ export default function DefectsScreen() {
           )}
 
           <View style={{ height: 40 }} />
-        </ScrollView>
+        </>
       )}
-    </SafeAreaView>
+    </PageShell>
   );
 }
 
@@ -581,130 +558,130 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingHorizontal: t.spacing.md,
+    paddingVertical: t.spacing.sm,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
   },
   backButton: {
-    paddingRight: 10,
+    paddingRight: t.spacing.xs,
   },
   pageTitle: {
-    fontSize: 20,
+    fontSize: t.typography.titleSmall.fontSize,
     fontWeight: "800",
   },
   pageSubtitle: {
-    marginTop: 2,
-    fontSize: 12,
+    marginTop: t.spacing.none,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textMid,
   },
 
   loadingContainer: { flex: 1, justifyContent: "center", alignItems: "center" },
 
-  scrollContent: { padding: t.spacing.md, paddingTop: 4, paddingBottom: 110 },
+  scrollContent: { padding: t.spacing.md, paddingTop: t.spacing.xxs, paddingBottom: 110 },
 
   /* SUMMARY CARD */
   summaryRow: {
     flexDirection: "row",
     flexWrap: "wrap",
-    marginBottom: 12,
+    marginBottom: t.spacing.sm,
   },
   summaryPill: {
     flexDirection: "row",
     alignItems: "center",
     minHeight: t.controls.chipMinHeight,
-    marginRight: 12,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 999,
+    marginRight: t.spacing.sm,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
+    borderRadius: t.radius.pill,
     backgroundColor: COLORS.card,
   },
   summaryDot: {
     width: 8,
     height: 8,
-    borderRadius: 4,
-    marginRight: 6,
+    borderRadius: t.radius.pill,
+    marginRight: t.spacing.xxs,
   },
   summaryText: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textHigh,
     fontWeight: "600",
   },
 
   /* SECTIONS */
   sectionHeaderRow: {
-    marginTop: 8,
-    marginBottom: 6,
+    marginTop: t.spacing.xs,
+    marginBottom: t.spacing.xxs,
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "flex-end",
   },
   sectionTitle: {
-    fontSize: 15,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "700",
     color: COLORS.textHigh,
   },
   sectionHint: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textMid,
   },
 
   /* VEHICLE CARDS */
   card: {
     backgroundColor: COLORS.card,
-    borderRadius: 10,
+    borderRadius: t.radius.md,
     padding: t.controls.cardPadding,
-    marginBottom: 12,
+    marginBottom: t.spacing.sm,
     borderWidth: 1,
     borderColor: COLORS.border,
   },
   cardHeader: {
     flexDirection: "row",
     alignItems: "center",
-    marginBottom: 6,
+    marginBottom: t.spacing.xxs,
   },
   cardTitle: {
-    fontSize: 15,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "700",
     color: COLORS.textHigh,
   },
   cardReg: {
-    marginTop: 2,
-    fontSize: 13,
+    marginTop: t.spacing.none,
+    fontSize: t.typography.bodySmall.fontSize,
     color: COLORS.textMid,
   },
   countImmediate: {
-    marginTop: 4,
-    fontSize: 12,
+    marginTop: t.spacing.xxs,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "600",
-    color: "#ED1C25",
+    color: staticColors.hex_ed1c25_4py4qa,
   },
   countGeneral: {
-    marginTop: 4,
-    fontSize: 12,
+    marginTop: t.spacing.xxs,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "600",
     color: COLORS.textMid,
   },
   badgeImmediate: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 999,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
+    borderRadius: t.radius.pill,
     backgroundColor: "transparent",
     borderWidth: 1,
-    borderColor: "#ED1C25",
-    marginRight: 8,
+    borderColor: staticColors.hex_ed1c25_4py4qa,
+    marginRight: t.spacing.xs,
   },
   badgeGeneral: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,204,0,0.15)",
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
+    borderRadius: t.radius.pill,
+    backgroundColor: staticColors.rgba_1bodets,
     borderWidth: 1,
-    borderColor: "#FFCC00",
-    marginRight: 8,
+    borderColor: staticColors.hex_ffcc00_5c6g4m,
+    marginRight: t.spacing.xs,
   },
   badgeText: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     fontWeight: "700",
     color: COLORS.textHigh,
   },
@@ -712,22 +689,22 @@ const styles = StyleSheet.create({
   defectRow: {
     flexDirection: "row",
     alignItems: "flex-start",
-    marginTop: 7,
+    marginTop: t.spacing.xs,
   },
   defectText: {
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
     color: COLORS.textHigh,
     flex: 1,
   },
   subSectionLabel: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "600",
     color: COLORS.textMid,
-    marginBottom: 2,
+    marginBottom: t.spacing.none,
   },
   moreText: {
-    marginTop: 4,
-    fontSize: 12,
+    marginTop: t.spacing.xxs,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textMid,
   },
 
@@ -736,16 +713,16 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 32,
+    paddingHorizontal: t.spacing["2xl"],
   },
   emptyTitle: {
-    marginTop: 12,
-    fontSize: 16,
+    marginTop: t.spacing.sm,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "700",
   },
   emptySubtitle: {
-    marginTop: 6,
-    fontSize: 13,
+    marginTop: t.spacing.xxs,
+    fontSize: t.typography.bodySmall.fontSize,
     textAlign: "center",
     color: COLORS.textMid,
   },

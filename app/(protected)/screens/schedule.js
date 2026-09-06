@@ -1,26 +1,40 @@
 // app/(protected)/screens/schedule.js
-import { useLocalSearchParams } from "expo-router";
-import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  RefreshControl,
-  ScrollView,
+  useLocalSearchParams } from "expo-router";
+import { useCallback,
+  useEffect,
+  useMemo,
+  useState } from "react";
+import {
+  Pressable,
   StyleSheet,
-  Text,
   View,
 } from "react-native";
 import { Calendar } from "react-native-calendars";
-import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
 import PageHeaderCard from "../../../components/PageHeaderCard";
 import { AsyncContentState, EmptyState } from "../../../components/AsyncState";
-import { AppButton } from "../../../components/ui/AppPrimitives";
+import PageShell from "../../../components/layout/PageShell";
+import { AppButton,
+  AppText as Text,
+} from "../../../components/ui/AppPrimitives";
 import { useBookings, useHolidays, useVehicles } from "../../../hooks/useOperationalData";
 import { useResponsiveLayout } from "../../../hooks/useResponsiveLayout";
 import { isCrewedBooking } from "../../../lib/bookingVisibility";
+import {
+  collapseLinkedJobsForDay,
+  displayJobNumber,
+} from "../../../lib/linkedBookingDays";
 import { designTokens as t } from "../../../lib/design/tokens";
+import {
+  getBookingVehicleReferences,
+  getVehicleDisplayList,
+} from "../../../lib/fleetSchema";
 import { useAuth } from "../../../providers/AuthProvider";
 import { useTheme } from "../../../providers/ThemeProvider";
+import { staticColors } from "../../../lib/design/staticColors";
+import { withAlpha } from "../../../lib/design/color";
 
 /* ───────────────────────────────
    BANK HOLIDAYS (UK via GOV.UK)
@@ -28,8 +42,8 @@ import { useTheme } from "../../../providers/ThemeProvider";
    - Region options: "england-and-wales" | "scotland" | "northern-ireland"
 ──────────────────────────────── */
 const BANK_HOLIDAY_REGION = "england-and-wales";
-const BANK_HOLIDAY_COLOR = "#7c3aed"; // purple
-const BANK_HOLIDAY_BORDER = "#a855f7";
+const BANK_HOLIDAY_COLOR = staticColors.hex_7c3aed_7wptwh; // purple
+const BANK_HOLIDAY_BORDER = staticColors.hex_a855f7_u9x9hq;
 
 async function fetchUKBankHolidays(region = BANK_HOLIDAY_REGION) {
   try {
@@ -102,15 +116,19 @@ function toISODate(d) {
   return `${y}-${m}-${dd}`;
 }
 
-function withAlpha(hex, alpha) {
-  const safeAlpha = Math.max(0, Math.min(1, Number(alpha) || 0));
-  const raw = String(hex || "").replace("#", "");
-  if (!/^[0-9a-fA-F]{6}$/.test(raw)) return `rgba(255,255,255,${safeAlpha})`;
-  const r = parseInt(raw.slice(0, 2), 16);
-  const g = parseInt(raw.slice(2, 4), 16);
-  const b = parseInt(raw.slice(4, 6), 16);
-  return `rgba(${r},${g},${b},${safeAlpha})`;
+function getCallTime(job, dateISO) {
+  return (
+    job?.callTimes?.[dateISO] ||
+    job?.callTimeByDate?.[dateISO] ||
+    job?.call_times?.[dateISO] ||
+    job?.callTime ||
+    job?.calltime ||
+    job?.call_time ||
+    job?.notesByDate?.[`${dateISO}-callTime`] ||
+    null
+  );
 }
+
 
 function getEmployeesForDate(job, isoDate, allEmployees) {
   const byDate = job.employeesByDate || job.employeeAssignmentsByDate || null;
@@ -188,55 +206,6 @@ function getEmployeesForDate(job, isoDate, allEmployees) {
   return deduped;
 }
 
-function buildVehicleLookup(allVehicles) {
-  const map = {};
-  for (const v of allVehicles || []) {
-    const id = String(v.id || "").trim();
-    if (!id) continue;
-
-    const nameRaw =
-      v.name || v.vehicleName || v.title || v.displayName || v.nickname || v.model;
-    const regRaw = v.registration || v.reg || v.plate;
-
-    const name = String(nameRaw || "").trim();
-    const reg = String(regRaw || "").trim();
-
-    map[id] = name && reg ? `${name} (${reg})` : name || reg || id;
-  }
-  return map;
-}
-
-function resolveVehicleNamesFromJob(job, vehicleById) {
-  const raw =
-    job.vehicleIds ||
-    job.vehicles ||
-    job.selectedVehicles ||
-    job.vehiclesSelected ||
-    [];
-  const arr = Array.isArray(raw) ? raw : [];
-
-  const names = arr
-    .map((item) => {
-      if (typeof item === "string") {
-        const key = String(item).trim();
-        return vehicleById?.[key] || key;
-      }
-      const maybeId =
-        item.id || item.vehicleId || item.value || item.docId || item.firebaseId;
-      const idStr = String(maybeId || "").trim();
-      const embeddedName =
-        item.name || item.vehicleName || item.label || item.title || item.displayName;
-      return (
-        (idStr && vehicleById?.[idStr]) ||
-        (embeddedName ? String(embeddedName).trim() : null) ||
-        (idStr || null)
-      );
-    })
-    .filter(Boolean);
-
-  return Array.from(new Set(names));
-}
-
 /**
  * Determine if a holiday is unpaid based on common schema variants.
  * Supports:
@@ -292,6 +261,7 @@ export default function SchedulePage() {
   const [markedDates, setMarkedDates] = useState({});
   const [selectedDay, setSelectedDay] = useState(null);
   const [dayInfo, setDayInfo] = useState(null);
+  const [viewMode, setViewMode] = useState("month");
 
   // ✅ control which month the Calendar opens on
   const [calendarCurrent, setCalendarCurrent] = useState(toISODate(new Date()));
@@ -352,7 +322,6 @@ export default function SchedulePage() {
       const allEmployees = bookingsResource.employees;
       const allVehicles = vehiclesResource.data;
 
-      const vehicleById = buildVehicleLookup(allVehicles);
 
       const marks = {};
       const jobMap = {};
@@ -378,15 +347,20 @@ export default function SchedulePage() {
 
           marks[dateStr] = {
             ...(marks[dateStr] || {}),
+            jobCount: Number(marks[dateStr]?.jobCount || 0) + 1,
+            scheduleTone: "job",
             customStyles: {
-              container: { backgroundColor: "#1C3C7A", borderRadius: 10 },
-              text: { color: "#fff", fontWeight: "700" },
+              container: { backgroundColor: staticColors.hex_1c3c7a_8m76oi, borderRadius: t.radius.md },
+              text: { color: staticColors.hex_fff_yhjmu8, fontWeight: "700" },
             },
           };
 
           if (!jobMap[dateStr]) jobMap[dateStr] = [];
 
-          const vehicleNames = resolveVehicleNamesFromJob(job, vehicleById);
+          const vehicleNames = getVehicleDisplayList(
+            getBookingVehicleReferences(job),
+            allVehicles
+          );
 
           jobMap[dateStr].push({
             ...job,
@@ -395,6 +369,11 @@ export default function SchedulePage() {
           });
         }
       }
+
+      Object.keys(jobMap).forEach((dateStr) => {
+        jobMap[dateStr] = collapseLinkedJobsForDay(jobMap[dateStr], dateStr);
+        if (marks[dateStr]) marks[dateStr].jobCount = jobMap[dateStr].length;
+      });
 
       /* ------------------------------- HOLIDAYS ------------------------------- */
       for (const h of holidays) {
@@ -430,16 +409,17 @@ export default function SchedulePage() {
           };
 
           // Keep holiday green, but make unpaid obvious (yellow border)
-          const baseContainer = { backgroundColor: "#126536", borderRadius: 10 };
+          const baseContainer = { backgroundColor: staticColors.hex_126536_a7xuir, borderRadius: t.radius.md };
           const unpaidBorder = isUnpaid
-            ? { borderWidth: 2, borderColor: "#FFD60A" }
+            ? { borderWidth: 2, borderColor: staticColors.hex_ffd60a_5c6r45 }
             : {};
 
           marks[dateStr] = {
             ...(marks[dateStr] || {}),
+            scheduleTone: isUnpaid ? "unpaid" : "leave",
             customStyles: {
               container: { ...baseContainer, ...unpaidBorder },
-              text: { color: "#fff", fontWeight: "700" },
+              text: { color: staticColors.hex_fff_yhjmu8, fontWeight: "700" },
             },
           };
         }
@@ -458,6 +438,7 @@ export default function SchedulePage() {
           const prevContainer = existing.customStyles.container || {};
           marks[dateStr] = {
             ...existing,
+            bankHoliday: true,
             customStyles: {
               ...existing.customStyles,
               container: {
@@ -473,32 +454,15 @@ export default function SchedulePage() {
         } else {
           marks[dateStr] = {
             ...(marks[dateStr] || {}),
+            scheduleTone: "bank",
+            bankHoliday: true,
             customStyles: {
-              container: { backgroundColor: BANK_HOLIDAY_COLOR, borderRadius: 10 },
-              text: { color: "#fff", fontWeight: "800" },
+              container: { backgroundColor: BANK_HOLIDAY_COLOR, borderRadius: t.radius.md },
+              text: { color: staticColors.hex_fff_yhjmu8, fontWeight: "800" },
             },
           };
         }
       });
-
-      /* ------------------------------- WEEKENDS ------------------------------- */
-      const today = new Date();
-      for (let i = 0; i < 30; i++) {
-        const d = new Date(today);
-        d.setDate(today.getDate() + i);
-        const dateStr = toISODate(d);
-        const dow = d.getDay();
-
-        // only mark weekend grey if nothing else marked (jobs/holiday/bank hol)
-        if ((dow === 0 || dow === 6) && !marks[dateStr]) {
-          marks[dateStr] = {
-            customStyles: {
-              container: { backgroundColor: "#262626", borderRadius: 10 },
-              text: { color: "#fff", fontWeight: "700" },
-            },
-          };
-        }
-      }
 
       setMarkedDates(marks);
       setDayInfo({ jobs: jobMap, holidayByDate, bankHolidays: bh });
@@ -530,14 +494,6 @@ export default function SchedulePage() {
     setCalendarCurrent(t);
   };
 
-  const selectedDayLabel = selectedDay
-    ? new Date(selectedDay).toLocaleDateString("en-GB", {
-        weekday: "short",
-        day: "2-digit",
-        month: "short",
-      })
-    : "None";
-
   /* ---------------------------- SELECTED MARKING ---------------------------- */
   const computedMarked = useMemo(() => {
     if (!selectedDay) return markedDates;
@@ -546,18 +502,55 @@ export default function SchedulePage() {
       ...markedDates,
       [selectedDay]: {
         ...(markedDates[selectedDay] || {}),
+        selected: true,
         customStyles: {
           container: {
-            // keep any existing border (eg bank holiday border or unpaid border), but show selected as red
             ...(markedDates[selectedDay]?.customStyles?.container || {}),
-            backgroundColor: "#C8102E",
-            borderRadius: 10,
+            borderWidth: 2,
+            borderColor: colors.accent,
+            borderRadius: t.radius.md,
           },
-          text: { color: "#fff", fontWeight: "800" },
+          text: {
+            ...(markedDates[selectedDay]?.customStyles?.text || {}),
+            color: markedDates[selectedDay] ? staticColors.hex_fff_yhjmu8 : colors.accent,
+            fontWeight: "900",
+          },
         },
       },
     };
-  }, [markedDates, selectedDay]);
+  }, [colors.accent, markedDates, selectedDay]);
+
+  const monthSummary = useMemo(() => {
+    const monthKey = String(calendarCurrent || "").slice(0, 7);
+    let jobs = 0;
+    let leave = 0;
+    Object.entries(markedDates).forEach(([date, mark]) => {
+      if (!date.startsWith(monthKey)) return;
+      jobs += Number(mark?.jobCount || 0);
+      if (mark?.scheduleTone === "leave" || mark?.scheduleTone === "unpaid") leave += 1;
+    });
+    return { jobs, leave };
+  }, [calendarCurrent, markedDates]);
+
+  const agendaItems = useMemo(() => {
+    if (!dayInfo) return [];
+    const dates = new Set([
+      ...Object.keys(dayInfo.jobs || {}),
+      ...Object.keys(dayInfo.holidayByDate || {}),
+      ...Object.keys(dayInfo.bankHolidays || {}),
+    ]);
+    const today = toISODate(new Date());
+    return Array.from(dates)
+      .filter((date) => date >= today)
+      .sort()
+      .slice(0, 30)
+      .map((date) => ({
+        date,
+        jobs: dayInfo.jobs?.[date] || [],
+        holiday: dayInfo.holidayByDate?.[date] || null,
+        bankHoliday: dayInfo.bankHolidays?.[date] || null,
+      }));
+  }, [dayInfo]);
 
   const refreshBookings = bookingsResource.refresh;
   const refreshHolidays = holidaysResource.refresh;
@@ -574,164 +567,207 @@ export default function SchedulePage() {
   if (loading || !isAuthed) return null;
 
   return (
-    <SafeAreaView
-      edges={["top", "left", "right"]}
-      style={[styles.safeArea, { backgroundColor: colors.background }]}
-    >
-      <View style={[styles.container, { backgroundColor: colors.background }]}>
-        <ScrollView
-          contentContainerStyle={[
-            styles.scrollContainer,
-            { width: "100%", maxWidth: responsive.maxContentWidth, alignSelf: "center" },
-          ]}
-          keyboardShouldPersistTaps="handled"
-          refreshControl={
-            <RefreshControl
-              refreshing={
-                bookingsResource.isRefreshing ||
-                holidaysResource.isRefreshing ||
-                vehiclesResource.isRefreshing
-              }
-              onRefresh={onRefresh}
-              tintColor={colors.accent}
-              colors={[colors.accent]}
+    <PageShell
+      contentSpacing="compact"
+      customHeader={
+        <PageHeaderCard
+          eyebrow="Operations"
+          title="Schedule"
+          subtitle="Jobs, leave and availability in one place."
+          action={
+            <AppButton
+              label="Today"
+              icon="crosshair"
+              variant="secondary"
+              onPress={jumpToToday}
+              style={styles.todayBtn}
             />
           }
-        >
-          <PageHeaderCard
-            eyebrow="Operations"
-            title="Schedule"
-            subtitle="Pick a date to view jobs, leave, and availability."
-            style={styles.heroCard}
-            contentStyle={styles.heroContent}
-          >
-            <View style={styles.heroMetaRow}>
-                <View
-                  style={[
-                    styles.heroMetaChip,
-                    {
-                      backgroundColor: withAlpha(colors.surfaceAlt, 0.8),
-                      borderColor: withAlpha(colors.border, 0.8),
-                    },
-                  ]}
-                >
-                  <Icon name="calendar" size={12} color={colors.textMuted} />
-                  <Text style={[styles.heroMetaText, { color: colors.text }]}>
-                    Selected: {selectedDayLabel}
-                  </Text>
-                </View>
-
-                <View
-                  style={[
-                    styles.heroMetaChip,
-                    {
-                      backgroundColor: withAlpha(colors.surfaceAlt, 0.8),
-                      borderColor: withAlpha(colors.border, 0.8),
-                    },
-                  ]}
-                >
-                  <Icon name="layers" size={12} color={colors.textMuted} />
-                  <Text style={[styles.heroMetaText, { color: colors.text }]}>
-                    Marked: {Object.keys(markedDates || {}).length}
-                  </Text>
-                </View>
+          style={styles.heroCard}
+          contentStyle={styles.heroContent}
+        />
+      }
+      customHeaderPlacement="scroll"
+      refresh={{
+        refreshing:
+          bookingsResource.isRefreshing ||
+          holidaysResource.isRefreshing ||
+          vehiclesResource.isRefreshing,
+        onRefresh,
+      }}
+      scrollProps={{ keyboardShouldPersistTaps: "handled" }}
+    >
+          <View style={styles.toolbarRow}>
+            <View
+              style={[
+                styles.segmentedControl,
+                { backgroundColor: colors.surfaceAlt, borderColor: colors.border },
+              ]}
+            >
+              {[
+                { key: "month", label: "Month", icon: "calendar" },
+                { key: "agenda", label: "Agenda", icon: "list" },
+              ].map((option) => {
+                const active = viewMode === option.key;
+                return (
+                  <Pressable
+                    key={option.key}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: active }}
+                    onPress={() => setViewMode(option.key)}
+                    style={[
+                      styles.segmentButton,
+                      active && { backgroundColor: colors.surface, borderColor: colors.border },
+                    ]}
+                  >
+                    <Icon
+                      name={option.icon}
+                      size={14}
+                      color={active ? colors.accent : withAlpha(colors.text, 0.72)}
+                    />
+                    <Text
+                      style={[
+                        styles.segmentText,
+                        { color: active ? colors.text : withAlpha(colors.text, 0.72) },
+                      ]}
+                    >
+                      {option.label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
             </View>
-          </PageHeaderCard>
 
-          {/* QUICK ACTIONS */}
-          <View style={styles.quickRow}>
-            <AppButton
-              label="Jump to Today"
-              icon="crosshair"
-              onPress={jumpToToday}
-              style={styles.quickBtn}
-            />
-            <AppButton
-              label="Clear"
-              icon="x-circle"
-              variant="secondary"
-              onPress={clearSelected}
-              style={styles.quickBtn}
-            />
+            <View style={styles.monthSummary}>
+              <SummaryMetric value={monthSummary.jobs} label="jobs" colors={colors} />
+              <View style={[styles.summaryDivider, { backgroundColor: colors.border }]} />
+              <SummaryMetric value={monthSummary.leave} label="leave" colors={colors} />
+            </View>
           </View>
 
-          {/* CALENDAR */}
           <View
             style={[
-              styles.card,
-              { backgroundColor: colors.surfaceAlt, borderColor: colors.border },
+              styles.scheduleLayout,
+              responsive.isTablet && styles.scheduleLayoutTablet,
             ]}
           >
-            <Calendar
-              firstDay={1}
-              markingType="custom"
-              markedDates={computedMarked}
-              onDayPress={handleDayPress}
-              current={calendarCurrent}
-              theme={{
-                backgroundColor: colors.background,
-                calendarBackground: colors.surfaceAlt,
-                dayTextColor: colors.text,
-                todayTextColor: colors.accent,
-                monthTextColor: colors.text,
-                arrowColor: colors.accent,
-                textDisabledColor: colors.textMuted,
-                textSectionTitleColor: colors.textMuted,
-              }}
-            />
+            <View style={styles.calendarColumn}>
+              {viewMode === "month" ? (
+                <>
+                  <View
+                    style={[
+                      styles.card,
+                      { backgroundColor: colors.surfaceAlt, borderColor: colors.border },
+                    ]}
+                  >
+                    <Calendar
+                      firstDay={1}
+                      hideExtraDays
+                      markedDates={computedMarked}
+                      onDayPress={handleDayPress}
+                      onMonthChange={(month) => setCalendarCurrent(month.dateString)}
+                      current={calendarCurrent}
+                      dayComponent={({ date, state, marking }) => (
+                        <CustomCalendarDay
+                          date={date}
+                          state={state}
+                          marking={marking}
+                          colors={colors}
+                          onPress={handleDayPress}
+                        />
+                      )}
+                      theme={{
+                        backgroundColor: colors.background,
+                        calendarBackground: colors.surfaceAlt,
+                        monthTextColor: colors.text,
+                        arrowColor: colors.accent,
+                        textSectionTitleColor: colors.textMuted,
+                        textMonthFontWeight: "800",
+                        textDayHeaderFontWeight: "700",
+                      }}
+                    />
+                    <View
+                      style={[styles.legendRow, { borderTopColor: colors.border }]}
+                      accessibilityLabel="Calendar legend"
+                    >
+                      <LegendPill color={staticColors.hex_1c3c7a_8m76oi} label="Job" colors={colors} />
+                      <LegendPill
+                        color={staticColors.hex_126536_a7xuir}
+                        label="Paid"
+                        accessibilityLabel="Paid leave"
+                        colors={colors}
+                      />
+                      <LegendPill
+                        color={staticColors.hex_126536_a7xuir}
+                        label="Unpaid"
+                        accessibilityLabel="Unpaid leave"
+                        borderColor={staticColors.hex_ffd60a_5c6r45}
+                        colors={colors}
+                      />
+                      <LegendPill
+                        color={BANK_HOLIDAY_COLOR}
+                        label="Bank"
+                        accessibilityLabel="Bank holiday"
+                        colors={colors}
+                      />
+                    </View>
+                  </View>
+                </>
+              ) : (
+                <AgendaList
+                  items={agendaItems}
+                  colors={colors}
+                  selectedDay={selectedDay}
+                  onSelect={(date) => {
+                    setSelectedDay(date);
+                    setCalendarCurrent(date);
+                  }}
+                />
+              )}
+            </View>
+
+            <View style={styles.detailsColumn}>
+              {selectedDay ? (
+                <View
+                  style={[
+                    styles.dayHeader,
+                    responsive.isTablet && styles.dayHeaderTablet,
+                    { backgroundColor: colors.surfaceAlt, borderColor: colors.border },
+                  ]}
+                >
+                  <Text style={[styles.dayText, { color: colors.text }]}>
+                    {toDateSafe(selectedDay)?.toLocaleDateString("en-GB", {
+                      weekday: "long",
+                      day: "2-digit",
+                      month: "long",
+                      year: "numeric",
+                    })}
+                  </Text>
+                  <AppButton
+                    label="Clear"
+                    icon="x"
+                    variant="ghost"
+                    onPress={clearSelected}
+                    style={styles.clearBtn}
+                  />
+                </View>
+              ) : null}
+
+              <AsyncContentState
+                resources={[bookingsResource, holidaysResource, vehiclesResource]}
+                hasContent={
+                  bookingsResource.data.length > 0 ||
+                  holidaysResource.data.length > 0
+                }
+                onRetry={onRefresh}
+                loadingLabel="Loading schedule…"
+              >
+                {renderDetails(selectedDay, dayInfo, colors)}
+              </AsyncContentState>
+            </View>
           </View>
 
-          {/* SELECTED DAY */}
-          <View
-            style={[
-              styles.dayHeader,
-              { backgroundColor: colors.surfaceAlt, borderColor: colors.border },
-            ]}
-          >
-            <Text style={[styles.dayText, { color: colors.text }]}>
-              {selectedDay
-                ? new Date(selectedDay).toLocaleDateString("en-GB", {
-                    weekday: "long",
-                    day: "2-digit",
-                    month: "short",
-                    year: "numeric",
-                  })
-                : "No date selected"}
-            </Text>
-          </View>
-
-          {/* DETAILS */}
-          <AsyncContentState
-            resources={[bookingsResource, holidaysResource, vehiclesResource]}
-            hasContent={
-              bookingsResource.data.length > 0 ||
-              holidaysResource.data.length > 0
-            }
-            onRetry={onRefresh}
-            loadingLabel="Loading schedule…"
-          >
-            {renderDetails(selectedDay, dayInfo, colors)}
-          </AsyncContentState>
-
-          {/* LEGEND */}
-          <View style={styles.legendRow}>
-            <LegendPill color="#1C3C7A" label="On Set" colors={colors} />
-            <LegendPill color="#126536" label="Holiday (Paid)" colors={colors} />
-            <LegendPill
-              color="#126536"
-              label="Holiday (Unpaid)"
-              borderColor="#FFD60A"
-              colors={colors}
-            />
-            <LegendPill color={BANK_HOLIDAY_COLOR} label="Bank Holiday" colors={colors} />
-            <LegendPill color="#262626" label="Weekend" colors={colors} />
-            <LegendPill color="#999" label="Yard" colors={colors} />
-          </View>
-
-          <View style={{ height: 40 }} />
-        </ScrollView>
-      </View>
-    </SafeAreaView>
+    </PageShell>
   );
 }
 
@@ -742,12 +778,20 @@ export default function SchedulePage() {
 function renderDetails(selectedDay, dayInfo, colors) {
   if (!selectedDay || !dayInfo) {
     return (
-      <EmptyState
-        icon="calendar"
-        title="Pick a date"
-        message="Tap any date in the calendar to view jobs or holiday info."
-        compact
-      />
+      <View
+        accessibilityRole="summary"
+        style={[
+          styles.dateHint,
+          { backgroundColor: colors.surfaceAlt, borderColor: colors.border },
+        ]}
+      >
+        <View style={[styles.dateHintIcon, { backgroundColor: colors.surface }]}>
+          <Icon name="calendar" size={18} color={colors.textMuted} />
+        </View>
+        <Text style={[styles.dateHintText, { color: colors.textMuted }]}>
+          Tap a date to view jobs or leave details.
+        </Text>
+      </View>
     );
   }
 
@@ -763,17 +807,16 @@ function renderDetails(selectedDay, dayInfo, colors) {
         ]}
       >
         <View style={styles.infoHeader}>
-          <Text style={[styles.infoTitle, { color: colors.text }]}>
-            Jobs on {selectedDay}
-          </Text>
+          <Text style={[styles.infoTitle, { color: colors.text }]}>Jobs</Text>
           <View style={[styles.badge, { backgroundColor: colors.accent }]}>
-            <Text style={[styles.badgeText, { color: "#fff" }]}>
+            <Text style={[styles.badgeText, { color: staticColors.hex_fff_yhjmu8 }]}>
               {jobs[selectedDay].length}
             </Text>
           </View>
         </View>
 
         {jobs[selectedDay].map((job) => {
+          const callTime = getCallTime(job, selectedDay);
           const dayNote =
             job?.notesByDate?.[selectedDay] === "Other"
               ? job?.notesByDate?.[`${selectedDay}-other`]
@@ -789,7 +832,7 @@ function renderDetails(selectedDay, dayInfo, colors) {
             >
               <View style={styles.jobRow}>
                 <Text style={[styles.jobTitle, { color: colors.text }]}>
-                  Job #{job.jobNumber || "N/A"}
+                  Job #{displayJobNumber(job)}
                 </Text>
 
                 {job.status && (
@@ -803,6 +846,20 @@ function renderDetails(selectedDay, dayInfo, colors) {
                   </Text>
                 )}
               </View>
+
+              {callTime ? (
+                <View
+                  style={[
+                    styles.callTimeRow,
+                    { backgroundColor: colors.accentSoft || colors.surfaceAlt },
+                  ]}
+                >
+                  <Icon name="clock" size={14} color={colors.accent} />
+                  <Text style={[styles.callTimeText, { color: colors.text }]}>
+                    Call time {String(callTime)}
+                  </Text>
+                </View>
+              ) : null}
 
               {job.client && (
                 <Text style={[styles.jobItem, { color: colors.textMuted }]}>
@@ -916,9 +973,186 @@ function renderDetails(selectedDay, dayInfo, colors) {
   );
 }
 
-function LegendPill({ color, label, borderColor, colors }) {
+function SummaryMetric({ value, label, colors }) {
   return (
-    <View style={[styles.pill, { backgroundColor: colors.surfaceAlt, borderColor: colors.border }]}>
+    <View style={styles.summaryMetric}>
+      <Text style={[styles.summaryValue, { color: colors.text }]}>{value}</Text>
+      <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>{label}</Text>
+    </View>
+  );
+}
+
+function CustomCalendarDay({ date, state, marking, colors, onPress }) {
+  if (!date || state === "disabled") return <View style={styles.calendarDay} />;
+
+  const hasJob = Number(marking?.jobCount || 0) > 0;
+  const hasPaidLeave = marking?.scheduleTone === "leave";
+  const hasUnpaidLeave = marking?.scheduleTone === "unpaid";
+  const hasBankHoliday = marking?.bankHoliday === true;
+  const primaryTone = hasJob
+    ? staticColors.hex_3568be_8u10kp
+    : hasPaidLeave
+    ? staticColors.hex_16834a_a5btzz
+    : hasUnpaidLeave
+    ? staticColors.hex_d6b400_65zpoi
+    : hasBankHoliday
+    ? BANK_HOLIDAY_COLOR
+    : null;
+  const isSelected = marking?.selected === true;
+  const isToday = state === "today";
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={toDateSafe(date.dateString)?.toLocaleDateString("en-GB", {
+        weekday: "long",
+        day: "numeric",
+        month: "long",
+      })}
+      accessibilityState={{ selected: isSelected }}
+      onPress={() => onPress(date)}
+      style={({ pressed }) => [
+        styles.calendarDay,
+        primaryTone && {
+          backgroundColor: withAlpha(primaryTone, 0.22),
+          borderColor: withAlpha(primaryTone, 0.72),
+          borderWidth: 1,
+        },
+        hasUnpaidLeave && !isSelected && {
+          borderColor: staticColors.hex_ffd60a_5c6r45,
+          borderWidth: 2,
+        },
+        isToday && !isSelected && {
+          borderColor: withAlpha(colors.accent, 0.82),
+          borderWidth: 1.5,
+        },
+        isSelected && {
+          backgroundColor: colors.accent,
+          borderColor: colors.accent,
+          borderWidth: 2,
+        },
+        pressed && { opacity: 0.65 },
+      ]}
+    >
+      <Text
+        style={[
+          styles.calendarDayNumber,
+          {
+            color: isSelected
+              ? colors.textOnAccent
+              : primaryTone
+              ? colors.text
+              : isToday
+              ? colors.accent
+              : colors.text,
+          },
+        ]}
+      >
+        {date.day}
+      </Text>
+      <View style={styles.dayIndicatorRow}>
+        {hasJob ? <View style={[styles.dayIndicator, { backgroundColor: staticColors.hex_4e86e6_81th4a }]} /> : null}
+        {hasPaidLeave ? (
+          <View style={[styles.dayIndicator, { backgroundColor: staticColors.hex_20a35c_6zwr5s }]} />
+        ) : null}
+        {hasUnpaidLeave ? (
+          <View
+            style={[
+              styles.dayIndicator,
+              { backgroundColor: "transparent", borderColor: staticColors.hex_ffd60a_5c6r45, borderWidth: 1.5 },
+            ]}
+          />
+        ) : null}
+        {hasBankHoliday ? (
+          <View style={[styles.dayIndicator, { backgroundColor: staticColors.hex_9b5cf6_drrrcr }]} />
+        ) : null}
+      </View>
+      {Number(marking?.jobCount || 0) > 1 ? (
+        <View style={[styles.dayCountBadge, { backgroundColor: colors.accent }]}>
+          <Text style={styles.dayCountText}>{marking.jobCount}</Text>
+        </View>
+      ) : null}
+    </Pressable>
+  );
+}
+
+function AgendaList({ items, colors, selectedDay, onSelect }) {
+  if (!items.length) {
+    return (
+      <EmptyState
+        icon="calendar"
+        title="Nothing upcoming"
+        message="New jobs and approved leave will appear here."
+        compact
+      />
+    );
+  }
+
+  return (
+    <View style={styles.agendaList}>
+      {items.map((item) => {
+        const firstJob = item.jobs[0];
+        const title = firstJob
+          ? firstJob.client || `Job #${displayJobNumber(firstJob)}`
+          : item.bankHoliday
+          ? item.bankHoliday
+          : item.holiday?.payType === "unpaid"
+          ? "Unpaid leave"
+          : "Paid leave";
+        const callTime = firstJob ? getCallTime(firstJob, item.date) : null;
+        const dateLabel = toDateSafe(item.date)?.toLocaleDateString("en-GB", {
+          weekday: "short",
+          day: "numeric",
+          month: "short",
+        });
+
+        return (
+          <Pressable
+            key={item.date}
+            accessibilityRole="button"
+            accessibilityState={{ selected: selectedDay === item.date }}
+            onPress={() => onSelect(item.date)}
+            style={({ pressed }) => [
+              styles.agendaCard,
+              {
+                backgroundColor: colors.surfaceAlt,
+                borderColor: selectedDay === item.date ? colors.accent : colors.border,
+                opacity: pressed ? 0.72 : 1,
+              },
+            ]}
+          >
+            <View style={styles.agendaDateColumn}>
+              <Text style={[styles.agendaDate, { color: colors.text }]}>{dateLabel}</Text>
+              {callTime ? (
+                <Text style={[styles.agendaTime, { color: colors.accent }]}>{callTime}</Text>
+              ) : null}
+            </View>
+            <View style={styles.agendaContent}>
+              <Text style={[styles.agendaTitle, { color: colors.text }]} numberOfLines={2}>
+                {title}
+              </Text>
+              <Text style={[styles.agendaMeta, { color: colors.textMuted }]} numberOfLines={2}>
+                {firstJob
+                  ? [firstJob.location, item.jobs.length > 1 ? `${item.jobs.length} jobs` : null]
+                      .filter(Boolean)
+                      .join(" · ") || "View assignment"
+                  : "Approved time away"}
+              </Text>
+            </View>
+            <Icon name="chevron-right" size={19} color={colors.textMuted} />
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+
+function LegendPill({ color, label, accessibilityLabel, borderColor, colors }) {
+  return (
+    <View
+      accessibilityLabel={accessibilityLabel || label}
+      style={styles.pill}
+    >
       <View
         style={[
           styles.dot,
@@ -939,132 +1173,262 @@ function LegendPill({ color, label, borderColor, colors }) {
 /* -------------------------------------------------------------------------- */
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: "#000" },
-  container: { flex: 1, backgroundColor: "#000" },
+  safeArea: { flex: 1, backgroundColor: staticColors.hex_000_yhlkvq },
+  container: { flex: 1, backgroundColor: staticColors.hex_000_yhlkvq },
   scrollContainer: {
     paddingHorizontal: t.spacing.md,
-    paddingTop: 10,
-    paddingBottom: t.spacing.lg,
+    paddingTop: t.spacing.xs,
+    paddingBottom: 200,
   },
 
   heroCard: {
     position: "relative",
     borderRadius: t.radius.xl,
-    marginBottom: t.spacing.lg,
     overflow: "hidden",
   },
   heroContent: {
-    paddingHorizontal: 0,
-    paddingVertical: 15,
+    paddingHorizontal: t.spacing.none,
+    paddingVertical: t.spacing.sm,
   },
   heroEyebrow: {
     ...t.typography.label,
     letterSpacing: 0.6,
   },
   heroTitle: {
-    marginTop: 3,
+    marginTop: t.spacing.xxs,
     ...t.typography.pageTitle,
     letterSpacing: 0.2,
   },
   heroSubTitle: {
-    marginTop: 3,
-    fontSize: 13,
+    marginTop: t.spacing.xxs,
+    fontSize: t.typography.bodySmall.fontSize,
     fontWeight: "600",
-    lineHeight: 18,
+    lineHeight: t.typography.bodySmall.lineHeight,
   },
-  heroMetaRow: {
-    marginTop: 12,
-    flexDirection: "row",
-    gap: 8,
-    flexWrap: "wrap",
+  todayBtn: {
+    minHeight: t.controls.buttonHeight,
+    paddingHorizontal: t.spacing.md,
+    borderRadius: t.radius.pill,
   },
-  heroMetaChip: {
+  toolbarRow: {
+    marginBottom: t.spacing.sm,
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
-    minHeight: t.controls.chipMinHeight,
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+    justifyContent: "space-between",
+    gap: t.spacing.xs,
+    flexWrap: "wrap",
   },
-  heroMetaText: {
-    fontSize: 11,
+  segmentedControl: {
+    minHeight: 42,
+    padding: t.spacing.xxs,
+    borderRadius: t.radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: "row",
+  },
+  segmentButton: {
+    minHeight: 34,
+    paddingHorizontal: t.spacing.sm,
+    borderRadius: t.radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "transparent",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: t.spacing.xxs,
+  },
+  segmentText: { fontSize: t.typography.metadata.fontSize, fontWeight: "800" },
+  monthSummary: {
+    minHeight: 42,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: t.spacing.xs,
+  },
+  summaryMetric: { flexDirection: "row", alignItems: "baseline", gap: t.spacing.xxs },
+  summaryValue: { fontSize: t.typography.sectionTitle.fontSize, fontWeight: "900" },
+  summaryLabel: { fontSize: t.typography.caption.fontSize, fontWeight: "700" },
+  summaryDivider: { width: StyleSheet.hairlineWidth, height: 22 },
+  scheduleLayout: {
+    width: "100%",
+  },
+  scheduleLayoutTablet: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: t.spacing.lg,
+  },
+  calendarColumn: {
+    flex: 1.08,
+    minWidth: 0,
+  },
+  detailsColumn: {
+    flex: 0.92,
+    minWidth: 0,
+  },
+  card: {
+    borderRadius: t.radius.xl,
+    overflow: "hidden",
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  calendarDay: {
+    width: 40,
+    height: 42,
+    borderRadius: t.radius.md,
+    borderWidth: 2,
+    borderColor: "transparent",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  calendarDayNumber: { fontSize: t.typography.body.fontSize, lineHeight: t.typography.body.lineHeight, fontWeight: "700" },
+  dayIndicatorRow: {
+    minHeight: 4,
+    marginTop: t.spacing.none,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: t.spacing.xxs,
+  },
+  dayIndicator: { width: 10, height: 4, borderRadius: t.radius.sm },
+  dayCountBadge: {
+    position: "absolute",
+    right: 1,
+    top: 1,
+    minWidth: 14,
+    height: 14,
+    borderRadius: t.radius.sm,
+    paddingHorizontal: t.spacing.xxs,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  dayCountText: { color: staticColors.hex_fff_yhjmu8, fontSize: t.typography.micro.fontSize, lineHeight: t.typography.micro.lineHeight, fontWeight: "900" },
+  dayHeader: {
+    marginTop: t.spacing.sm,
+    marginBottom: t.spacing.xs,
+    minHeight: 50,
+    paddingVertical: t.spacing.xs,
+    paddingLeft: t.spacing.sm,
+    paddingRight: t.spacing.xs,
+    borderRadius: t.radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: t.spacing.xs,
+  },
+  dayText: { flex: 1, fontSize: t.typography.bodyLarge.fontSize, fontWeight: "800" },
+  dayHeaderTablet: { marginTop: t.spacing.none },
+  clearBtn: {
+    minHeight: 36,
+    paddingVertical: t.spacing.xxs,
+    paddingHorizontal: t.spacing.xs,
+    borderRadius: t.radius.pill,
+  },
+
+  dateHint: {
+    marginTop: t.spacing.xs,
+    minHeight: 52,
+    paddingVertical: t.spacing.xs,
+    paddingHorizontal: t.spacing.sm,
+    borderRadius: t.radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: t.spacing.xs,
+  },
+  dateHintIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: t.radius.md,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  dateHintText: {
+    flex: 1,
+    fontSize: t.typography.metadata.fontSize,
+    lineHeight: t.typography.metadata.lineHeight,
     fontWeight: "700",
   },
 
-  quickRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    flexWrap: "wrap",
-    gap: 12,
-    marginTop: 2,
-    marginBottom: 12,
-  },
-  quickBtn: {
-    flexGrow: 1,
-    minWidth: 0,
-    minHeight: t.controls.buttonHeight,
-    paddingVertical: 8,
-    paddingHorizontal: 14,
-    borderRadius: 999,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 7,
-  },
-  quickText: { fontWeight: "800", fontSize: 12, letterSpacing: 0.2, flexShrink: 1 },
-
-  card: { borderRadius: 16, overflow: "hidden" },
-
-  dayHeader: {
-    marginTop: 14,
-    marginBottom: 4,
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    borderRadius: 14,
-  },
-  dayText: { fontSize: 15, fontWeight: "700" },
-
-  infoCard: { marginTop: 14, padding: t.controls.cardPaddingLg, borderRadius: 16 },
+  infoCard: { marginTop: t.spacing.sm, padding: t.controls.cardPaddingLg, borderRadius: t.radius.xl },
   infoHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
   },
-  infoTitle: { fontSize: 17, fontWeight: "800" },
-  infoSubtitle: { marginTop: 4, fontSize: 14 },
+  infoTitle: { fontSize: t.typography.sectionTitle.fontSize, fontWeight: "800" },
+  infoSubtitle: { marginTop: t.spacing.xxs, fontSize: t.typography.body.fontSize },
 
-  badge: { paddingVertical: 2, paddingHorizontal: 10, borderRadius: 12 },
-  badgeText: { fontWeight: "800", fontSize: 12 },
+  badge: { paddingVertical: t.spacing.none, paddingHorizontal: t.spacing.xs, borderRadius: t.radius.md },
+  badgeText: { fontWeight: "800", fontSize: t.typography.metadata.fontSize },
 
-  jobCard: { marginTop: 12, borderRadius: 14, padding: t.controls.cardPadding },
+  jobCard: { marginTop: t.spacing.sm, borderRadius: t.radius.lg, padding: t.controls.cardPadding },
   jobRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
   },
-  jobTitle: { fontWeight: "800", fontSize: 15 },
+  jobTitle: { fontWeight: "800", fontSize: t.typography.bodyLarge.fontSize },
   jobStatus: {
-    paddingVertical: 3,
-    paddingHorizontal: 8,
-    borderRadius: 8,
-    fontSize: 12,
+    paddingVertical: t.spacing.xxs,
+    paddingHorizontal: t.spacing.xs,
+    borderRadius: t.radius.sm,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "600",
   },
-  jobItem: { marginTop: 4, fontSize: 14 },
+  jobItem: { marginTop: t.spacing.xxs, fontSize: t.typography.body.fontSize },
   jobValue: { fontWeight: "700" },
 
-  legendRow: { marginTop: 20, flexDirection: "row", flexWrap: "wrap", gap: 10 },
-  pill: {
+  legendRow: {
+    width: "100%",
+    marginTop: t.spacing.xxs,
+    paddingHorizontal: t.spacing.xs,
+    paddingTop: t.spacing.xs,
+    paddingBottom: t.spacing.xs,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    flexWrap: "nowrap",
+    gap: t.spacing.xxs,
+  },
+  callTimeRow: {
+    alignSelf: "flex-start",
+    marginTop: t.spacing.xs,
+    marginBottom: t.spacing.xxs,
+    minHeight: 30,
+    paddingHorizontal: t.spacing.xs,
+    borderRadius: t.radius.pill,
     flexDirection: "row",
     alignItems: "center",
-    minHeight: t.controls.chipMinHeight,
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    backgroundColor: "#111",
-    borderColor: "#222",
-    borderRadius: 20,
+    gap: t.spacing.xxs,
   },
-  dot: { width: 10, height: 10, borderRadius: 5, marginRight: 6 },
-  pillText: { fontSize: 13, fontWeight: "700", color: "#EEE" },
+  callTimeText: { fontSize: t.typography.metadata.fontSize, fontWeight: "800" },
+  pill: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    minHeight: t.controls.chipMinHeight,
+    paddingVertical: t.spacing.xxs,
+    paddingHorizontal: t.spacing.xxs,
+    backgroundColor: "transparent",
+    borderColor: "transparent",
+    borderRadius: t.radius.xl,
+  },
+  dot: { width: 9, height: 9, borderRadius: t.radius.sm, marginRight: t.spacing.xxs, flexShrink: 0 },
+  pillText: { fontSize: t.typography.caption.fontSize, fontWeight: "800", color: staticColors.hex_eee_yhivtv },
+  agendaList: { gap: t.spacing.xs },
+  agendaCard: {
+    minHeight: 78,
+    borderRadius: t.radius.xl,
+    borderWidth: 1,
+    padding: t.spacing.sm,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: t.spacing.sm,
+  },
+  agendaDateColumn: { width: 70, alignSelf: "stretch", justifyContent: "center" },
+  agendaDate: { fontSize: t.typography.metadata.fontSize, lineHeight: t.typography.metadata.lineHeight, fontWeight: "800" },
+  agendaTime: { marginTop: t.spacing.xxs, fontSize: t.typography.sectionTitle.fontSize, lineHeight: t.typography.sectionTitle.lineHeight, fontWeight: "900" },
+  agendaContent: { flex: 1, minWidth: 0 },
+  agendaTitle: { fontSize: t.typography.bodyLarge.fontSize, lineHeight: t.typography.bodyLarge.lineHeight, fontWeight: "900" },
+  agendaMeta: { marginTop: t.spacing.xxs, fontSize: t.typography.metadata.fontSize, lineHeight: t.typography.metadata.lineHeight, fontWeight: "600" },
 });

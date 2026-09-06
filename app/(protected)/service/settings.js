@@ -1,17 +1,17 @@
+import { AppText as Text, AppPressable as TouchableOpacity } from "../../../components/ui/AppPrimitives";
+import {
+  servicePalette as COLORS } from "../../../lib/design/semantics";
 // app/(protected)/service/settings.js
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useRouter } from "expo-router";
 import { useState } from "react";
 import {
   Alert,
-  ScrollView,
   StyleSheet,
   Switch,
-  Text,
-  TouchableOpacity,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+
 import Icon from "react-native-vector-icons/Feather";
 
 import {
@@ -26,20 +26,11 @@ import { auth } from "../../../firebaseConfig";
 import { useAuth } from "../../../providers/AuthProvider";
 import { useNotificationPreferences } from "../../../providers/NotificationPreferencesProvider";
 import { useTheme } from "../../../providers/ThemeProvider";
+import { staticColors } from "../../../lib/design/staticColors";
+import { designTokens as t } from "../../../lib/design/tokens";
+import PageShell from "../../../components/layout/PageShell";
 
 /* --------- SERVICE STYLE COLOURS --------- */
-
-const COLORS = {
-  background: "#000000",
-  card: "#151517",
-  border: "#2B2B31",
-  textHigh: "#F5F5F5",
-  textMid: "#D4D4D8",
-  textLow: "#A1A1AA",
-  primaryAction: "#D94B52",
-  inputBg: "#111114",
-  lightGray: "#3F3F46",
-};
 
 export default function ServiceSettingsPage() {
   const router = useRouter();
@@ -272,84 +263,41 @@ export default function ServiceSettingsPage() {
         "sessionIsService",
         "sessionUserAccess",
         "sessionServiceAccess",
+        "sessionCompanyId",
         "displayName",
         "employeeId",
         "employeeEmail",
         "employeeUserCode",
+        "userCode",
         "timesheetYardStart",
         "timesheetYardEnd",
         "timesheetOfficeStart",
         "timesheetOfficeEnd",
+        "timesheetWorkshopStart",
+        "timesheetWorkshopEnd",
         "timesheetDefaultType",
       ]);
 
-      // tell AuthProvider to re-check session
+      global.employee = null;
+      await signOut(auth);
       await reloadSession();
-
-      // sign out from Firebase (ignore minor errors)
-      await signOut(auth).catch(() => {});
-
-      // no router.replace needed – root layout should now mount the (auth) stack
+      router.replace("/(auth)/login");
     } catch (error) {
       console.error("Error signing out:", error);
     }
   };
 
   return (
-    <SafeAreaView
-      edges={["left", "right"]}
-      style={[
-        styles.safeArea,
-        {
-          backgroundColor: colors.background || COLORS.background,
-        },
-      ]}
-    >
+    <PageShell mode="form" width="form" header={{
+      variant: "compact",
+      title: "Service Settings",
+      subtitle: "Workshop preferences and account controls.",
+      onBack: router.back,
+    }}>
       {/* HEADER */}
-      <View
-        style={[
-          styles.header,
-          {
-            borderBottomColor: colors.border || COLORS.border,
-          },
-        ]}
-      >
-        <TouchableOpacity
-          onPress={router.back}
-          style={styles.backButton}
-          accessibilityRole="button"
-        >
-          <Icon
-            name="arrow-left"
-            size={22}
-            color={colors.text || COLORS.textHigh}
-          />
-        </TouchableOpacity>
+      
 
-        <View style={{ flex: 1 }}>
-          <Text
-            style={[
-              styles.headerTitle,
-              { color: colors.text || COLORS.textHigh },
-            ]}
-          >
-            Service Settings
-          </Text>
-          <Text
-            style={[
-              styles.headerSubtitle,
-              { color: colors.textMuted || COLORS.textMid },
-            ]}
-          >
-            Workshop preferences and account controls.
-          </Text>
-        </View>
-      </View>
-
-      <ScrollView
-        contentContainerStyle={styles.scrollContent}
-        keyboardShouldPersistTaps="handled"
-      >
+      <>
         {settings.map((section, idx) => (
           <View key={idx} style={styles.section}>
             <Text
@@ -405,10 +353,10 @@ export default function ServiceSettingsPage() {
                     value={notificationsEnabled}
                     onValueChange={setNotificationsEnabled}
                     trackColor={{
-                      false: "#444",
+                      false: staticColors.hex_444_yhlhma,
                       true: colors.accent || COLORS.primaryAction,
                     }}
-                    thumbColor={notificationsEnabled ? "#fff" : "#888"}
+                    thumbColor={notificationsEnabled ? staticColors.hex_fff_yhjmu8 : staticColors.hex_888_yhlrem}
                   />
                 ) : item.type === "maintenance-reminder-toggle" ? (
                   maintenanceReminderError ? (
@@ -416,7 +364,7 @@ export default function ServiceSettingsPage() {
                       onPress={() => refreshMaintenancePreferences().catch(() => {})}
                       accessibilityRole="button"
                       accessibilityLabel="Retry loading maintenance reminder settings"
-                      style={{ paddingHorizontal: 12, paddingVertical: 9 }}
+                      style={{ paddingHorizontal: t.spacing.sm, paddingVertical: t.spacing.xs }}
                     >
                       <Text
                         style={{
@@ -433,10 +381,10 @@ export default function ServiceSettingsPage() {
                       onValueChange={handleMaintenanceReminderToggle}
                       disabled={maintenanceReminderSaving || maintenanceReminderLoading}
                       trackColor={{
-                        false: "#444",
+                        false: staticColors.hex_444_yhlhma,
                         true: colors.accent || COLORS.primaryAction,
                       }}
-                      thumbColor={maintenanceReminderEnabled ? "#fff" : "#888"}
+                      thumbColor={maintenanceReminderEnabled ? staticColors.hex_fff_yhjmu8 : staticColors.hex_888_yhlrem}
                     />
                   )
                 ) : item.type === "maintenance-reminder-time" ? (
@@ -503,7 +451,7 @@ export default function ServiceSettingsPage() {
                               color: active
                                 ? COLORS.textHigh
                                 : colors.text || COLORS.textHigh,
-                              fontSize: 12,
+                              fontSize: t.typography.metadata.fontSize,
                               fontWeight: active ? "700" : "500",
                               textTransform: "capitalize",
                             }}
@@ -560,7 +508,7 @@ export default function ServiceSettingsPage() {
         </View>
 
         <View style={{ height: 24 }} />
-      </ScrollView>
+      </>
       <ChangePasswordModal
         visible={passwordModalVisible}
         colors={colors}
@@ -571,7 +519,7 @@ export default function ServiceSettingsPage() {
         onSubmit={handleSubmitPasswordChange}
         onForgotPassword={handleForgotCurrentPassword}
       />
-    </SafeAreaView>
+    </PageShell>
   );
 }
 
@@ -580,42 +528,42 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingHorizontal: t.spacing.md,
+    paddingVertical: t.spacing.sm,
     borderBottomWidth: 1,
   },
   backButton: {
-    paddingRight: 10,
-    paddingVertical: 4,
+    paddingRight: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
   },
   headerTitle: {
-    fontSize: 22,
+    fontSize: t.typography.titleSmall.fontSize,
     fontWeight: "800",
   },
   headerSubtitle: {
-    marginTop: 2,
-    fontSize: 13,
+    marginTop: t.spacing.none,
+    fontSize: t.typography.bodySmall.fontSize,
     color: COLORS.textMid,
   },
   scrollContent: {
-    paddingHorizontal: 16,
-    paddingBottom: 24,
-    paddingTop: 12,
+    paddingHorizontal: t.spacing.md,
+    paddingBottom: t.spacing.xl,
+    paddingTop: t.spacing.sm,
   },
   section: {
-    marginBottom: 24,
+    marginBottom: t.spacing.xl,
   },
   sectionTitle: {
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
     fontWeight: "700",
     textTransform: "uppercase",
     letterSpacing: 0.8,
-    marginBottom: 10,
+    marginBottom: t.spacing.xs,
   },
   item: {
-    padding: 14,
-    borderRadius: 10,
-    marginBottom: 10,
+    padding: t.spacing.sm,
+    borderRadius: t.radius.md,
+    marginBottom: t.spacing.xs,
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
@@ -625,37 +573,37 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     flex: 1,
-    paddingRight: 12,
+    paddingRight: t.spacing.sm,
   },
   itemTextWrap: {
     flex: 1,
-    marginLeft: 10,
+    marginLeft: t.spacing.xs,
   },
   itemText: {
-    fontSize: 16,
+    fontSize: t.typography.bodyLarge.fontSize,
   },
   itemSubText: {
-    fontSize: 12,
-    lineHeight: 16,
-    marginTop: 3,
+    fontSize: t.typography.metadata.fontSize,
+    lineHeight: t.typography.metadata.lineHeight,
+    marginTop: t.spacing.xxs,
   },
   timeButtonsRow: {
     flexDirection: "row",
     flexWrap: "wrap",
     justifyContent: "flex-end",
-    gap: 6,
+    gap: t.spacing.xxs,
     maxWidth: 180,
   },
   timeButton: {
     minWidth: 54,
     alignItems: "center",
-    paddingVertical: 6,
-    paddingHorizontal: 8,
-    borderRadius: 8,
+    paddingVertical: t.spacing.xxs,
+    paddingHorizontal: t.spacing.xs,
+    borderRadius: t.radius.sm,
     borderWidth: 1,
   },
   timeButtonText: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "700",
   },
   themeButtonsRow: {
@@ -663,23 +611,23 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   themeButton: {
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    borderRadius: 999,
+    paddingVertical: t.spacing.xxs,
+    paddingHorizontal: t.spacing.xs,
+    borderRadius: t.radius.pill,
     borderWidth: 1,
   },
   logoutButton: {
-    paddingVertical: 14,
-    paddingHorizontal: 16,
-    borderRadius: 999,
+    paddingVertical: t.spacing.sm,
+    paddingHorizontal: t.spacing.md,
+    borderRadius: t.radius.pill,
     borderWidth: 1,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
   },
   logoutText: {
-    marginLeft: 8,
-    fontSize: 16,
+    marginLeft: t.spacing.xs,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "700",
   },
 });

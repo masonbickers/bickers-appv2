@@ -1,28 +1,29 @@
 "use client";
 
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { AppButton, AppModal, AppText as Text, AppPressable as TouchableOpacity, FormField, IconButton, TextArea } from "../../../../components/ui/AppPrimitives";
+
+import {
+  useLocalSearchParams,
+  useRouter } from "expo-router";
 import { useNavigation } from "@react-navigation/native";
 import {
   doc,
   serverTimestamp,
   setDoc,
-} from "firebase/firestore";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+  } from "firebase/firestore";
+import { useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState } from "react";
 import {
   Alert,
   FlatList,
   LayoutAnimation,
-  Modal,
-  RefreshControl,
-  ScrollView,
   StyleSheet,
   Switch,
-  Text,
-  TextInput,
-  TouchableOpacity,
   View,
 } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
 import { AsyncContentState } from "../../../../components/AsyncState";
@@ -31,15 +32,27 @@ import {
   useBookings,
   useEmployeeTimesheets,
   useHolidays,
+  useVehicles,
 } from "../../../../hooks/useOperationalData";
-import { useResponsiveLayout } from "../../../../hooks/useResponsiveLayout";
 import { isCrewedBooking } from "../../../../lib/bookingVisibility";
+import {
+  collapseLinkedJobsForDay,
+  expandLinkedHandoverJobs,
+} from "../../../../lib/linkedBookingDays";
 import { formatDateDDMMYYYY } from "../../../../lib/dateFormat";
+import {
+  getBookingVehicleReferences,
+  getVehicleDisplayList,
+} from "../../../../lib/fleetSchema";
 import { runOrQueueFirestoreMutation } from "../../../../lib/sync/firestoreQueue";
+import { computeTimesheetDayBreakdown } from "../../../../lib/timesheetHours";
 import { cancelTimesheetReminders } from "../../../../lib/timesheetReminders";
 import { useAuth } from "../../../../providers/AuthProvider";
 import { useDataCache } from "../../../../providers/DataCacheProvider";
 import { useTheme } from "../../../../providers/ThemeProvider";
+import { staticColors } from "../../../../lib/design/staticColors";
+import { designTokens as t } from "../../../../lib/design/tokens";
+import PageShell from "../../../../components/layout/PageShell";
 
 /* ───────────────────────────────
    BANK HOLIDAYS (UK via GOV.UK)
@@ -51,6 +64,10 @@ const BANK_HOLIDAY_REGION = "england-and-wales";
 // Turnaround lookback window (was 2 weeks / 14 days)
 const TURNAROUND_LOOKBACK_DAYS = 21; // 3 weeks
 const TURNAROUND_MAX_USES_PER_WEEK = 1;
+const ON_SET_EARLY_ARRIVAL_CAP_MINUTES = 60;
+const ON_SET_STANDARD_DAY_MINUTES = 10 * 60;
+const ON_SET_EARLY_CALL_CUTOFF_MINUTES = 7 * 60;
+const MAX_REASONABLE_PRECALL_WINDOW_MINUTES = 12 * 60;
 
 async function fetchUKBankHolidays(region = BANK_HOLIDAY_REGION) {
   try {
@@ -97,6 +114,17 @@ const TIME_OPTIONS = (() => {
   }
   return out;
 })();
+
+function formatTimeWithPeriod(value) {
+  const match = /^(\d{1,2}):(\d{2})$/.exec(String(value || ""));
+  if (!match) return String(value || "");
+
+  const hour = Number(match[1]);
+  const minute = match[2];
+  const hour24 = String(hour).padStart(2, "0");
+  const period = hour >= 12 ? "PM" : "AM";
+  return `${hour24}:${minute} ${period}`;
+}
 
 /* ───────────────────────── Time helpers (MIDNIGHT SAFE) ───────────────────────── */
 function timeToMinutes(t) {
@@ -154,6 +182,10 @@ function formatDisplayDate(value) {
   const mm = String(parsed.getMonth() + 1).padStart(2, "0");
   const yyyy = parsed.getFullYear();
   return `${dd}/${mm}/${yyyy}`;
+}
+
+function getProductionDisplayName(job) {
+  return String(job?.production || "").trim() || "Production not set";
 }
 
 function segmentMeta(seg) {
@@ -236,8 +268,13 @@ function annotateTimesheetMidnight(ts) {
 
       const arriveBackOffset = timeFieldOffset(base, e.arriveBack || null);
       const wrapOffset = timeFieldOffset(base, e.wrapTime || null);
+      const additionalTravelOffset = boolish(e.additionalTravelEnabled)
+        ? timeFieldOffset(e.additionalTravelStartTime, e.additionalTravelEndTime)
+        : null;
       const crossesMidnight =
-        (arriveBackOffset?.dayOffset ?? 0) === 1 || (wrapOffset?.dayOffset ?? 0) === 1;
+        (arriveBackOffset?.dayOffset ?? 0) === 1 ||
+        (wrapOffset?.dayOffset ?? 0) === 1 ||
+        (additionalTravelOffset?.dayOffset ?? 0) === 1;
 
       next.days[dayName] = {
         ...e,
@@ -247,6 +284,7 @@ function annotateTimesheetMidnight(ts) {
           baseTime: base,
           arriveBack: e.arriveBack ? arriveBackOffset : null,
           wrapTime: e.wrapTime ? wrapOffset : null,
+          additionalTravelEndTime: e.additionalTravelEndTime ? additionalTravelOffset : null,
         },
       };
       continue;
@@ -354,11 +392,8 @@ function ensureYardSegments(entry) {
 
 function ensureYardLunch(entry) {
   const e = { ...(entry || {}) };
-  if (String(e.mode || "yard").toLowerCase() === "yard") {
-    if (typeof e.lunchSup !== "boolean") e.lunchSup = false;
-  } else {
-    if (typeof e.lunchSup !== "boolean") e.lunchSup = false;
-  }
+  // Lunch is mandatory, so legacy "No Lunch" selections are normalised away.
+  e.lunchSup = false;
   return e;
 }
 
@@ -377,14 +412,6 @@ function ensureYardTravel(entry) {
   }
 
   return e;
-}
-
-function parseHoursValue(value) {
-  const raw = String(value ?? "").trim();
-  if (!raw) return 0;
-  const hours = Number(raw.replace(",", "."));
-  if (!Number.isFinite(hours) || hours <= 0) return 0;
-  return hours;
 }
 
 function ensureWorkshopJobs(entry) {
@@ -424,7 +451,18 @@ function ensureOnsetExtras(entry) {
   if (typeof e.lateSup !== "boolean") e.lateSup = isLateSupplementWrap(e);
 
   // on-set meal supplement toggle
-  if (typeof e.mealSup !== "boolean") e.mealSup = true;
+  if (typeof e.mealSup !== "boolean") e.mealSup = false;
+
+  e.additionalTravelEnabled = boolish(e.additionalTravelEnabled);
+  if (e.additionalTravelEnabled) {
+    e.additionalTravelStartTime = normaliseTimeValue(e.additionalTravelStartTime) || null;
+    e.additionalTravelEndTime = normaliseTimeValue(e.additionalTravelEndTime) || null;
+    e.additionalTravelJob = String(e.additionalTravelJob || "");
+  } else {
+    e.additionalTravelStartTime = null;
+    e.additionalTravelEndTime = null;
+    e.additionalTravelJob = "";
+  }
 
   return e;
 }
@@ -491,6 +529,10 @@ function ensureModeDefaults(entry) {
     e.generatorUsed = typeof e.generatorUsed === "boolean" ? e.generatorUsed : false;
     e.lateSup = typeof e.lateSup === "boolean" ? e.lateSup : false;
     e.mealSup = typeof e.mealSup === "boolean" ? e.mealSup : false;
+    e.additionalTravelEnabled = false;
+    e.additionalTravelStartTime = null;
+    e.additionalTravelEndTime = null;
+    e.additionalTravelJob = "";
   }
 
   return e;
@@ -524,6 +566,10 @@ function buildNonWorkingDayEntry(entry, mode, extra = {}) {
     overnight: false,
     nightShoot: false,
     mealSup: false,
+    additionalTravelEnabled: false,
+    additionalTravelStartTime: null,
+    additionalTravelEndTime: null,
+    additionalTravelJob: "",
     lunchSup: false,
     yardTravelEnabled: false,
     yardTravelLeaveTime: null,
@@ -626,12 +672,13 @@ function mondayISO(value) {
   return iso(d);
 }
 
-function buildLastNDatesISO(n) {
+function buildPreviousNDatesISO(anchorISO, n) {
   const out = [];
-  const today = startOfDay(new Date());
-  for (let i = 0; i < n; i++) {
-    const d = new Date(today);
-    d.setDate(today.getDate() - i);
+  const anchor = toDateSafe(anchorISO) || startOfDay(new Date());
+  anchor.setHours(0, 0, 0, 0);
+  for (let i = 1; i <= n; i++) {
+    const d = new Date(anchor);
+    d.setDate(anchor.getDate() - i);
     out.push(iso(d));
   }
   return out;
@@ -773,6 +820,16 @@ function getBookingDayNote(job, dateISO) {
   return direct;
 }
 
+function isTimeAllocationDayNote(value) {
+  const note = String(value || "").trim().toLowerCase();
+  if (!note) return false;
+
+  const mentionsWorkType = /\b(?:yard|on[\s-]?set|travel|office|workshop)\b/.test(note);
+  const mentionsDayAllocation = /\b(?:half|full)\s*day\b/.test(note);
+  const containsTimeRange = /\b\d{1,2}(?::?\d{2})?\s*(?:-|–|—|to)\s*\d{1,2}(?::?\d{2})?\b/.test(note);
+  return mentionsWorkType && (mentionsDayAllocation || containsTimeRange);
+}
+
 function hasTravelKeywordInNote(dayNote) {
   const text = String(dayNote || "").toLowerCase();
   return /\bon\s*set\s*travel\b|\btravel\b|\bjourney\b|\bto\s*and\s*from\b/.test(text);
@@ -843,8 +900,10 @@ function coerceEntryModeForAutoOpen(entry, targetMode, defaultStart, defaultEnd)
   const next = { ...entry, mode: targetMode };
 
   if (targetMode === "travel") {
-    next.leaveTime = normaliseTimeValue(next.leaveTime) || defaultStart;
-    next.arriveTime = normaliseTimeValue(next.arriveTime) || null;
+    // Assigned jobs must be completed by the user; do not carry yard autofill
+    // times into a newly inferred travel day.
+    next.leaveTime = null;
+    next.arriveTime = null;
     next.arriveBack = null;
     next.callTime = null;
     next.wrapTime = null;
@@ -864,12 +923,18 @@ function coerceEntryModeForAutoOpen(entry, targetMode, defaultStart, defaultEnd)
     next.turnaroundJob = null;
     next.travelLunchSup = false;
     next.travelPD = typeof next.travelPD === "boolean" ? next.travelPD : false;
+    next.additionalTravelEnabled = false;
+    next.additionalTravelStartTime = null;
+    next.additionalTravelEndTime = null;
+    next.additionalTravelJob = "";
   }
 
   if (targetMode === "onset") {
-    next.leaveTime = normaliseTimeValue(next.leaveTime) || null;
-    next.arriveBack = normaliseTimeValue(next.arriveBack) || null;
-    next.arriveTime = normaliseTimeValue(next.arriveTime) || null;
+    // Assigned jobs must start blank so users consciously enter the actual
+    // call-day times rather than submitting employee yard/office defaults.
+    next.leaveTime = null;
+    next.arriveBack = null;
+    next.arriveTime = null;
     next.callTime = null;
     next.wrapTime = null;
     next.precallDuration = null;
@@ -877,7 +942,7 @@ function coerceEntryModeForAutoOpen(entry, targetMode, defaultStart, defaultEnd)
     next.nightShoot = false;
     next.generatorUsed = false;
     next.lateSup = false;
-    next.mealSup = typeof next.mealSup === "boolean" ? next.mealSup : true;
+    next.mealSup = typeof next.mealSup === "boolean" ? next.mealSup : false;
     next.lunchSup = false;
     next.yardSegments = [];
     next.workshopJobs = [];
@@ -888,6 +953,10 @@ function coerceEntryModeForAutoOpen(entry, targetMode, defaultStart, defaultEnd)
     next.turnaroundJob = null;
     next.travelLunchSup = false;
     next.travelPD = false;
+    next.additionalTravelEnabled = false;
+    next.additionalTravelStartTime = null;
+    next.additionalTravelEndTime = null;
+    next.additionalTravelJob = "";
   }
 
   return ensureModeDefaults(next);
@@ -991,8 +1060,9 @@ function countTurnaroundUses(timesheetDoc) {
   let used = 0;
 
   for (const dayName of DAYS) {
-    const entry = ensureModeDefaults(days?.[dayName] || {});
-    if (String(entry.mode || "").toLowerCase() === "yard" && entry.isTurnaround === true) {
+    const entry = days?.[dayName] || {};
+    const mode = String(entry.mode || "yard").toLowerCase();
+    if (mode === "yard" && boolish(entry.isTurnaround)) {
       used += 1;
     }
   }
@@ -1000,81 +1070,57 @@ function countTurnaroundUses(timesheetDoc) {
   return used;
 }
 
+function turnaroundCreditSourceKey(source) {
+  const bookingId = String(source?.bookingId || "").trim();
+  const dateISO = String(source?.dateISO || "").slice(0, 10);
+  return bookingId && dateISO ? `${bookingId}:${dateISO}` : "";
+}
+
+function collectUsedTurnaroundCreditSourceKeys(timesheetDoc) {
+  const keys = [];
+  for (const dayName of DAYS) {
+    const entry = timesheetDoc?.days?.[dayName] || {};
+    if (!boolish(entry.isTurnaround)) continue;
+    const key = turnaroundCreditSourceKey(entry.turnaroundJob);
+    if (key) keys.push(key);
+  }
+  return keys;
+}
+
 /* -------------------------- Time dropdown -------------------------- */
-function TimeDropdown({ label, value, onSelect, options, disabled }) {
-  const [open, setOpen] = useState(false);
-  const { colors } = useTheme();
+const TIME_OPTION_ROW_HEIGHT = 42;
 
-  return (
-    <View style={{ marginBottom: 6, flex: 1 }}>
-      <Text style={[styles.label, { color: colors.textMuted }]}>{label}</Text>
-      <TouchableOpacity
-        style={[
-          styles.dropdownBox,
-          {
-            backgroundColor: colors.inputBackground,
-            borderColor: colors.inputBorder,
-            opacity: disabled ? 0.5 : 1,
-          },
-        ]}
-        onPress={() => {
-          if (!disabled) setOpen(true);
-        }}
-        disabled={disabled}
-      >
-        <Text style={{ color: value ? colors.text : colors.textMuted }}>{value || "Select"}</Text>
-      </TouchableOpacity>
-
-      <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
-        <View style={styles.modalOverlay}>
-          <View style={[styles.modalBox, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-            <FlatList
-              data={options}
-              keyExtractor={(item) => item}
-              renderItem={({ item }) => (
-                <TouchableOpacity
-                  style={[styles.modalItem, { borderBottomColor: colors.border }]}
-                  onPress={() => {
-                    onSelect(item);
-                    setOpen(false);
-                  }}
-                >
-                  <Text style={{ color: colors.text }}>{item}</Text>
-                </TouchableOpacity>
-              )}
-            />
-
-            <TouchableOpacity
-              style={[styles.closeBtn, { backgroundColor: colors.accent }]}
-              onPress={() => {
-                onSelect("");
-                setOpen(false);
-              }}
-            >
-              <Text style={{ color: colors.textOnAccent }}>Clear time</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity style={[styles.closeBtn, { backgroundColor: colors.surfaceAlt }]} onPress={() => setOpen(false)}>
-              <Text style={{ color: colors.text }}>Close</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
-    </View>
+function buildExtendedTimeOptions(options) {
+  return [0, 1].flatMap((dayOffset) =>
+    options.map((time) => ({ time, dayOffset }))
   );
 }
 
-function PrecallDropdown({ value, onSelect, disabled }) {
+function isTimeOnNextDay(time, anchor) {
+  const timeMinutes = timeToMinutes(time);
+  const anchorMinutes = timeToMinutes(anchor);
+  return timeMinutes != null && anchorMinutes != null && timeMinutes < anchorMinutes;
+}
+
+function TimeDropdown({ label, value, onSelect, options, disabled, startFrom = "", compact = false, stacked = false }) {
   const [open, setOpen] = useState(false);
   const { colors } = useTheme();
+  const openingTime = value || startFrom;
+  const extendedOptions = useMemo(() => buildExtendedTimeOptions(options), [options]);
+  const baseOpeningIndex = Math.max(0, options.indexOf(openingTime));
+  const selectedDayOffset = value && isTimeOnNextDay(value, startFrom) ? 1 : 0;
+  const openingIndex = baseOpeningIndex + (value ? selectedDayOffset * options.length : 0);
+  const selectedIndex = value
+    ? Math.max(0, options.indexOf(value)) + selectedDayOffset * options.length
+    : -1;
 
   return (
-    <View style={{ marginBottom: 8 }}>
-      <Text style={[styles.label, { color: colors.textMuted }]}>Pre-Call Time</Text>
-
+    <View style={[styles.timeDropdownWrap, compact && styles.timelineTimeField, stacked && styles.timelineStackTimeField]}>
+      <Text style={[styles.label, { color: colors.textMuted }, compact && styles.timelineInlineLabel]}>{label}</Text>
       <TouchableOpacity
         style={[
           styles.dropdownBox,
+          compact && styles.timelineInlineDropdown,
           {
             backgroundColor: colors.inputBackground,
             borderColor: colors.inputBorder,
@@ -1087,45 +1133,304 @@ function PrecallDropdown({ value, onSelect, disabled }) {
         disabled={disabled}
       >
         <Text style={{ color: value ? colors.text : colors.textMuted }}>
-          {value || "Select Pre-Call Time"}
+          {value ? formatTimeWithPeriod(value) : "Select time"}
         </Text>
       </TouchableOpacity>
 
-      <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
-        <View style={styles.modalOverlay}>
-          <View style={[styles.modalBox, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+      <AppModal
+        visible={open}
+        title={`Select ${label}`}
+        onRequestClose={() => setOpen(false)}
+        actions={
+          <>
+            <AppButton label="Clear time" variant="ghost" onPress={() => { onSelect(""); setOpen(false); }} />
+            <AppButton label="Close" variant="secondary" onPress={() => setOpen(false)} />
+          </>
+        }
+      >
+            <View style={styles.timePickerHeading}>
+              <Icon name="clock" size={15} color={colors.textMuted} />
+              <Text style={{ color: colors.textMuted, fontSize: t.typography.caption.fontSize }}>Continues past midnight into the next day</Text>
+            </View>
             <FlatList
-              data={TIME_OPTIONS}
-              keyExtractor={(item) => item}
-              renderItem={({ item }) => (
+              key={`time-options-${openingTime}-${open}`}
+              data={extendedOptions}
+              initialScrollIndex={openingIndex}
+              getItemLayout={(_, index) => ({
+                length: TIME_OPTION_ROW_HEIGHT,
+                offset: TIME_OPTION_ROW_HEIGHT * index,
+                index,
+              })}
+              keyExtractor={(item) => `${item.time}-${item.dayOffset}`}
+              renderItem={({ item, index }) => {
+                const isSelected = index === selectedIndex;
+                return (
                 <TouchableOpacity
-                  style={[styles.modalItem, { borderBottomColor: colors.border }]}
+                  style={[
+                    styles.modalItem,
+                    { borderBottomColor: colors.border },
+                    isSelected && { backgroundColor: colors.accentSoft, borderBottomColor: colors.accent },
+                  ]}
                   onPress={() => {
-                    onSelect(item);
+                    onSelect(item.time);
                     setOpen(false);
                   }}
                 >
-                  <Text style={{ color: colors.text }}>{item}</Text>
+                  <Text style={{ color: isSelected ? colors.accent : colors.text, fontWeight: isSelected ? "800" : "400" }}>
+                    {formatTimeWithPeriod(item.time)}{item.dayOffset ? " · next day" : ""}
+                  </Text>
+                  {isSelected ? (
+                    <View style={styles.modalSelectedIcon}>
+                      <Icon name="check" size={15} color={colors.accent} />
+                    </View>
+                  ) : null}
                 </TouchableOpacity>
-              )}
+                );
+              }}
             />
 
-            <TouchableOpacity
-              style={[styles.closeBtn, { backgroundColor: colors.accent }]}
-              onPress={() => {
-                onSelect(null);
-                setOpen(false);
-              }}
-            >
-              <Text style={{ color: colors.textOnAccent }}>Clear pre-call</Text>
-            </TouchableOpacity>
+      </AppModal>
+    </View>
+  );
+}
 
-            <TouchableOpacity style={[styles.closeBtn, { backgroundColor: colors.surfaceAlt }]} onPress={() => setOpen(false)}>
-              <Text style={{ color: colors.text }}>Close</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
+function formatTimelineDuration(totalMins) {
+  const mins = Math.max(0, Math.round(totalMins || 0));
+  const hours = Math.floor(mins / 60);
+  const minutes = mins % 60;
+  const hourText = hours > 0 ? `${hours}hr${hours === 1 ? "" : "s"}` : "";
+  const minuteText = minutes > 0 || hours === 0 ? `${minutes}min${minutes === 1 ? "" : "s"}` : "";
+  return [hourText, minuteText].filter(Boolean).join(" ");
+}
+
+function formatTimelineDurationShort(totalMins) {
+  const mins = Math.max(0, Math.round(totalMins || 0));
+  const hours = Math.floor(mins / 60);
+  const minutes = mins % 60;
+  return [hours > 0 ? `${hours}h` : "", minutes > 0 || hours === 0 ? `${minutes}m` : ""]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function TimeGapLabel({
+  start,
+  end,
+  label,
+  invalid = false,
+  maxElapsedMinutes = null,
+  paidCapMinutes = null,
+  overtimeAfterMinutes = null,
+  minimumOvertimeMinutes = 0,
+  includedWithinStandardMinutes = null,
+  shortDuration = true,
+  fillSpace = false,
+  splitSpace = false,
+}) {
+  const { colors, colorScheme } = useTheme();
+  const hasTimes = timeToMinutes(start) != null && timeToMinutes(end) != null;
+  const elapsedMinutes = hasTimes ? durationMinutes(start, end) : 0;
+  const isInvalid = invalid || (hasTimes && maxElapsedMinutes != null && elapsedMinutes > maxElapsedMinutes);
+  const formatDuration = shortDuration ? formatTimelineDurationShort : formatTimelineDuration;
+  const duration = hasTimes ? formatDuration(elapsedMinutes) : "";
+  const paidMinutes = paidCapMinutes == null ? null : Math.min(elapsedMinutes, paidCapMinutes);
+  const thresholdOvertimeMinutes = (
+    overtimeAfterMinutes == null
+      ? 0
+      : Math.max(0, elapsedMinutes - overtimeAfterMinutes)
+  );
+  const overtimeMinutes = Math.max(thresholdOvertimeMinutes, minimumOvertimeMinutes);
+  const standardMinutes = Math.max(0, elapsedMinutes - overtimeMinutes);
+  const includedMinutes = includedWithinStandardMinutes == null
+    ? null
+    : Math.min(elapsedMinutes, Math.max(0, includedWithinStandardMinutes));
+  const excessMinutes = includedMinutes == null ? 0 : Math.max(0, elapsedMinutes - includedMinutes);
+  let displayText = `${duration} ${label}`;
+  let accessibilityDetail = "";
+
+  if (isInvalid) {
+    displayText = "Check time order";
+    accessibilityDetail = ", times are out of sequence";
+  } else if (paidMinutes != null) {
+    displayText = elapsedMinutes > paidMinutes
+      ? `${formatTimelineDurationShort(paidMinutes)} Paid · ${formatTimelineDurationShort(elapsedMinutes)} early`
+      : `${formatTimelineDurationShort(paidMinutes)} Paid early`;
+    accessibilityDetail = `, ${formatTimelineDuration(paidMinutes)} paid`;
+  } else if (overtimeMinutes > 0) {
+    displayText = `${duration} ${label} · ${formatDuration(overtimeMinutes)} OT`;
+    accessibilityDetail = `, ${formatTimelineDuration(overtimeMinutes)} overtime`;
+  } else if (includedMinutes != null) {
+    if (includedMinutes > 0 && excessMinutes > 0) {
+      displayText = `${formatTimelineDurationShort(includedMinutes)} In 10h\n${formatTimelineDurationShort(excessMinutes)} ${label}`;
+      accessibilityDetail = `, ${formatTimelineDuration(includedMinutes)} within the standard 10 hour day, ${formatTimelineDuration(excessMinutes)} ${label}`;
+    } else if (includedMinutes > 0) {
+      displayText = `${formatTimelineDurationShort(includedMinutes)}\nWithin 10h`;
+      accessibilityDetail = ", all within the standard 10 hour day";
+    }
+  }
+
+  if (fillSpace && paidMinutes == null) {
+    displayText = overtimeMinutes > 0
+      ? `${formatTimelineDurationShort(standardMinutes)} ${label}\n${formatTimelineDurationShort(overtimeMinutes)} OT`
+      : `${formatTimelineDurationShort(standardMinutes)} ${label}`;
+  }
+  const accessibilityDuration = fillSpace
+    ? formatTimelineDuration(standardMinutes)
+    : duration;
+  const isPaidTone = !isInvalid && paidMinutes != null;
+  const isOvertimeTone = !isInvalid && overtimeMinutes > 0;
+  const paidColor = colorScheme === "dark" ? staticColors.hex_7ed8a7_7b4jpa : staticColors.hex_188a52_aeth0x;
+  const paidBackground = colorScheme === "dark" ? staticColors.hex_163126_a54xzb : staticColors.hex_e9f6ee_5qezd6;
+  const pillBackground = isInvalid
+    ? colors.accentSoft
+    : isOvertimeTone
+    ? colors.accentSoft
+    : isPaidTone
+      ? paidBackground
+      : colors.surfaceAlt;
+  const pillBorder = isInvalid
+    ? colors.accent
+    : isOvertimeTone
+    ? colors.accent
+    : isPaidTone
+      ? paidColor
+      : colors.border;
+  const iconColor = isInvalid
+    ? colors.accent
+    : isOvertimeTone
+    ? colors.accent
+    : isPaidTone
+      ? paidColor
+      : colors.textMuted;
+
+  // Do not reserve an empty calculation column before both times exist.
+  // The selector then uses the full row and contracts only when there is a
+  // useful duration to display beside it.
+  if (!hasTimes) return null;
+
+  return (
+    <View
+      style={[styles.timeGapRow, (fillSpace || splitSpace) && styles.timeGapFill]}
+      accessibilityLabel={`${accessibilityDuration} ${label}${accessibilityDetail}`}
+    >
+      <View
+        style={[
+          styles.timeGapPill,
+          fillSpace && styles.timeGapPillFill,
+          splitSpace && styles.timeGapPillSplit,
+          { backgroundColor: pillBackground, borderColor: pillBorder },
+        ]}
+      >
+        <Icon name={isInvalid ? "alert-triangle" : "clock"} size={fillSpace ? 16 : 11} color={iconColor} />
+        <Text
+          numberOfLines={fillSpace || splitSpace ? 2 : 1}
+          adjustsFontSizeToFit
+          style={[
+            styles.timeGapText,
+            fillSpace && styles.timeGapTextFill,
+            splitSpace && styles.timeGapTextSplit,
+            { color: isInvalid ? colors.accent : colors.text },
+          ]}
+        >
+          {displayText}
+        </Text>
+      </View>
+    </View>
+  );
+}
+
+function PrecallDropdown({ value, onSelect, disabled, startFrom = "", compact = false, invalidSequence = false }) {
+  const [open, setOpen] = useState(false);
+  const { colors } = useTheme();
+  const openingTime = value || startFrom;
+  const extendedOptions = useMemo(() => buildExtendedTimeOptions(TIME_OPTIONS), []);
+  const selectedDayOffset = value && !invalidSequence && isTimeOnNextDay(value, startFrom) ? 1 : 0;
+  const baseOpeningIndex = Math.max(0, TIME_OPTIONS.indexOf(openingTime));
+  const openingIndex = baseOpeningIndex + (value ? selectedDayOffset * TIME_OPTIONS.length : 0);
+  const selectedIndex = value
+    ? Math.max(0, TIME_OPTIONS.indexOf(value)) + selectedDayOffset * TIME_OPTIONS.length
+    : -1;
+
+  return (
+    <View style={[styles.precallDropdownWrap, compact && styles.timelineTimeField]}>
+      <Text style={[styles.label, { color: colors.textMuted }, compact && styles.timelineInlineLabel]}>
+        {compact ? "Pre-Call" : "Pre-Call Time (optional)"}
+      </Text>
+
+      <TouchableOpacity
+        style={[
+          styles.dropdownBox,
+          compact && styles.timelineInlineDropdown,
+          {
+            backgroundColor: colors.inputBackground,
+            borderColor: colors.inputBorder,
+            opacity: disabled ? 0.5 : 1,
+          },
+        ]}
+        onPress={() => {
+          if (!disabled) setOpen(true);
+        }}
+        disabled={disabled}
+      >
+        <Text style={{ color: value ? colors.text : colors.textMuted }}>
+          {value ? formatTimeWithPeriod(value) : "Add pre-call time"}
+        </Text>
+      </TouchableOpacity>
+
+      <AppModal
+        visible={open}
+        title="Select Pre-Call Time"
+        onRequestClose={() => setOpen(false)}
+        actions={
+          <>
+            <AppButton label="Clear pre-call" variant="ghost" onPress={() => { onSelect(null); setOpen(false); }} />
+            <AppButton label="Close" variant="secondary" onPress={() => setOpen(false)} />
+          </>
+        }
+      >
+            <View style={styles.timePickerHeading}>
+              <Icon name="clock" size={15} color={colors.textMuted} />
+              <Text style={{ color: invalidSequence ? colors.accent : colors.textMuted, fontSize: t.typography.caption.fontSize }}>
+                {invalidSequence ? "Selected time is out of sequence" : "Continues past midnight into the next day"}
+              </Text>
+            </View>
+            <FlatList
+              key={`precall-time-options-${openingTime}-${open}`}
+              data={extendedOptions}
+              initialScrollIndex={openingIndex}
+              getItemLayout={(_, index) => ({
+                length: TIME_OPTION_ROW_HEIGHT,
+                offset: TIME_OPTION_ROW_HEIGHT * index,
+                index,
+              })}
+              keyExtractor={(item) => `${item.time}-${item.dayOffset}`}
+              renderItem={({ item, index }) => {
+                const isSelected = index === selectedIndex;
+                return (
+                <TouchableOpacity
+                  style={[
+                    styles.modalItem,
+                    { borderBottomColor: colors.border },
+                    isSelected && { backgroundColor: colors.accentSoft, borderBottomColor: colors.accent },
+                  ]}
+                  onPress={() => {
+                    onSelect(item.time);
+                    setOpen(false);
+                  }}
+                >
+                  <Text style={{ color: isSelected ? colors.accent : colors.text, fontWeight: isSelected ? "800" : "400" }}>
+                    {formatTimeWithPeriod(item.time)}{item.dayOffset ? " · next day" : ""}
+                  </Text>
+                  {isSelected ? (
+                    <View style={styles.modalSelectedIcon}>
+                      <Icon name="check" size={15} color={colors.accent} />
+                    </View>
+                  ) : null}
+                </TouchableOpacity>
+                );
+              }}
+            />
+
+      </AppModal>
     </View>
   );
 }
@@ -1151,13 +1456,14 @@ function InfoToggleRow({
   return (
     <View style={[styles.toggleRow, compact && styles.toggleRowCompact]}>
       <View style={styles.toggleTextWrap}>
-        <View style={styles.toggleLabelRow}>
+        <View style={[styles.toggleLabelRow, compact && styles.toggleLabelRowCompact]}>
           <Text
             style={[
               styles.label,
-              { color: colors.text, marginBottom: 0 },
+              { color: colors.text, marginBottom: t.spacing.none },
               compact && styles.labelCompact,
             ]}
+            numberOfLines={compact ? 1 : undefined}
           >
             {label}
           </Text>
@@ -1172,75 +1478,25 @@ function InfoToggleRow({
               {statusText}
             </Text>
           )}
-          <TouchableOpacity
+          <IconButton
+            icon="info"
+            size={compact ? 12 : 14}
+            variant="ghost"
+            compact={compact}
+            label={`About ${label}`}
+            hint={infoText}
             onPress={showInfo}
-            style={[
-              styles.infoBtn,
-              {
-                backgroundColor: colors.surface,
-                borderColor: colors.border,
-                opacity: disabled ? 0.6 : 1,
-              },
-            ]}
             disabled={disabled}
-          >
-            <Icon name="info" size={14} color={colors.textMuted} />
-          </TouchableOpacity>
+          />
         </View>
       </View>
 
-      <Switch value={!!value} onValueChange={onChange} disabled={disabled} />
-    </View>
-  );
-}
-
-function LunchToggleRow({ value, onChange, disabled, infoTitle, infoText, compact = false }) {
-  const { colors } = useTheme();
-  const showInfo = () => {
-    Alert.alert(infoTitle || "Lunch break", infoText || "No info available.");
-  };
-
-  return (
-    <View style={[styles.lunchToggleRow, compact && styles.lunchToggleRowInline]}>
-      <Text
-        style={[
-          styles.lunchChoiceText,
-          styles.lunchChoiceLeft,
-          compact && styles.lunchChoiceLeftInline,
-          { color: value ? colors.textMuted : colors.text },
-          !value && styles.lunchChoiceActive,
-        ]}
-      >
-        No Lunch
-      </Text>
-
-      <Switch value={!!value} onValueChange={onChange} disabled={disabled} />
-
-      <View style={[styles.lunchRightGroup, compact && styles.lunchRightGroupInline]}>
-        <Text
-          style={[
-            styles.lunchChoiceText,
-            { color: value ? colors.text : colors.textMuted },
-            value && styles.lunchChoiceActive,
-          ]}
-        >
-          Lunch Break
-        </Text>
-        <TouchableOpacity
-          onPress={showInfo}
-          style={[
-            styles.infoBtn,
-            {
-              backgroundColor: colors.surface,
-              borderColor: colors.border,
-              opacity: disabled ? 0.6 : 1,
-            },
-          ]}
-          disabled={disabled}
-        >
-          <Icon name="info" size={14} color={colors.textMuted} />
-        </TouchableOpacity>
-      </View>
+      <Switch
+        value={!!value}
+        onValueChange={onChange}
+        disabled={disabled}
+        style={compact ? styles.switchCompact : undefined}
+      />
     </View>
   );
 }
@@ -1250,20 +1506,15 @@ function TurnaroundJobPicker({ visible, onClose, jobs, onPick }) {
   const { colors } = useTheme();
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <View style={styles.modalOverlay}>
-        <View
-          style={[
-            styles.modalBox,
-            { backgroundColor: colors.surface, borderColor: colors.border, width: "86%" },
-          ]}
-        >
-          <Text style={{ color: colors.text, fontWeight: "900", marginBottom: 8 }}>
-            Select job for Turnaround Day
-          </Text>
+    <AppModal
+      visible={visible}
+      title="Select unused Turnaround credit"
+      onRequestClose={onClose}
+      actions={<AppButton label="Close" variant="secondary" onPress={onClose} />}
+    >
 
           {!jobs || jobs.length === 0 ? (
-            <View style={{ paddingVertical: 10 }}>
+            <View style={{ paddingVertical: t.spacing.xs }}>
               <Text style={{ color: colors.textMuted }}>
                 No eligible jobs found in the last 3 weeks.
               </Text>
@@ -1280,10 +1531,10 @@ function TurnaroundJobPicker({ visible, onClose, jobs, onPick }) {
                   }}
                 >
                   <Text style={{ color: colors.text, fontWeight: "800" }}>
-                    {item.jobNumber || item.bookingId} — {item.client || "Client"}
+                    {item.jobNumber || item.bookingId} — {getProductionDisplayName(item)}
                   </Text>
                   {!!(item.location || item.dateISO) && (
-                    <Text style={{ color: colors.textMuted, marginTop: 2, fontSize: 12 }}>
+                    <Text style={{ color: colors.textMuted, marginTop: t.spacing.none, fontSize: t.typography.metadata.fontSize }}>
                       {item.location || ""}
                       {item.location && item.dateISO ? " • " : ""}
                       {item.dateISO ? formatDateDDMMYYYY(item.dateISO) || item.dateISO : ""}
@@ -1294,12 +1545,7 @@ function TurnaroundJobPicker({ visible, onClose, jobs, onPick }) {
             />
           )}
 
-          <TouchableOpacity style={[styles.closeBtn, { backgroundColor: colors.surfaceAlt }]} onPress={onClose}>
-            <Text style={{ color: colors.text }}>Close</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-    </Modal>
+    </AppModal>
   );
 }
 
@@ -1312,6 +1558,20 @@ function durationMinutes(startTime, endTime) {
   return e >= s ? e - s : e + 24 * 60 - s;
 }
 
+function hasValidPrecallSequence(entry) {
+  if (!entry?.precallDuration || !entry?.callTime) return false;
+  const precallToUnitMinutes = durationMinutes(entry.precallDuration, entry.callTime);
+  if (precallToUnitMinutes > MAX_REASONABLE_PRECALL_WINDOW_MINUTES) return false;
+
+  if (entry.arriveTime) {
+    const viaPrecallMinutes = durationMinutes(entry.arriveTime, entry.precallDuration) + precallToUnitMinutes;
+    const directToUnitMinutes = durationMinutes(entry.arriveTime, entry.callTime);
+    if (viaPrecallMinutes !== directToUnitMinutes) return false;
+  }
+
+  return true;
+}
+
 function formatHoursMins(totalMins) {
   const mins = Math.max(0, Math.round(totalMins || 0));
   const h = Math.floor(mins / 60);
@@ -1321,64 +1581,34 @@ function formatHoursMins(totalMins) {
   return `${h}h ${String(m).padStart(2, "0")}m`;
 }
 
-function computeDayMinutes(entry) {
+function computeDayBreakdown(entry, day = null) {
+  return computeTimesheetDayBreakdown(ensureModeDefaults(entry || { mode: "off" }), day);
+}
+
+function computeDayMinutes(entry, day = null) {
+  return computeDayBreakdown(entry, day).total;
+}
+
+function computeOnSetEarlyCallOvertimeMinutes(entry) {
   const e = ensureModeDefaults(entry || { mode: "off" });
-  const mode = String(e.mode || "off").toLowerCase();
+  if (String(e.mode || "off").toLowerCase() !== "onset") return 0;
+  if (!e.callTime || !e.wrapTime) return 0;
 
-  if (mode === "off" || mode === "holiday" || mode === "bankholiday" || mode === "unpaid") return 0;
+  const callMinutes = timeToMinutes(e.callTime);
+  if (callMinutes == null || callMinutes >= ON_SET_EARLY_CALL_CUTOFF_MINUTES) return 0;
 
-  if (mode === "yard") {
-    const segs = Array.isArray(e.yardSegments) ? e.yardSegments : [];
-    let total = 0;
-    for (const seg of segs) total += durationMinutes(seg?.start, seg?.end);
-    if (boolish(e.yardTravelEnabled)) total += durationMinutes(e.yardTravelLeaveTime, e.yardTravelArriveTime);
-    if (!boolish(e.lunchSup) && total > 0) total = Math.max(0, total - 30);
-    return total;
-  }
+  const minutesUntilSeven = ON_SET_EARLY_CALL_CUTOFF_MINUTES - callMinutes;
+  return Math.min(durationMinutes(e.callTime, e.wrapTime), minutesUntilSeven);
+}
 
-  if (mode === "travel") {
-    // Travel day typically: Leave -> Arrive
-    return durationMinutes(e.leaveTime, e.arriveTime);
-  }
+function computeReturnTravelWithinStandardMinutes(entry) {
+  const e = ensureModeDefaults(entry || { mode: "off" });
+  if (!e.callTime || !e.wrapTime || !e.arriveBack) return 0;
 
-  if (mode === "workshop") {
-    const segs = Array.isArray(e.yardSegments) ? e.yardSegments : [];
-    if (segs.length > 0) {
-      return segs.reduce((total, seg) => total + durationMinutes(seg?.start, seg?.end), 0);
-    }
-
-    // Legacy workshop entries only had job allocation rows.
-    const rows = Array.isArray(e.workshopJobs) ? e.workshopJobs : [];
-    return rows.reduce((total, row) => total + parseHoursValue(row?.hours) * 60, 0);
-  }
-
-  if (mode === "onset") {
-    // Prefer: Leave -> ArriveBack
-    // Fallback: Call -> Wrap
-    // Fallback: ArriveTime -> Wrap
-    // Fallback: Leave -> Wrap
-    let baseStart = e.leaveTime || e.arriveTime || e.callTime || null;
-    let baseEnd = e.arriveBack || e.wrapTime || null;
-
-    // If we have callTime+wrapTime, that’s a better “work” window than leave/arrive.
-    if (e.callTime && e.wrapTime) {
-      baseStart = e.callTime;
-      baseEnd = e.wrapTime;
-    } else if (!baseEnd && e.wrapTime) {
-      baseEnd = e.wrapTime;
-    }
-
-    let mins = durationMinutes(baseStart, baseEnd);
-
-    // Add pre-call window when both pre-call and unit call are set.
-    if (e.callTime && e.precallDuration) {
-      mins += Math.max(0, durationMinutes(e.precallDuration, e.callTime));
-    }
-
-    return mins;
-  }
-
-  return 0;
+  const onSetMinutes = durationMinutes(e.callTime, e.wrapTime);
+  const travelMinutes = durationMinutes(e.wrapTime, e.arriveBack);
+  const remainingStandardMinutes = Math.max(0, ON_SET_STANDARD_DAY_MINUTES - onSetMinutes);
+  return Math.min(travelMinutes, remainingStandardMinutes);
 }
 
 /* -------------------------- Summary panel -------------------------- */
@@ -1388,11 +1618,26 @@ function HoursSummary({ timesheet, holidaysByDay, bankHolidaysByDay }) {
 
   const summary = useMemo(() => {
     const byDayMinutes = {};
+    const byDayLabels = {};
     let total = 0;
 
     let yardMins = 0;
+    let yardWorkMins = 0;
+    let yardTravelMins = 0;
+    let breakDeductionMins = 0;
     let travelMins = 0;
+    let travelActualMins = 0;
+    let travelGuaranteeMins = 0;
     let onsetMins = 0;
+    let outboundTravelMins = 0;
+    let paidEarlyMins = 0;
+    let precallMins = 0;
+    let onsetStandardMins = 0;
+    let onsetOvertimeMins = 0;
+    let returnTravelMins = 0;
+    let returnWithinStandardMins = 0;
+    let returnAfterStandardMins = 0;
+    let additionalJobTravelMins = 0;
     let workshopMins = 0;
 
     let yardDays = 0;
@@ -1407,11 +1652,12 @@ function HoursSummary({ timesheet, holidaysByDay, bankHolidaysByDay }) {
     let bankHolidayDays = 0;
     let halfHolidayDays = 0;
 
-    let lunchCount = 0;
     let mealSupCount = 0;
     let pdCount = 0;
     let nightShootCount = 0;
     let overnightCount = 0;
+    let generatorCount = 0;
+    let lateSupCount = 0;
     let turnaroundCount = 0;
 
     for (const day of DAYS) {
@@ -1434,48 +1680,100 @@ function HoursSummary({ timesheet, holidaysByDay, bankHolidaysByDay }) {
       const e = ensureModeDefaults(raw);
 
       const mode = String(e.mode || "off").toLowerCase();
+      const bankHolidayWorked = isBankHolidayOff && boolish(e.bankHolidayWorked);
+      const nonWorkingLeave = isFullHoliday || (isBankHolidayOff && !bankHolidayWorked);
 
       // count "off" only when it is actually off (and not a holiday/bank holiday lock)
       if (mode === "off") offDays += 1;
       if (mode === "unpaid") unpaidDays += 1;
 
-      if (mode === "yard") {
-        yardDays += 1;
-        if (!boolish(e.lunchSup)) lunchCount += 1;
-        if (e.isTurnaround === true) turnaroundCount += 1;
+      const breakdown = nonWorkingLeave
+        ? computeDayBreakdown({ mode: "off" }, day)
+        : computeDayBreakdown(e, day);
+      const mins = breakdown.total;
+      const isTurnaroundDay = breakdown.mode === "turnaround";
+
+      byDayMinutes[day] = mins;
+      byDayLabels[day] = isFullHoliday
+        ? hol?.isUnpaid || hol?.leaveType === "Unpaid"
+          ? "Unpaid holiday"
+          : "Paid holiday"
+        : isBankHolidayOff && !bankHolidayWorked
+        ? "Bank holiday"
+        : mode === "unpaid"
+        ? "Unpaid"
+        : mode === "off"
+        ? "Off"
+        : isHalfHoliday
+        ? `${formatHoursMins(mins)} + half holiday`
+        : formatHoursMins(mins);
+      total += mins;
+
+      if (mode === "yard" && !nonWorkingLeave && !isTurnaroundDay) {
+        if (mins > 0) yardDays += 1;
+        yardMins += mins;
+        yardWorkMins += breakdown.yardWork;
+        yardTravelMins += breakdown.yardTravel;
+        breakDeductionMins += breakdown.breakDeduction;
+        if (boolish(e.overnight)) overnightCount += 1;
       }
-      if (mode === "travel") {
-        travelDays += 1;
+      if (mode === "travel" && !nonWorkingLeave) {
+        if (mins > 0) travelDays += 1;
+        travelMins += mins;
+        travelActualMins += breakdown.travelDay;
+        travelGuaranteeMins += breakdown.travelGuarantee;
         if (!!e.travelPD) pdCount += 1;
         if (boolish(e.overnight)) overnightCount += 1;
       }
-      if (mode === "onset") {
-        onsetDays += 1;
-        if (!!e.mealSup) mealSupCount += 1;
-        if (!!e.nightShoot) nightShootCount += 1;
-        if (boolish(e.overnight)) overnightCount += 1;
+      if ((mode === "onset" || isTurnaroundDay) && !nonWorkingLeave) {
+        if (mins > 0) onsetDays += 1;
+        onsetMins += mins;
+        outboundTravelMins += breakdown.outboundTravel;
+        paidEarlyMins += breakdown.paidEarly;
+        precallMins += breakdown.precall;
+        onsetStandardMins += breakdown.onSetStandard;
+        onsetOvertimeMins += breakdown.onSetOvertime;
+        returnTravelMins += breakdown.returnTravel;
+        returnWithinStandardMins += breakdown.returnWithinStandard;
+        returnAfterStandardMins += breakdown.returnAfterStandard;
+        additionalJobTravelMins += breakdown.additionalJobTravel;
+        if (isTurnaroundDay) {
+          turnaroundCount += 1;
+        } else {
+          if (!!e.mealSup) mealSupCount += 1;
+          if (!!e.nightShoot) nightShootCount += 1;
+          if (!!e.generatorUsed) generatorCount += 1;
+          if (!!e.lateSup) lateSupCount += 1;
+          if (boolish(e.overnight)) overnightCount += 1;
+        }
       }
-      if (mode === "workshop") {
-        workshopDays += 1;
+      if (mode === "workshop" && !nonWorkingLeave) {
+        if (mins > 0) workshopDays += 1;
+        workshopMins += mins;
       }
-
-      const mins = computeDayMinutes(e);
-
-      byDayMinutes[day] = mins;
-      total += mins;
-
-      if (mode === "yard") yardMins += mins;
-      if (mode === "travel") travelMins += mins;
-      if (mode === "onset") onsetMins += mins;
-      if (mode === "workshop") workshopMins += mins;
     }
 
     return {
       byDayMinutes,
+      byDayLabels,
       total,
       yardMins,
+      yardWorkMins,
+      yardTravelMins,
+      breakDeductionMins,
       travelMins,
+      travelActualMins,
+      travelGuaranteeMins,
       onsetMins,
+      outboundTravelMins,
+      paidEarlyMins,
+      precallMins,
+      onsetStandardMins,
+      onsetOvertimeMins,
+      returnTravelMins,
+      returnWithinStandardMins,
+      returnAfterStandardMins,
+      additionalJobTravelMins,
       workshopMins,
       yardDays,
       travelDays,
@@ -1487,11 +1785,12 @@ function HoursSummary({ timesheet, holidaysByDay, bankHolidaysByDay }) {
       unpaidHolidayDays,
       bankHolidayDays,
       halfHolidayDays,
-      lunchCount,
       mealSupCount,
       pdCount,
       nightShootCount,
       overnightCount,
+      generatorCount,
+      lateSupCount,
       turnaroundCount,
     };
   }, [timesheet, holidaysByDay, bankHolidaysByDay]);
@@ -1508,8 +1807,11 @@ function HoursSummary({ timesheet, holidaysByDay, bankHolidaysByDay }) {
         accessibilityLabel="Toggle week summary details"
       >
         <View>
-          <Text style={{ color: colors.text, fontWeight: "900", marginBottom: 2 }}>Week Summary</Text>
-          <Text style={{ color: colors.textMuted, fontSize: 12 }}>Total {formatHoursMins(summary.total)}</Text>
+          <Text style={{ color: colors.text, fontWeight: "900", marginBottom: t.spacing.none }}>Week Summary</Text>
+          <Text style={{ color: colors.textMuted, fontSize: t.typography.metadata.fontSize }}>
+            Paid total {formatHoursMins(summary.total)}
+            {summary.onsetOvertimeMins > 0 ? ` · ${formatHoursMins(summary.onsetOvertimeMins)} OT` : ""}
+          </Text>
         </View>
         <Icon name={open ? "chevron-up" : "chevron-down"} size={18} color={colors.textMuted} />
       </TouchableOpacity>
@@ -1518,100 +1820,238 @@ function HoursSummary({ timesheet, holidaysByDay, bankHolidaysByDay }) {
         <>
           <View style={styles.summaryDivider} />
 
-          <View style={styles.summaryRow}>
-            <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Yard</Text>
-            <Text style={[styles.summaryValue, { color: colors.text }]}>
-              {formatHoursMins(summary.yardMins)} ({summary.yardDays} day{summary.yardDays === 1 ? "" : "s"})
-            </Text>
-          </View>
+          {summary.yardDays > 0 && (
+            <View style={styles.summaryRow}>
+              <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Yard paid total</Text>
+              <Text style={[styles.summaryValue, { color: colors.text }]}>
+                {formatHoursMins(summary.yardMins)} ({summary.yardDays} day{summary.yardDays === 1 ? "" : "s"})
+              </Text>
+            </View>
+          )}
 
-          <View style={styles.summaryRow}>
-            <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Travel</Text>
-            <Text style={[styles.summaryValue, { color: colors.text }]}>
-              {formatHoursMins(summary.travelMins)} ({summary.travelDays} day{summary.travelDays === 1 ? "" : "s"})
-            </Text>
-          </View>
+          {summary.travelDays > 0 && (
+            <View style={styles.summaryRow}>
+              <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Travel days</Text>
+              <Text style={[styles.summaryValue, { color: colors.text }]}>
+                {formatHoursMins(summary.travelMins)} ({summary.travelDays} day{summary.travelDays === 1 ? "" : "s"})
+              </Text>
+            </View>
+          )}
 
-          <View style={styles.summaryRow}>
-            <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>On set</Text>
-            <Text style={[styles.summaryValue, { color: colors.text }]}>
-              {formatHoursMins(summary.onsetMins)} ({summary.onsetDays} day{summary.onsetDays === 1 ? "" : "s"})
-            </Text>
-          </View>
+          {summary.onsetDays > 0 && (
+            <View style={styles.summaryRow}>
+              <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>On-set days</Text>
+              <Text style={[styles.summaryValue, { color: colors.text }]}>
+                {formatHoursMins(summary.onsetMins)} paid ({summary.onsetDays} day{summary.onsetDays === 1 ? "" : "s"})
+              </Text>
+            </View>
+          )}
 
-          <View style={styles.summaryRow}>
-            <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Workshop</Text>
-            <Text style={[styles.summaryValue, { color: colors.text }]}>
-              {formatHoursMins(summary.workshopMins)} ({summary.workshopDays} day{summary.workshopDays === 1 ? "" : "s"})
-            </Text>
-          </View>
+          {summary.workshopDays > 0 && (
+            <View style={styles.summaryRow}>
+              <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Workshop</Text>
+              <Text style={[styles.summaryValue, { color: colors.text }]}>
+                {formatHoursMins(summary.workshopMins)} ({summary.workshopDays} day{summary.workshopDays === 1 ? "" : "s"})
+              </Text>
+            </View>
+          )}
+
+          {summary.travelDays > 0 && (
+            <>
+              <View style={styles.summaryDivider} />
+              <Text style={{ color: colors.textMuted, fontWeight: "800", fontSize: t.typography.metadata.fontSize, marginTop: t.spacing.none, marginBottom: t.spacing.xxs }}>
+                Travel-day pay breakdown
+              </Text>
+
+              <View style={styles.summaryRow}>
+                <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Actual travel</Text>
+                <Text style={[styles.summaryValue, { color: colors.text }]}>{formatHoursMins(summary.travelActualMins)}</Text>
+              </View>
+              {summary.travelGuaranteeMins > 0 && (
+                <View style={styles.summaryRow}>
+                  <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>10h minimum adjustment</Text>
+                  <Text style={[styles.summaryValue, { color: colors.text }]}>
+                    +{formatHoursMins(summary.travelGuaranteeMins)}
+                  </Text>
+                </View>
+              )}
+              <View style={styles.summaryRow}>
+                <Text style={[styles.summaryLabel, { color: colors.text }]}>Travel paid total</Text>
+                <Text style={[styles.summaryValue, { color: colors.text }]}>{formatHoursMins(summary.travelMins)}</Text>
+              </View>
+            </>
+          )}
+
+          {summary.onsetDays > 0 && (
+            <>
+              <View style={styles.summaryDivider} />
+              <Text style={{ color: colors.textMuted, fontWeight: "800", fontSize: t.typography.metadata.fontSize, marginTop: t.spacing.none, marginBottom: t.spacing.xxs }}>
+                On-set pay breakdown
+              </Text>
+
+              {summary.outboundTravelMins > 0 && (
+                <View style={styles.summaryRow}>
+                  <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Travel to set</Text>
+                  <Text style={[styles.summaryValue, { color: colors.text }]}>{formatHoursMins(summary.outboundTravelMins)}</Text>
+                </View>
+              )}
+              {summary.paidEarlyMins > 0 && (
+                <View style={styles.summaryRow}>
+                  <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Paid early</Text>
+                  <Text style={[styles.summaryValue, { color: colors.text }]}>{formatHoursMins(summary.paidEarlyMins)}</Text>
+                </View>
+              )}
+              {summary.precallMins > 0 && (
+                <View style={styles.summaryRow}>
+                  <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Pre-call</Text>
+                  <Text style={[styles.summaryValue, { color: colors.text }]}>{formatHoursMins(summary.precallMins)}</Text>
+                </View>
+              )}
+              <View style={styles.summaryRow}>
+                <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>On set (standard)</Text>
+                <Text style={[styles.summaryValue, { color: colors.text }]}>{formatHoursMins(summary.onsetStandardMins)}</Text>
+              </View>
+              {summary.onsetOvertimeMins > 0 && (
+                <View style={styles.summaryRow}>
+                  <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>On set OT</Text>
+                  <Text style={[styles.summaryValue, { color: colors.accent }]}>{formatHoursMins(summary.onsetOvertimeMins)}</Text>
+                </View>
+              )}
+              {summary.returnTravelMins > 0 && (
+                <View style={styles.summaryRow}>
+                  <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Travel back</Text>
+                  <Text style={[styles.summaryValue, { color: colors.text }]}>{formatHoursMins(summary.returnTravelMins)}</Text>
+                </View>
+              )}
+              {summary.returnWithinStandardMins > 0 && (
+                <View style={styles.summaryRow}>
+                  <Text style={[styles.summarySubLabel, { color: colors.textMuted }]}>Within 10h</Text>
+                  <Text style={[styles.summaryValue, { color: colors.textMuted }]}>{formatHoursMins(summary.returnWithinStandardMins)}</Text>
+                </View>
+              )}
+              {summary.returnAfterStandardMins > 0 && (
+                <View style={styles.summaryRow}>
+                  <Text style={[styles.summarySubLabel, { color: colors.textMuted }]}>Travel after 10h</Text>
+                  <Text style={[styles.summaryValue, { color: colors.textMuted }]}>{formatHoursMins(summary.returnAfterStandardMins)}</Text>
+                </View>
+              )}
+              {summary.additionalJobTravelMins > 0 && (
+                <View style={styles.summaryRow}>
+                  <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Travel to another job</Text>
+                  <Text style={[styles.summaryValue, { color: colors.text }]}>{formatHoursMins(summary.additionalJobTravelMins)}</Text>
+                </View>
+              )}
+            </>
+          )}
+
+          {summary.yardDays > 0 && (
+            <>
+              <View style={styles.summaryDivider} />
+              <Text style={{ color: colors.textMuted, fontWeight: "800", fontSize: t.typography.metadata.fontSize, marginTop: t.spacing.none, marginBottom: t.spacing.xxs }}>
+                Yard pay breakdown
+              </Text>
+
+              <View style={styles.summaryRow}>
+                <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Yard hours</Text>
+                <Text style={[styles.summaryValue, { color: colors.text }]}>{formatHoursMins(summary.yardWorkMins)}</Text>
+              </View>
+              {summary.yardTravelMins > 0 && (
+                <View style={styles.summaryRow}>
+                  <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Paid travel</Text>
+                  <Text style={[styles.summaryValue, { color: colors.text }]}>{formatHoursMins(summary.yardTravelMins)}</Text>
+                </View>
+              )}
+              {summary.breakDeductionMins > 0 && (
+                <View style={styles.summaryRow}>
+                  <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Break deducted</Text>
+                  <Text style={[styles.summaryValue, { color: colors.textMuted }]}>−{formatHoursMins(summary.breakDeductionMins)}</Text>
+                </View>
+              )}
+              <View style={styles.summaryRow}>
+                <Text style={[styles.summaryLabel, { color: colors.text }]}>Full Yard paid total</Text>
+                <Text style={[styles.summaryValue, { color: colors.text }]}>{formatHoursMins(summary.yardMins)}</Text>
+              </View>
+            </>
+          )}
 
           <View style={styles.summaryDivider} />
 
-          <Text style={{ color: colors.textMuted, fontWeight: "800", fontSize: 12, marginTop: 2, marginBottom: 6 }}>
+          <Text style={{ color: colors.textMuted, fontWeight: "800", fontSize: t.typography.metadata.fontSize, marginTop: t.spacing.none, marginBottom: t.spacing.xxs }}>
             Per-day hours
           </Text>
 
           {DAYS.map((d) => (
             <View key={d} style={styles.summaryRow}>
               <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>{d}</Text>
-              <Text style={[styles.summaryValue, { color: colors.text }]}>{formatHoursMins(summary.byDayMinutes[d])}</Text>
+              <Text style={[styles.summaryValue, { color: colors.text }]}>{summary.byDayLabels[d]}</Text>
             </View>
           ))}
 
-          <View style={styles.summaryDivider} />
+          {[
+            ["Meal supplements", summary.mealSupCount],
+            ["Travel meals", summary.pdCount],
+            ["Night shoots", summary.nightShootCount],
+            ["Overnights", summary.overnightCount],
+            ["Generators used", summary.generatorCount],
+            ["Late supplements", summary.lateSupCount],
+            ["Turnarounds", summary.turnaroundCount],
+          ].some(([, count]) => count > 0) && (
+            <>
+              <View style={styles.summaryDivider} />
 
-          <Text style={{ color: colors.textMuted, fontWeight: "800", fontSize: 12, marginTop: 2, marginBottom: 6 }}>
-            Flags
-          </Text>
+              <Text style={{ color: colors.textMuted, fontWeight: "800", fontSize: t.typography.metadata.fontSize, marginTop: t.spacing.none, marginBottom: t.spacing.xxs }}>
+                Supplements and flags
+              </Text>
 
-          <View style={styles.summaryRow}>
-            <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Lunch (yard)</Text>
-            <Text style={[styles.summaryValue, { color: colors.text }]}>{summary.lunchCount}</Text>
-          </View>
-          <View style={styles.summaryRow}>
-            <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Meal supp (on set)</Text>
-            <Text style={[styles.summaryValue, { color: colors.text }]}>{summary.mealSupCount}</Text>
-          </View>
-          <View style={styles.summaryRow}>
-            <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Travel meal</Text>
-            <Text style={[styles.summaryValue, { color: colors.text }]}>{summary.pdCount}</Text>
-          </View>
-          <View style={styles.summaryRow}>
-            <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Night shoots</Text>
-            <Text style={[styles.summaryValue, { color: colors.text }]}>{summary.nightShootCount}</Text>
-          </View>
-          <View style={styles.summaryRow}>
-            <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Overnights</Text>
-            <Text style={[styles.summaryValue, { color: colors.text }]}>{summary.overnightCount}</Text>
-          </View>
-          <View style={styles.summaryRow}>
-            <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Turnarounds</Text>
-            <Text style={[styles.summaryValue, { color: colors.text }]}>{summary.turnaroundCount}</Text>
-          </View>
+              {[
+                ["Meal supplements", summary.mealSupCount],
+                ["Travel meals", summary.pdCount],
+                ["Night shoots", summary.nightShootCount],
+                ["Overnights", summary.overnightCount],
+                ["Generators used", summary.generatorCount],
+                ["Late supplements", summary.lateSupCount],
+                ["Turnarounds", summary.turnaroundCount],
+              ]
+                .filter(([, count]) => count > 0)
+                .map(([label, count]) => (
+                  <View key={label} style={styles.summaryRow}>
+                    <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>{label}</Text>
+                    <Text style={[styles.summaryValue, { color: colors.text }]}>{count}</Text>
+                  </View>
+                ))}
+            </>
+          )}
 
-          <View style={styles.summaryDivider} />
+          {[
+            ["Paid holidays", summary.paidHolidayDays],
+            ["Unpaid holidays", summary.unpaidHolidayDays],
+            ["Unpaid days", summary.unpaidDays],
+            ["Half-holiday days", summary.halfHolidayDays],
+            ["Bank holidays", summary.bankHolidayDays],
+          ].some(([, count]) => count > 0) && (
+            <>
+              <View style={styles.summaryDivider} />
 
-          <View style={styles.summaryRow}>
-            <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Paid holidays</Text>
-            <Text style={[styles.summaryValue, { color: colors.text }]}>{summary.paidHolidayDays}</Text>
-          </View>
-          <View style={styles.summaryRow}>
-            <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Unpaid holidays</Text>
-            <Text style={[styles.summaryValue, { color: colors.text }]}>{summary.unpaidHolidayDays}</Text>
-          </View>
-          <View style={styles.summaryRow}>
-            <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Unpaid days</Text>
-            <Text style={[styles.summaryValue, { color: colors.text }]}>{summary.unpaidDays}</Text>
-          </View>
-          <View style={styles.summaryRow}>
-            <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Half-holiday days</Text>
-            <Text style={[styles.summaryValue, { color: colors.text }]}>{summary.halfHolidayDays}</Text>
-          </View>
-          <View style={styles.summaryRow}>
-            <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>Bank holidays</Text>
-            <Text style={[styles.summaryValue, { color: colors.text }]}>{summary.bankHolidayDays}</Text>
-          </View>
+              <Text style={{ color: colors.textMuted, fontWeight: "800", fontSize: t.typography.metadata.fontSize, marginTop: t.spacing.none, marginBottom: t.spacing.xxs }}>
+                Leave and holidays
+              </Text>
+
+              {[
+                ["Paid holidays", summary.paidHolidayDays],
+                ["Unpaid holidays", summary.unpaidHolidayDays],
+                ["Unpaid days", summary.unpaidDays],
+                ["Half-holiday days", summary.halfHolidayDays],
+                ["Bank holidays", summary.bankHolidayDays],
+              ]
+                .filter(([, count]) => count > 0)
+                .map(([label, count]) => (
+                  <View key={label} style={styles.summaryRow}>
+                    <Text style={[styles.summaryLabel, { color: colors.textMuted }]}>{label}</Text>
+                    <Text style={[styles.summaryValue, { color: colors.text }]}>{count}</Text>
+                  </View>
+                ))}
+            </>
+          )}
         </>
       )}
     </View>
@@ -1626,17 +2066,16 @@ export default function WeekTimesheet() {
   const { invalidate } = useDataCache();
   const bookingsResource = useBookings();
   const holidaysResource = useHolidays();
+  const vehiclesResource = useVehicles();
   const timesheetsResource = useEmployeeTimesheets();
   const { colors, colorScheme } = useTheme();
-  const responsive = useResponsiveLayout();
-  const insets = useSafeAreaInsets();
   const allowNavigationRef = useRef(false);
   const pendingNavigationActionRef = useRef(null);
-  const softSuccess = colorScheme === "dark" ? "#7ED8A7" : "#188A52";
-  const softSuccessBg = colorScheme === "dark" ? "#163126" : "#E9F6EE";
-  const softAmber = colorScheme === "dark" ? "#E0B15B" : "#B87716";
-  const softAmberBg = colorScheme === "dark" ? "#2D2414" : "#FBF1DE";
-  const subtleChipBg = colorScheme === "dark" ? "#17181D" : colors.surface;
+  const softSuccess = colorScheme === "dark" ? staticColors.hex_7ed8a7_7b4jpa : staticColors.hex_188a52_aeth0x;
+  const softSuccessBg = colorScheme === "dark" ? staticColors.hex_163126_a54xzb : staticColors.hex_e9f6ee_5qezd6;
+  const softAmber = colorScheme === "dark" ? staticColors.hex_e0b15b_5ldxx3 : staticColors.hex_b87716_7l4p17;
+  const softAmberBg = colorScheme === "dark" ? staticColors.hex_2d2414_6m7043 : staticColors.hex_fbf1de_59hr1w;
+  const subtleChipBg = colorScheme === "dark" ? staticColors.hex_17181d_a32e58 : colors.surface;
   const addBlockButtonColors =
     colorScheme === "dark"
       ? { backgroundColor: colors.surface, borderColor: colors.border, color: colors.textMuted }
@@ -1729,7 +2168,9 @@ export default function WeekTimesheet() {
   const [turnaroundJobs, setTurnaroundJobs] = useState([]);
   const [turnaroundPickerOpen, setTurnaroundPickerOpen] = useState(false);
   const [turnaroundPickerDay, setTurnaroundPickerDay] = useState(null);
+  const [turnaroundInfoOpen, setTurnaroundInfoOpen] = useState(false);
   const [dayTypePickerDay, setDayTypePickerDay] = useState(null);
+  const [jobOverview, setJobOverview] = useState(null);
   const [togglePanelByDay, setTogglePanelByDay] = useState(() =>
     Object.fromEntries(DAYS.map((d) => [d, false]))
   );
@@ -1737,9 +2178,34 @@ export default function WeekTimesheet() {
   // Turnaround credits come from Night Shoot booking notes and on-set days that wrap past midnight.
   const [turnaroundCreditsTotal, setTurnaroundCreditsTotal] = useState(0);
   const [turnaroundCreditDates, setTurnaroundCreditDates] = useState([]); // ISO dates list for audit / display if you want
-  const [turnaroundCreditsConsumed, setTurnaroundCreditsConsumed] = useState(0);
   const [turnaroundBookingCreditDates, setTurnaroundBookingCreditDates] = useState([]);
   const [turnaroundOnsetCreditDates, setTurnaroundOnsetCreditDates] = useState([]);
+  const turnaroundCreditsConsumed = useMemo(() => {
+    const recentWeekStarts = new Set(
+      buildPreviousNDatesISO(id, TURNAROUND_LOOKBACK_DAYS)
+        .map((dateISO) => mondayISO(dateISO))
+        .filter(Boolean)
+    );
+
+    return timesheetsResource.data.reduce((total, savedTimesheet) => {
+      const weekStart = savedTimesheet?.weekStart || savedTimesheet?.weekISO || "";
+      if (!weekStart || weekStart === id || !recentWeekStarts.has(weekStart)) return total;
+      return total + countTurnaroundUses(savedTimesheet);
+    }, 0);
+  }, [id, timesheetsResource.data]);
+  const usedTurnaroundCreditSourceKeys = useMemo(() => {
+    const recentWeekStarts = new Set(
+      buildPreviousNDatesISO(id, TURNAROUND_LOOKBACK_DAYS)
+        .map((dateISO) => mondayISO(dateISO))
+        .filter(Boolean)
+    );
+    const keys = timesheetsResource.data.flatMap((savedTimesheet) => {
+      const weekStart = savedTimesheet?.weekStart || savedTimesheet?.weekISO || "";
+      if (!weekStart || weekStart === id || !recentWeekStarts.has(weekStart)) return [];
+      return collectUsedTurnaroundCreditSourceKeys(savedTimesheet);
+    });
+    return new Set(keys);
+  }, [id, timesheetsResource.data]);
   const [baselineSignature, setBaselineSignature] = useState(null);
 
   const weekDates = useMemo(() => {
@@ -1770,9 +2236,10 @@ export default function WeekTimesheet() {
   const upsertTimesheet = timesheetsResource.upsertTimesheet;
   const refreshBookings = bookingsResource.refresh;
   const refreshHolidays = holidaysResource.refresh;
+  const refreshVehicles = vehiclesResource.refresh;
   const refreshWeekData = useCallback(
-    () => Promise.all([refreshTimesheets(), refreshBookings(), refreshHolidays()]),
-    [refreshBookings, refreshHolidays, refreshTimesheets]
+    () => Promise.all([refreshTimesheets(), refreshBookings(), refreshHolidays(), refreshVehicles()]),
+    [refreshBookings, refreshHolidays, refreshTimesheets, refreshVehicles]
   );
   const formattedWeekStart = useMemo(() => formatDisplayDate(id), [id]);
   const dayTypeOptions = useMemo(
@@ -1782,31 +2249,6 @@ export default function WeekTimesheet() {
       { value: "workshop", label: "Workshop Day" },
     ],
     []
-  );
-
-  const resolveDayWorkType = useCallback(
-    (entry) => {
-      const saved = String(entry?.dayWorkType || entry?.workType || "").toLowerCase();
-      if (saved === "yard" || saved === "office" || saved === "workshop") return saved;
-
-      const mode = String(entry?.mode || "yard").toLowerCase();
-      if (mode === "workshop") return "workshop";
-      if (mode === "travel" || mode === "onset") return mode;
-      return autofillType === "office" ? "office" : "yard";
-    },
-    [autofillType]
-  );
-
-  const getDayTypeLabel = useCallback(
-    (entry) => {
-      const type = resolveDayWorkType(entry);
-      if (type === "travel") return "Travel Day";
-      if (type === "onset") return "On Set Day";
-      if (type === "office") return "Office Day";
-      if (type === "workshop") return "Workshop Day";
-      return "Yard Day";
-    },
-    [resolveDayWorkType]
   );
 
   const confirmDiscardChanges = useCallback(
@@ -2198,6 +2640,10 @@ export default function WeekTimesheet() {
           });
         });
 
+        DAYS.forEach((dayName, index) => {
+          jobMap[dayName] = collapseLinkedJobsForDay(jobMap[dayName], weekDates[index]);
+        });
+
         allHols.forEach((hol) => {
           const start = toDateSafe(hol.startDate || hol.from);
           const end = toDateSafe(hol.endDate || hol.to) || start;
@@ -2286,7 +2732,7 @@ export default function WeekTimesheet() {
   ]);
 
   // ───────────────────────── Turnaround eligibility + lookback job list ─────────────────────────
-  // Credits are earned from:
+  // Credits are earned in the three completed weeks before this timesheet from:
   // 1) booking day-notes that contain "Night Shoot"
   // 2) on-set days that wrap past midnight
   // Consecutive eligible dates collapse into a single credit streak.
@@ -2298,7 +2744,14 @@ export default function WeekTimesheet() {
         const myCode = canonicalEmployeeCode(employee.userCode);
         if (!myCode) return;
 
-        const lastDates = buildLastNDatesISO(TURNAROUND_LOOKBACK_DAYS); // includes today
+        const todayISO = iso(startOfDay(new Date()));
+        const elapsedCurrentWeekDates = weekDates.filter(
+          (dateISO) => dateISO && dateISO <= todayISO
+        );
+        const lastDates = Array.from(new Set([
+          ...buildPreviousNDatesISO(id, TURNAROUND_LOOKBACK_DAYS),
+          ...elapsedCurrentWeekDates,
+        ]));
         const lastSet = new Set(lastDates);
         const allJobs = bookingsResource.data.filter((job) =>
           getBookingDates(job).some((date) => lastSet.has(date))
@@ -2349,6 +2802,7 @@ export default function WeekTimesheet() {
           out.push({
             bookingId: job.id,
             jobNumber: job.jobNumber || "",
+            production: job.production || "",
             client: job.client || "",
             location: job.location || "",
             dateISO: pickedDateISO,
@@ -2372,23 +2826,16 @@ export default function WeekTimesheet() {
               )
             : []
         );
-        const savedTurnaroundUses = recentTimesheets.reduce(
-          (total, ts) => total + (ts ? countTurnaroundUses(ts) : 0),
-          0
-        );
-
         out.sort((a, b) => String(b.dateISO || "").localeCompare(String(a.dateISO || "")));
         setTurnaroundJobs(out);
         setTurnaroundBookingCreditDates(Array.from(nightShootWorkedDates));
         setTurnaroundOnsetCreditDates(savedOnsetDates);
-        setTurnaroundCreditsConsumed(savedTurnaroundUses);
       } catch (err) {
         console.error("[turnaround] error:", err);
         setTurnaroundEligible(false);
         setTurnaroundJobs([]);
         setTurnaroundBookingCreditDates([]);
         setTurnaroundOnsetCreditDates([]);
-        setTurnaroundCreditsConsumed(0);
       }
     })();
   }, [
@@ -2399,12 +2846,16 @@ export default function WeekTimesheet() {
     employee?.userCode,
     id,
     timesheetsResource.data,
+    weekDates,
   ]);
 
   useEffect(() => {
-    const lastSet = new Set(buildLastNDatesISO(TURNAROUND_LOOKBACK_DAYS));
+    const todayISO = iso(startOfDay(new Date()));
+    const elapsedCurrentWeekDates = new Set(
+      weekDates.filter((dateISO) => dateISO && dateISO <= todayISO)
+    );
     const localOnsetDates = id
-      ? collectOnsetTurnaroundCreditDates(timesheet, lastSet, id)
+      ? collectOnsetTurnaroundCreditDates(timesheet, elapsedCurrentWeekDates, id)
       : [];
 
     const creditRoots = collapseConsecutiveDatesToCredits([
@@ -2420,7 +2871,15 @@ export default function WeekTimesheet() {
     setTurnaroundCreditDates(creditDates);
     setTurnaroundCreditsTotal(creditsTotal);
     setTurnaroundEligible(creditsTotal > 0);
-  }, [id, timesheet, turnaroundBookingCreditDates, turnaroundOnsetCreditDates]);
+  }, [id, timesheet, turnaroundBookingCreditDates, turnaroundOnsetCreditDates, weekDates]);
+
+  const availableTurnaroundJobs = useMemo(() => {
+    const eligibleDates = new Set(turnaroundCreditDates);
+    return turnaroundJobs.filter((job) => {
+      const sourceKey = turnaroundCreditSourceKey(job);
+      return eligibleDates.has(job.dateISO) && sourceKey && !usedTurnaroundCreditSourceKeys.has(sourceKey);
+    });
+  }, [turnaroundCreditDates, turnaroundJobs, usedTurnaroundCreditSourceKeys]);
 
   const withDefaultYardTimes = useCallback((ts) => {
     const weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
@@ -2454,7 +2913,7 @@ export default function WeekTimesheet() {
     const byDay = Object.fromEntries(
       DAYS.map((d) => [
         d,
-        (jobsByDayMap[d] || []).map((j) => ({
+        expandLinkedHandoverJobs(jobsByDayMap[d] || []).map((j) => ({
           bookingId: j.id,
           jobNumber: j.jobNumber || "",
           client: j.client || "",
@@ -2488,7 +2947,7 @@ export default function WeekTimesheet() {
 
     for (const day of DAYS) {
       const dayEntry = { ...(copy.days[day] || {}) };
-      const jobs = (jobsByDayMap[day] || []).map((j) => ({
+      const jobs = expandLinkedHandoverJobs(jobsByDayMap[day] || []).map((j) => ({
         bookingId: j.id,
         jobNumber: j.jobNumber || "",
         client: j.client || "",
@@ -2533,6 +2992,18 @@ export default function WeekTimesheet() {
   );
   const turnaroundUsesAllowed = turnaroundUnusedCredits > 0 ? Math.min(TURNAROUND_MAX_USES_PER_WEEK, turnaroundUnusedCredits) : 0;
   const turnaroundCreditsRemaining = Math.max(0, turnaroundUsesAllowed - (usedTurnarounds || 0));
+  const turnaroundCreditDisplayTotal = Math.max(
+    Number(turnaroundCreditsTotal || 0),
+    Number(turnaroundCreditsConsumed || 0) + Number(usedTurnarounds || 0)
+  );
+  const turnaroundCreditPoolRemaining = Math.max(
+    0,
+    Number(turnaroundCreditsTotal || 0)
+      - Number(turnaroundCreditsConsumed || 0)
+      - Number(usedTurnarounds || 0)
+  );
+  const showTurnaroundSummary = turnaroundCreditDisplayTotal > 0;
+  const showTurnaroundControls = turnaroundUsesAllowed > 0 || usedTurnarounds > 0;
 
   const clearWeekendBlocks = useCallback(
     (day) => {
@@ -2923,11 +3394,13 @@ export default function WeekTimesheet() {
   }, []);
 
   const validateTurnaroundSelectionsOrAlert = useCallback((ts) => {
+    const turnaroundDays = [];
     for (const dayName of DAYS) {
       const e = ts?.days?.[dayName];
       if (!e) continue;
       const mode = String(e.mode || "yard").toLowerCase();
-      if (mode === "yard" && e.isTurnaround === true) {
+      if (mode === "yard" && boolish(e.isTurnaround)) {
+        turnaroundDays.push(dayName);
         const ok = !!e.turnaroundJob?.bookingId;
         if (!ok) {
           Alert.alert(
@@ -2936,44 +3409,38 @@ export default function WeekTimesheet() {
           );
           return false;
         }
+        const sourceKey = turnaroundCreditSourceKey(e.turnaroundJob);
+        const isUnusedSource = availableTurnaroundJobs.some(
+          (job) => turnaroundCreditSourceKey(job) === sourceKey
+        );
+        if (!sourceKey || usedTurnaroundCreditSourceKeys.has(sourceKey) || !isUnusedSource) {
+          Alert.alert(
+            "Turnaround credit already used",
+            `The credit selected on ${dayName} is no longer available. Choose an unused credit source.`
+          );
+          return false;
+        }
       }
     }
+
+    if (turnaroundDays.length > TURNAROUND_MAX_USES_PER_WEEK) {
+      Alert.alert(
+        "Turnaround already used",
+        `Turnaround can only be used once per week. Remove it from ${turnaroundDays.slice(1).join(", ")} before submitting.`
+      );
+      return false;
+    }
+
+    if (turnaroundDays.length > Number(turnaroundUnusedCredits || 0)) {
+      Alert.alert(
+        "No Turnaround credits",
+        "The available Turnaround credit was already used on an earlier timesheet. Remove this Turnaround before submitting."
+      );
+      return false;
+    }
+
     return true;
-  }, []);
-
-  const getNoLunchApprovalDays = useCallback((ts) => {
-    return DAYS.filter((dayName) => {
-      const e = ts?.days?.[dayName];
-      if (!e) return false;
-
-      const mode = String(e.mode || "yard").toLowerCase();
-      const hasYardBlocks =
-        Array.isArray(e.yardSegments) && e.yardSegments.length > 0;
-
-      return mode === "yard" && hasYardBlocks && boolish(e.lunchSup);
-    });
-  }, []);
-
-  const confirmNoLunchApprovalIfNeeded = useCallback(
-    (prepared, actionLabel) => {
-      const noLunchDays = getNoLunchApprovalDays(prepared);
-      if (!noLunchDays.length) return Promise.resolve(true);
-
-      const dayList = noLunchDays.join(", ");
-
-      return new Promise((resolve) => {
-        Alert.alert(
-          "No lunch selected",
-          `You have selected No Lunch for ${dayList}. This needs manager approval, as no lunch is not automatically assumed. Continue to ${actionLabel}?`,
-          [
-            { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
-            { text: "Continue", onPress: () => resolve(true) },
-          ]
-        );
-      });
-    },
-    [getNoLunchApprovalDays]
-  );
+  }, [availableTurnaroundJobs, turnaroundUnusedCredits, usedTurnaroundCreditSourceKeys]);
 
   const saveTimesheet = useCallback(
     async ({ exitAfterSave = true, onAfterSave } = {}) => {
@@ -2988,11 +3455,6 @@ export default function WeekTimesheet() {
 
         const prepared = imprintJobsIntoDays(withDefaultYardTimes(timesheet), jobsByDay, id);
         if (!validateTurnaroundSelectionsOrAlert(prepared)) return;
-        const noLunchConfirmed = await confirmNoLunchApprovalIfNeeded(
-          prepared,
-          timesheet.submitted ? "update this submission" : "save this draft"
-        );
-        if (!noLunchConfirmed) return;
 
         const jobSnapshot = buildJobSnapshot(jobsByDay);
 
@@ -3071,7 +3533,6 @@ export default function WeekTimesheet() {
       turnaroundCreditDates,
       turnaroundCreditsTotal,
       upsertTimesheet,
-      confirmNoLunchApprovalIfNeeded,
       validateTurnaroundSelectionsOrAlert,
       withDefaultYardTimes,
     ]
@@ -3089,11 +3550,6 @@ export default function WeekTimesheet() {
 
       const prepared = imprintJobsIntoDays(withDefaultYardTimes(timesheet), jobsByDay, id);
       if (!validateTurnaroundSelectionsOrAlert(prepared)) return;
-      const noLunchConfirmed = await confirmNoLunchApprovalIfNeeded(
-        prepared,
-        "submit this timesheet"
-      );
-      if (!noLunchConfirmed) return;
 
       const jobSnapshot = buildJobSnapshot(jobsByDay);
 
@@ -3217,6 +3673,10 @@ export default function WeekTimesheet() {
           updated.generatorUsed = false;
           updated.lateSup = false;
           updated.mealSup = false;
+          updated.additionalTravelEnabled = false;
+          updated.additionalTravelStartTime = null;
+          updated.additionalTravelEndTime = null;
+          updated.additionalTravelJob = "";
             if (nextMode !== "workshop") updated.workshopJobs = [];
           }
 
@@ -3229,7 +3689,7 @@ export default function WeekTimesheet() {
             updated.nightShoot = typeof updated.nightShoot === "boolean" ? updated.nightShoot : false;
             updated.generatorUsed = typeof updated.generatorUsed === "boolean" ? updated.generatorUsed : false;
             updated.lateSup = typeof updated.lateSup === "boolean" ? updated.lateSup : isLateSupplementWrap(updated);
-            updated.mealSup = typeof updated.mealSup === "boolean" ? updated.mealSup : true; // default on
+            updated.mealSup = typeof updated.mealSup === "boolean" ? updated.mealSup : false;
           }
 
           if (nextMode === "workshop") {
@@ -3244,6 +3704,14 @@ export default function WeekTimesheet() {
           updated.lateSup = isLateSupplementWrap(updated);
         }
 
+        if (
+          (field === "callTime" || field === "wrapTime")
+          && String(updated.mode || "").toLowerCase() === "onset"
+          && segmentMeta({ start: updated.callTime, end: updated.wrapTime }).crossesMidnight
+        ) {
+          updated.nightShoot = true;
+        }
+
         if (field === "yardTravelEnabled") {
           updated.yardTravelEnabled = !!value;
           if (updated.yardTravelEnabled) {
@@ -3252,6 +3720,23 @@ export default function WeekTimesheet() {
           } else {
             updated.yardTravelLeaveTime = null;
             updated.yardTravelArriveTime = null;
+          }
+        }
+
+        if (field === "additionalTravelEnabled") {
+          updated.additionalTravelEnabled = !!value;
+          if (updated.additionalTravelEnabled) {
+            updated.additionalTravelStartTime =
+              normaliseTimeValue(updated.additionalTravelStartTime) ||
+              normaliseTimeValue(updated.arriveBack) ||
+              normaliseTimeValue(updated.wrapTime) ||
+              null;
+            updated.additionalTravelEndTime = normaliseTimeValue(updated.additionalTravelEndTime) || null;
+            updated.additionalTravelJob = String(updated.additionalTravelJob || "");
+          } else {
+            updated.additionalTravelStartTime = null;
+            updated.additionalTravelEndTime = null;
+            updated.additionalTravelJob = "";
           }
         }
 
@@ -3294,8 +3779,13 @@ export default function WeekTimesheet() {
           const base = updated.leaveTime || updated.arriveTime || updated.callTime || null;
           const arriveBackOffset = timeFieldOffset(base, updated.arriveBack);
           const wrapOffset = timeFieldOffset(base, updated.wrapTime);
+          const additionalTravelOffset = boolish(updated.additionalTravelEnabled)
+            ? timeFieldOffset(updated.additionalTravelStartTime, updated.additionalTravelEndTime)
+            : null;
           updated.crossesMidnight =
-            (arriveBackOffset?.dayOffset ?? 0) === 1 || (wrapOffset?.dayOffset ?? 0) === 1;
+            (arriveBackOffset?.dayOffset ?? 0) === 1 ||
+            (wrapOffset?.dayOffset ?? 0) === 1 ||
+            (additionalTravelOffset?.dayOffset ?? 0) === 1;
         } else if (updated.mode === "workshop") {
           const segs = Array.isArray(updated.yardSegments) ? updated.yardSegments : [];
           updated.crossesMidnight = segs.some((seg) => segmentMeta(seg).crossesMidnight);
@@ -3406,10 +3896,10 @@ export default function WeekTimesheet() {
         }
       );
       const turningOn = !currentDayEntry.isTurnaround;
-      if (turningOn && (!Array.isArray(turnaroundJobs) || turnaroundJobs.length === 0)) {
+      if (turningOn && availableTurnaroundJobs.length === 0) {
         Alert.alert(
-          "No jobs to choose",
-          "You need at least one recent job from the last 3 weeks before marking a Turnaround day."
+          "No unused Turnaround credits",
+          "Every eligible credit source from the last 3 weeks has already been used."
         );
         return;
       }
@@ -3476,7 +3966,7 @@ export default function WeekTimesheet() {
       setTurnaroundPickerDay(day);
       setTurnaroundPickerOpen(true);
     },
-    [isLocked, turnaroundJobs, turnaroundUnusedCredits, timesheet]
+    [availableTurnaroundJobs, isLocked, turnaroundUnusedCredits, timesheet]
   );
 
   const setTurnaroundJobForDay = useCallback(
@@ -3555,13 +4045,38 @@ export default function WeekTimesheet() {
   if (loading || !isAuthed) return null;
 
   const statusLabel = isApproved ? "Approved" : timesheet.submitted ? "Submitted" : "Draft";
+  const overviewJob = jobOverview?.job || null;
+  const overviewDateISO = jobOverview?.dateISO || "";
+  const overviewCallTime = overviewJob
+    ? overviewJob?.callTimes?.[overviewDateISO] ||
+      overviewJob?.callTimesByDate?.[overviewDateISO] ||
+      overviewJob?.callTimeByDate?.[overviewDateISO] ||
+      overviewJob?.callTime ||
+      overviewJob?.calltime ||
+      ""
+    : "";
+  const overviewNotes = overviewJob
+    ? getBookingDayNote(overviewJob, overviewDateISO) ||
+      overviewJob?.notes ||
+      overviewJob?.note ||
+      overviewJob?.description ||
+      ""
+    : "";
+  const overviewVehicles = overviewJob
+    ? getVehicleDisplayList(
+        getBookingVehicleReferences(overviewJob),
+        vehiclesResource.data,
+        { includeRegistration: false, fallback: "Vehicle" }
+      ).join(", ")
+    : "";
 
-  const renderToggleButton = (day, disabled = false) => {
+  const renderToggleButton = (day, disabled = false, extraStyle = null) => {
     const open = !!togglePanelByDay?.[day];
     return (
       <TouchableOpacity
         style={[
           styles.addBlockBtn,
+          extraStyle,
           {
             backgroundColor: addBlockButtonColors.backgroundColor,
             borderColor: addBlockButtonColors.borderColor,
@@ -3585,17 +4100,30 @@ export default function WeekTimesheet() {
 
     return (
       <>
-        <InfoToggleRow
-          label="Add travel time?"
-          value={!!entry.yardTravelEnabled}
-          onChange={(v) => updateDay(day, "yardTravelEnabled", v)}
-          disabled={disabled}
-          infoTitle="Yard Travel Time"
-          infoText="Use this when a yard day also included separate travel time that should be added to the total."
-        />
+        <View style={styles.toggleGrid}>
+          <InfoToggleRow
+            label="Add travel time?"
+            value={!!entry.yardTravelEnabled}
+            onChange={(v) => updateDay(day, "yardTravelEnabled", v)}
+            disabled={disabled}
+            infoTitle="Yard Travel Time"
+            infoText="Use this when a yard day also included separate travel time that should be added to the total."
+            compact
+          />
+
+          <InfoToggleRow
+            label="Overnight?"
+            value={boolish(entry.overnight)}
+            onChange={(v) => updateDay(day, "overnight", v)}
+            disabled={disabled}
+            infoTitle="Overnight"
+            infoText="Turn this on if this yard day included an overnight stay."
+            compact
+          />
+        </View>
 
         {!!entry.yardTravelEnabled && (
-          <View style={styles.onSetBlock}>
+          <View style={styles.segmentRow}>
             <TimeDropdown
               label="Travel Leave"
               value={entry.yardTravelLeaveTime}
@@ -3603,43 +4131,19 @@ export default function WeekTimesheet() {
               options={TIME_OPTIONS}
               disabled={disabled}
             />
+            <View style={{ width: 8 }} />
             <TimeDropdown
               label="Travel Arrive"
               value={entry.yardTravelArriveTime}
               onSelect={(t) => updateDay(day, "yardTravelArriveTime", t)}
               options={TIME_OPTIONS}
               disabled={disabled}
+              startFrom={entry.yardTravelLeaveTime}
             />
           </View>
         )}
 
-        <InfoToggleRow
-          label="Overnight?"
-          value={boolish(entry.overnight)}
-          onChange={(v) => updateDay(day, "overnight", v)}
-          disabled={disabled}
-          infoTitle="Overnight"
-          infoText="Turn this on if this yard day included an overnight stay."
-        />
       </>
-    );
-  };
-
-  const renderYardLunchField = (day, entry, disabled = false, compact = false) => {
-    const segs = Array.isArray(entry?.yardSegments) ? entry.yardSegments : [];
-    const hasBlocks = segs.length > 0;
-    if (entry?.isTurnaround && !hasBlocks) return null;
-    const lunchTaken = !entry?.lunchSup;
-
-    return (
-      <LunchToggleRow
-        value={lunchTaken}
-        onChange={(v) => updateDay(day, "lunchSup", !v)}
-        disabled={disabled}
-        infoTitle="Yard Lunch"
-        infoText="On means lunch was taken and 30 minutes will be deducted. Off means no lunch break was taken and no lunch deduction will be applied."
-        compact={compact}
-      />
     );
   };
 
@@ -3652,6 +4156,7 @@ export default function WeekTimesheet() {
       isBankHolidayOff = false,
       isHalfHoliday = false,
       isUnpaidDay = false,
+      hideUnpaid = false,
       disabled = false,
       showTurnaround = false,
       canAddTurnaround = false,
@@ -3660,31 +4165,35 @@ export default function WeekTimesheet() {
     } = {}
   ) => {
     if (isWeekend || isFullHoliday || isBankHolidayOff) return null;
+    if (hideUnpaid && !showTurnaround) return null;
 
     return (
       <View style={styles.unpaidToggleRow}>
-        <TouchableOpacity
-          style={[
-            styles.turnaroundBtn,
-            {
-              backgroundColor: isUnpaidDay ? softAmberBg : subtleChipBg,
-              borderColor: isUnpaidDay ? softAmber : colors.border,
-              opacity: isLocked ? 0.5 : 1,
-            },
-          ]}
-          onPress={() => toggleUnpaidDay(day, !isUnpaidDay)}
-          disabled={isLocked}
-          accessibilityRole="checkbox"
-          accessibilityLabel={`${day} unpaid day`}
-          accessibilityState={{ checked: isUnpaidDay, disabled: isLocked }}
-        >
-          <Icon
-            name={isUnpaidDay ? "check-circle" : "slash"}
-            size={12}
-            color={isUnpaidDay ? softAmber : colors.textMuted}
-          />
-          <Text style={[styles.turnaroundBtnText, { color: isUnpaidDay ? softAmber : colors.textMuted }]}>Unpaid day</Text>
-        </TouchableOpacity>
+        {!hideUnpaid && (
+          <TouchableOpacity
+            style={[
+              styles.turnaroundBtn,
+              styles.unpaidDayBtn,
+              {
+                backgroundColor: isUnpaidDay ? softAmberBg : subtleChipBg,
+                borderColor: isUnpaidDay ? softAmber : colors.border,
+                opacity: isLocked ? 0.5 : 1,
+              },
+            ]}
+            onPress={() => toggleUnpaidDay(day, !isUnpaidDay)}
+            disabled={isLocked}
+            accessibilityRole="checkbox"
+            accessibilityLabel={`${day} unpaid day`}
+            accessibilityState={{ checked: isUnpaidDay, disabled: isLocked }}
+          >
+            <Icon
+              name={isUnpaidDay ? "check-circle" : "slash"}
+              size={10}
+              color={isUnpaidDay ? softAmber : colors.textMuted}
+            />
+            <Text style={[styles.turnaroundBtnText, styles.unpaidDayBtnText, { color: isUnpaidDay ? softAmber : colors.textMuted }]}>Unpaid day</Text>
+          </TouchableOpacity>
+        )}
 
         {showTurnaround && (
           <View style={styles.turnaroundActionRow}>
@@ -3709,7 +4218,7 @@ export default function WeekTimesheet() {
               accessibilityLabel={`${day} turnaround`}
               accessibilityState={{ checked: !!entry?.isTurnaround, disabled }}
             >
-              <Icon name={entry?.isTurnaround ? "check-circle" : "refresh-ccw"} size={12} color={entry?.isTurnaround ? softSuccess : colors.textMuted} />
+              <Icon name={entry?.isTurnaround ? "check-circle" : "refresh-ccw"} size={10} color={entry?.isTurnaround ? softSuccess : colors.textMuted} />
               <Text style={[styles.turnaroundBtnText, { color: entry?.isTurnaround ? softSuccess : colors.textMuted }]}>Turnaround</Text>
             </TouchableOpacity>
           </View>
@@ -3720,6 +4229,7 @@ export default function WeekTimesheet() {
 
   const renderYardSegments = (day, segments, controlsDisabled = false) => {
     if (!Array.isArray(segments) || segments.length === 0) return null;
+    const showBlockNotes = segments.length > 1;
 
     return segments.map((seg, idx) => (
       <View key={`${day}-segment-${idx}`} style={styles.segmentBlock}>
@@ -3740,34 +4250,38 @@ export default function WeekTimesheet() {
             disabled={controlsDisabled}
           />
 
-          <TouchableOpacity
-            onPress={() => removeYardSegment(day, idx)}
-            style={[
-              styles.segmentDelete,
-              { backgroundColor: colors.surface, borderColor: colors.border, opacity: controlsDisabled ? 0.5 : 1 },
-            ]}
-            disabled={controlsDisabled}
-            accessibilityRole="button"
-            accessibilityLabel={`Remove ${day} time block ${idx + 1}`}
-            accessibilityState={{ disabled: controlsDisabled }}
-          >
-            <Icon name="trash-2" size={16} color={colors.danger} />
-          </TouchableOpacity>
+          {idx > 0 && (
+            <TouchableOpacity
+              onPress={() => removeYardSegment(day, idx)}
+              style={[
+                styles.segmentDelete,
+                styles.compactSegmentDelete,
+                {
+                  backgroundColor: colors.surface,
+                  borderColor: colors.border,
+                  opacity: controlsDisabled ? 0.5 : 1,
+                },
+              ]}
+              disabled={controlsDisabled}
+              accessibilityRole="button"
+              accessibilityLabel={`Remove ${day} time block ${idx + 1}`}
+              accessibilityState={{ disabled: controlsDisabled }}
+              hitSlop={6}
+            >
+              <Icon name="trash-2" size={14} color={colors.danger} />
+            </TouchableOpacity>
+          )}
         </View>
 
-        <TextInput
-          placeholder={`Notes for block ${idx + 1}`}
-          placeholderTextColor={colors.textMuted}
-          style={[
-            styles.segmentNoteInput,
-            { backgroundColor: colors.inputBackground, borderColor: colors.inputBorder, color: colors.text, opacity: controlsDisabled ? 0.6 : 1 },
-          ]}
-          multiline
-          editable={!controlsDisabled}
-          value={String(seg?.note || "")}
-          onChangeText={(t) => updateYardSegment(day, idx, "note", t)}
-          accessibilityLabel={`${day} time block ${idx + 1} notes`}
-        />
+        {showBlockNotes && (
+          <TextArea
+            label={`${day} time block ${idx + 1} notes`}
+            placeholder={`Notes for block ${idx + 1}`}
+            disabled={controlsDisabled}
+            value={String(seg?.note || "")}
+            onChangeText={(t) => updateYardSegment(day, idx, "note", t)}
+          />
+        )}
       </View>
     ));
   };
@@ -3810,41 +4324,23 @@ export default function WeekTimesheet() {
         {rows.map((row, idx) => (
           <View key={`${day}-workshop-${idx}`} style={styles.workshopAllocationBlock}>
             <View style={styles.workshopRow}>
-              <TextInput
+              <FormField
+                label={`${day} workshop block ${idx + 1} job number`}
                 placeholder="Job number"
-                placeholderTextColor={colors.textMuted}
-                style={[
-                  styles.workshopJobInput,
-                  {
-                    backgroundColor: colors.inputBackground,
-                    borderColor: colors.inputBorder,
-                    color: colors.text,
-                    opacity: controlsDisabled ? 0.6 : 1,
-                  },
-                ]}
-                editable={!controlsDisabled}
+                style={{ flex: 1 }}
+                disabled={controlsDisabled}
                 value={String(row?.jobNumber || "")}
                 onChangeText={(t) => updateWorkshopJob(day, idx, "jobNumber", t)}
-                autoCapitalize="characters"
-                accessibilityLabel={`${day} workshop block ${idx + 1} job number`}
+                inputProps={{ autoCapitalize: "characters" }}
               />
-              <TextInput
+              <FormField
+                label={`${day} workshop block ${idx + 1} hours`}
                 placeholder="Hours"
-                placeholderTextColor={colors.textMuted}
-                style={[
-                  styles.workshopHoursInput,
-                  {
-                    backgroundColor: colors.inputBackground,
-                    borderColor: colors.inputBorder,
-                    color: colors.text,
-                    opacity: controlsDisabled ? 0.6 : 1,
-                  },
-                ]}
-                editable={!controlsDisabled}
+                style={{ width: 104 }}
+                disabled={controlsDisabled}
                 value={String(row?.hours || "")}
                 onChangeText={(t) => updateWorkshopJob(day, idx, "hours", t.replace(/[^0-9.,]/g, ""))}
-                keyboardType="decimal-pad"
-                accessibilityLabel={`${day} workshop block ${idx + 1} hours`}
+                inputProps={{ keyboardType: "decimal-pad" }}
               />
               <TouchableOpacity
                 onPress={() => removeWorkshopJob(day, idx)}
@@ -3885,32 +4381,40 @@ export default function WeekTimesheet() {
   const renderWorkshopModeRow = () => null;
 
   const renderDayNotesField = (day, value, disabled = false) => (
-    <TextInput
+    <TextArea
+      label={`${day} notes`}
       placeholder="Notes for this day"
-      placeholderTextColor={colors.textMuted}
-      style={[
-        styles.dayInput,
-        {
-          backgroundColor: colors.inputBackground,
-          borderColor: colors.inputBorder,
-          color: colors.text,
-          opacity: disabled ? 0.6 : 1,
-        },
-      ]}
-      multiline
-      editable={!disabled}
-      value={value || ""}
+      disabled={disabled}
+      value={isTimeAllocationDayNote(value) ? "" : value || ""}
       onChangeText={(t) => updateDay(day, "dayNotes", t)}
-      accessibilityLabel={`${day} notes`}
+      inputStyle={styles.dayNotesInput}
     />
   );
 
   return (
-    <View style={[styles.container, { backgroundColor: colors.background, paddingTop: insets.top }]}>
+    <PageShell
+      mode="form"
+      width="content"
+      header={{
+        variant: "compact",
+        title: `Week of ${formattedWeekStart}`,
+        onBack: () => confirmDiscardChanges(
+          () => router.back(),
+          () => { void saveTimesheet({ exitAfterSave: true }); }
+        ),
+        metadata: <View style={[styles.pill, { backgroundColor: timesheet.submitted ? softSuccessBg : subtleChipBg, borderColor: timesheet.submitted ? softSuccess : colors.border }]}>
+          <Text style={[styles.pillText, { color: timesheet.submitted ? softSuccess : colors.textMuted }]}>{statusLabel}</Text>
+        </View>,
+      }}
+      refresh={{
+        refreshing: timesheetsResource.isRefreshing || bookingsResource.isRefreshing || holidaysResource.isRefreshing,
+        onRefresh: refreshWeekData,
+      }}
+    >
       <TurnaroundJobPicker
         visible={turnaroundPickerOpen}
         onClose={closeTurnaroundPicker}
-        jobs={turnaroundJobs}
+        jobs={availableTurnaroundJobs}
         onPick={(job) => {
           if (!turnaroundPickerDay) return;
           setTurnaroundJobForDay(turnaroundPickerDay, job);
@@ -3919,17 +4423,12 @@ export default function WeekTimesheet() {
         }}
       />
 
-      <Modal
+      <AppModal
         visible={!!dayTypePickerDay}
-        transparent
-        animationType="fade"
+        title="Change day type"
         onRequestClose={() => setDayTypePickerDay(null)}
-        accessibilityViewIsModal
-        onAccessibilityEscape={() => setDayTypePickerDay(null)}
+        actions={<AppButton label="Cancel" variant="secondary" onPress={() => setDayTypePickerDay(null)} />}
       >
-        <View style={styles.modalOverlay}>
-          <View style={[styles.modalBox, { backgroundColor: colors.surface, borderColor: colors.border, width: "80%" }]}>
-            <Text style={{ color: colors.text, fontWeight: "900", marginBottom: 8 }}>Change day type</Text>
             {dayTypeOptions.map((option) => (
               <TouchableOpacity
                 key={option.value}
@@ -3944,81 +4443,39 @@ export default function WeekTimesheet() {
                 <Text style={{ color: colors.text, fontWeight: "800" }}>{option.label}</Text>
               </TouchableOpacity>
             ))}
-            <TouchableOpacity
-              style={[styles.closeBtn, { backgroundColor: colors.surfaceAlt }]}
-              onPress={() => setDayTypePickerDay(null)}
-              accessibilityRole="button"
-              accessibilityLabel="Cancel changing day type"
-            >
-              <Text style={{ color: colors.text, fontWeight: "800" }}>Cancel</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
+      </AppModal>
 
-      <ScrollView
-        contentContainerStyle={{
-          paddingBottom: 0,
-          width: "100%",
-          maxWidth: responsive.maxContentWidth,
-          alignSelf: "center",
-        }}
-        stickyHeaderIndices={[0]}
-        refreshControl={
-          <RefreshControl
-            refreshing={
-              timesheetsResource.isRefreshing ||
-              bookingsResource.isRefreshing ||
-              holidaysResource.isRefreshing
-            }
-            onRefresh={refreshWeekData}
-            tintColor={colors.accent}
-            colors={[colors.accent]}
-          />
-        }
+      <AppModal
+        visible={!!jobOverview}
+        title={overviewJob ? `${overviewJob.jobNumber || overviewJob.id || "Job"} — ${getProductionDisplayName(overviewJob)}` : "Job overview"}
+        onRequestClose={() => setJobOverview(null)}
+        scrollable
+        actions={<AppButton label="Done" onPress={() => setJobOverview(null)} />}
       >
-        <View style={[styles.stickyHeader, { backgroundColor: colors.background }]}>
-          <View style={styles.headerRow}>
-            <TouchableOpacity
-              style={styles.backBtn}
-              onPress={() =>
-                confirmDiscardChanges(
-                  () => router.back(),
-                  () => {
-                    void saveTimesheet({ exitAfterSave: true });
-                  }
-                )
-              }
-              accessibilityRole="button"
-              accessibilityLabel="Go back"
-              accessibilityHint="Returns to timesheets; unsaved changes will be confirmed"
-            >
-              <Icon name="arrow-left" size={18} color={colors.text} />
-              <Text style={[styles.backText, { color: colors.text }]}>Back</Text>
-            </TouchableOpacity>
-
-            <Text style={[styles.title, { color: colors.text }]}>Week of {formattedWeekStart}</Text>
-
-            <View
-              style={[
-                styles.pill,
-                {
-                  backgroundColor: timesheet.submitted ? softSuccessBg : subtleChipBg,
-                  borderColor: timesheet.submitted ? softSuccess : colors.border,
-                },
-              ]}
-            >
-              <Text
-                style={[
-                  styles.pillText,
-                { color: timesheet.submitted ? softSuccess : colors.textMuted },
-              ]}
-            >
-              {statusLabel}
-            </Text>
+            <View style={styles.jobOverviewContent}>
+              {[
+                { icon: "calendar", label: "Date", value: overviewDateISO ? formatDateDDMMYYYY(overviewDateISO) || overviewDateISO : "" },
+                { icon: "briefcase", label: "Production", value: overviewJob ? getProductionDisplayName(overviewJob) : "" },
+                { icon: "map-pin", label: "Location", value: overviewJob?.location || overviewJob?.address || overviewJob?.site || "" },
+                { icon: "tag", label: "Type", value: overviewJob?.bookingType || overviewJob?.type || "" },
+                { icon: "clock", label: "Call time", value: overviewCallTime },
+                { icon: "truck", label: "Vehicles", value: overviewVehicles },
+                { icon: "file-text", label: "Notes", value: overviewNotes },
+              ]
+                .filter((item) => String(item.value || "").trim())
+                .map((item) => (
+                  <View key={item.label} style={[styles.jobOverviewRow, { borderBottomColor: colors.border }]}>
+                    <Icon name={item.icon} size={14} color={colors.textMuted} />
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <Text style={[styles.jobOverviewLabel, { color: colors.textMuted }]}>{item.label}</Text>
+                      <Text style={[styles.jobOverviewValue, { color: colors.text }]}>{String(item.value)}</Text>
+                    </View>
+                  </View>
+                ))}
             </View>
-          </View>
+      </AppModal>
 
+        <View style={[styles.stickyHeader, { backgroundColor: colors.background }]}>
           {isApproved && (
             <View style={styles.statusRow}>
               <Text style={[styles.statusHint, { color: colors.textMuted }]}>Approved by your manager. This week is locked and can’t be edited.</Text>
@@ -4035,27 +4492,48 @@ export default function WeekTimesheet() {
           loadingLabel="Loading week…"
         >
 
-        {/* Turnaround credits banner (only if available) */}
-        {turnaroundCreditsTotal > 0 && (
+        {showTurnaroundSummary ? (
           <View style={[styles.creditBox, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-            <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
-              <Text style={{ color: colors.text, fontWeight: "900" }}>Turnaround credits</Text>
-              <Text style={{ color: colors.text, fontWeight: "900" }}>
-                {turnaroundCreditsRemaining}/{turnaroundUsesAllowed} left
-              </Text>
-            </View>
+            <TouchableOpacity
+              style={styles.creditHeader}
+              onPress={() => {
+                LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+                setTurnaroundInfoOpen((current) => !current);
+              }}
+              accessibilityRole="button"
+              accessibilityLabel="Turnaround credit information"
+              accessibilityState={{ expanded: turnaroundInfoOpen }}
+            >
+              <View style={styles.creditHeaderTitle}>
+                <Icon name="info" size={14} color={colors.textMuted} />
+                <Text style={{ color: colors.text, fontWeight: "900" }}>Turnaround credits</Text>
+              </View>
+              <View style={styles.creditHeaderCount}>
+                <Text style={{ color: colors.text, fontWeight: "900" }}>
+                  {turnaroundCreditPoolRemaining}/{turnaroundCreditDisplayTotal} left
+                </Text>
+                <Icon name={turnaroundInfoOpen ? "chevron-up" : "chevron-down"} size={16} color={colors.textMuted} />
+              </View>
+            </TouchableOpacity>
 
-            <Text style={{ color: colors.textMuted, marginTop: 4, fontSize: 11 }}>
-              Credits come from booking notes marked “Night Shoot” or on-set days that wrapped past midnight in the last 3 weeks. Each credit can only be used once, and Turnaround can only be used once per week.
-            </Text>
+            {turnaroundInfoOpen ? (
+              <Text style={{ color: colors.textMuted, marginTop: t.spacing.xs, fontSize: t.typography.caption.fontSize }}>
+                Credits come from booking notes marked “Night Shoot” or completed on-set days that wrapped past midnight in the last 3 weeks. New credits are available as soon as they are earned, each credit can only be used once, and Turnaround can only be used once per week.
+              </Text>
+            ) : null}
           </View>
-        )}
+        ) : null}
 
         {DAYS.map((day) => {
           const entryRaw = timesheet.days?.[day] || { mode: WEEKEND_SET.has(day) ? "off" : "yard", dayNotes: "" };
           const entry = ensureModeDefaults(entryRaw);
 
           const jobs = jobsByDay?.[day] || [];
+          const dayDateISO = getDateISOForDayName(id, day);
+          const jobDayNote = jobs
+            .map((job) => getBookingDayNote(job, dayDateISO))
+            .filter((note) => note && !isTimeAllocationDayNote(note))
+            .join(" • ");
           const holidayInfo = holidaysByDay?.[day];
           const bankHolidayInfo = bankHolidaysByDay?.[day];
 
@@ -4079,6 +4557,8 @@ export default function WeekTimesheet() {
           const controlsDisabled =
             isLocked || isFullHoliday || (isUnpaidDay && !isUnpaidHalfHoliday) || (isBankHolidayOff && !isWorkedBankHoliday);
           const isWeekend = WEEKEND_SET.has(day);
+          const isWeekendEnabled =
+            isWeekend && String(effectiveEntry.mode || "off").toLowerCase() !== "off";
 
           let holidayLabel = isWeekend ? "Holiday" : "Paid Holiday";
           let holidayTone = softSuccess;
@@ -4091,10 +4571,14 @@ export default function WeekTimesheet() {
           }
 
           const showTurnaroundButton =
-            !controlsDisabled && !isHalfHoliday && String(yardEntry.mode || "yard").toLowerCase() === "yard";
+            showTurnaroundControls &&
+            !controlsDisabled &&
+            !isHalfHoliday &&
+            String(yardEntry.mode || "yard").toLowerCase() === "yard";
 
           const segsForUI = Array.isArray(yardEntry.yardSegments) ? yardEntry.yardSegments : [];
           const dayToggleOpen = !!togglePanelByDay?.[day];
+          const dayTotalMinutes = computeDayMinutes(effectiveEntry, day);
 
           const hasTurnaroundCredit = (turnaroundUnusedCredits || 0) > 0;
           const canAddTurnaround = hasTurnaroundCredit && turnaroundCreditsRemaining > 0;
@@ -4108,50 +4592,77 @@ export default function WeekTimesheet() {
               <View
                 style={[
                   styles.dayBlock,
-                  { borderBottomColor: colors.textMuted, opacity: isLocked ? 0.9 : 1 },
+                  {
+                    backgroundColor: colors.surface,
+                    borderColor: colors.border,
+                    opacity: isLocked ? 0.9 : 1,
+                  },
                 ]}
               >
                 <View style={styles.dayHeaderRow}>
                   <View style={styles.dayTitleWrap}>
                     <Text style={[styles.dayTitle, { color: colors.text }]}>{day}</Text>
-                    {!isFullHoliday && !isUnpaidDay && (
-                      <TouchableOpacity
-                        style={[
-                          styles.dayTypeDropdown,
-                          {
-                            backgroundColor: colors.surface,
-                            borderColor: colors.border,
-                            opacity: controlsDisabled ? 0.65 : 1,
-                          },
-                        ]}
-                        onPress={() => {
-                          if (!controlsDisabled) setDayTypePickerDay(day);
-                        }}
-                        disabled={controlsDisabled}
-                        accessibilityRole="button"
-                        accessibilityLabel={`${day} work type, ${getDayTypeLabel(entry)}`}
-                        accessibilityState={{ disabled: controlsDisabled, expanded: dayTypePickerDay === day }}
+                    {isWeekend && !isWeekendEnabled && (
+                      <Text style={[styles.dayModeTitle, { color: colors.textMuted }]}>Optional</Text>
+                    )}
+                    {!isFullHoliday && !!jobDayNote && (
+                      <Text
+                        style={[styles.dayModeTitle, { color: colors.textMuted }]}
+                        numberOfLines={1}
                       >
-                        <Text style={[styles.dayModeTitle, { color: colors.textMuted }]}>
-                          {getDayTypeLabel(entry)}
+                        {jobDayNote}
+                      </Text>
+                    )}
+                    {dayTotalMinutes > 0 && (
+                      <View
+                        style={[
+                          styles.dayTotalBadge,
+                          { backgroundColor: softSuccessBg, borderColor: softSuccess },
+                        ]}
+                        accessibilityLabel={`${day} paid total ${formatHoursMins(dayTotalMinutes)}`}
+                      >
+                        <Icon name="clock" size={10} color={softSuccess} />
+                        <Text style={[styles.dayTotalText, { color: softSuccess }]}>
+                          {formatHoursMins(dayTotalMinutes)} paid
                         </Text>
-                        {!controlsDisabled && <Icon name="chevron-down" size={12} color={colors.textMuted} />}
-                      </TouchableOpacity>
+                      </View>
                     )}
                   </View>
 
                   {renderWeekdayYardControls(day, yardEntry, {
-                    isWeekend,
+                    isWeekend: isWeekend && !isWeekendEnabled,
                     isFullHoliday,
                     isBankHolidayOff,
                     isHalfHoliday,
                     isUnpaidDay,
+                    hideUnpaid: isWeekend,
                     disabled: controlsDisabled,
                     showTurnaround: showTurnaroundButton,
                     canAddTurnaround,
                     turnaroundBlockedTitle,
                     turnaroundBlockedMessage,
                   })}
+
+                  {isWeekend && !isWeekendEnabled && (
+                    <TouchableOpacity
+                      style={[
+                        styles.addBlockBtn,
+                        styles.weekendHeaderAction,
+                        {
+                          backgroundColor: addBlockButtonColors.backgroundColor,
+                          borderColor: addBlockButtonColors.borderColor,
+                          opacity: controlsDisabled ? 0.5 : 1,
+                        },
+                      ]}
+                      onPress={() => addYardSegment(day)}
+                      disabled={controlsDisabled}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Add time block for ${day}`}
+                    >
+                      <Icon name="plus" size={14} color={addBlockButtonColors.color} />
+                      <Text style={[styles.addBlockText, { color: addBlockButtonColors.color }]}>Add time block</Text>
+                    </TouchableOpacity>
+                  )}
                 </View>
 
                 {isUnpaidDay && !isUnpaidHalfHoliday && (
@@ -4170,7 +4681,7 @@ export default function WeekTimesheet() {
                     <Text style={{ color: colors.text, fontWeight: "900" }}>
                       {bankHolidayInfo?.name || "Bank Holiday"} {isWorkedBankHoliday ? "(Worked)" : "(Not working)"}
                     </Text>
-                    <Text style={[styles.holidaySub, { color: colors.textMuted, marginTop: 4 }]}>
+                    <Text style={[styles.holidaySub, { color: colors.textMuted, marginTop: t.spacing.xxs }]}>
                       {isWorkedBankHoliday
                         ? "This bank holiday is being filled in as a worked day."
                         : "Not working by default. Add a time block if you worked this bank holiday."}
@@ -4180,7 +4691,7 @@ export default function WeekTimesheet() {
                       <TouchableOpacity
                         style={[
                           styles.addBlockBtn,
-                          { backgroundColor: addBlockButtonColors.backgroundColor, borderColor: addBlockButtonColors.borderColor, marginTop: 8 },
+                          { backgroundColor: addBlockButtonColors.backgroundColor, borderColor: addBlockButtonColors.borderColor, marginTop: t.spacing.xs },
                         ]}
                         onPress={() => addYardSegment(day)}
                       >
@@ -4193,7 +4704,7 @@ export default function WeekTimesheet() {
                       <TouchableOpacity
                         style={[
                           styles.addBlockBtn,
-                          { backgroundColor: colors.surface, borderColor: colors.danger, marginTop: 8 },
+                          { backgroundColor: colors.surface, borderColor: colors.danger, marginTop: t.spacing.xs },
                         ]}
                         onPress={() =>
                           Alert.alert(
@@ -4248,13 +4759,27 @@ export default function WeekTimesheet() {
                   {jobs.map((job) => (
                     <View key={job.id} style={[styles.jobLink, { backgroundColor: colors.surface, borderColor: colors.border }]}>
                       <Text style={[styles.jobMain, { color: colors.text }]} numberOfLines={1}>
-                        {job.jobNumber || job.id} – {job.client || "Client"}
+                        {job.jobNumber || job.id} – {getProductionDisplayName(job)}
                       </Text>
                       {!!job.location && (
                         <Text style={[styles.jobSub, { color: colors.textMuted }]} numberOfLines={1}>
                           {job.location}
                         </Text>
                       )}
+                      <IconButton
+                        icon="info"
+                        size={13}
+                        variant="ghost"
+                        compact
+                        onPress={() =>
+                          setJobOverview({
+                            job,
+                            day,
+                            dateISO: weekDates[DAYS.indexOf(day)] || "",
+                          })
+                        }
+                        label={`View overview for job ${job.jobNumber || job.id}`}
+                      />
                     </View>
                   ))}
 
@@ -4304,50 +4829,51 @@ export default function WeekTimesheet() {
                       <Text style={[styles.modeText, { color: colors.text }]}>Yard</Text>
                     </TouchableOpacity>
 
-                    <TouchableOpacity
-                      style={[
-                        styles.modeBtn,
-                        { backgroundColor: colors.surfaceAlt, borderColor: colors.border, opacity: 0.45 },
-                        effectiveEntry.mode === "workshop" && { backgroundColor: colors.accentSoft, borderColor: colors.accent },
-                      ]}
-                      disabled
-                      accessibilityRole="radio"
-                      accessibilityLabel={`${day} workshop mode unavailable`}
-                      accessibilityState={{ checked: effectiveEntry.mode === "workshop", disabled: true }}
-                    >
-                      <Text style={[styles.modeText, { color: colors.text }]}>Workshop</Text>
-                    </TouchableOpacity>
                   </View>
 
                   {/* Travel UI */}
                   {!isHalfHoliday && effectiveEntry.mode === "travel" && (
                     <View style={styles.onSetBlock}>
-                      <TimeDropdown label="Leave Time" value={effectiveEntry.leaveTime} onSelect={(t) => updateDay(day, "leaveTime", t)} options={TIME_OPTIONS} disabled={controlsDisabled} />
-                      <TimeDropdown label="Arrive Time" value={effectiveEntry.arriveTime} onSelect={(t) => updateDay(day, "arriveTime", t)} options={TIME_OPTIONS} disabled={controlsDisabled} />
+                      <View style={styles.segmentRow}>
+                        <TimeDropdown
+                          label="Leave Time"
+                          value={effectiveEntry.leaveTime}
+                          onSelect={(t) => updateDay(day, "leaveTime", t)}
+                          options={TIME_OPTIONS}
+                          disabled={controlsDisabled}
+                        />
+                        <View style={{ width: 8 }} />
+                        <TimeDropdown
+                          label="Arrive Time"
+                          value={effectiveEntry.arriveTime}
+                          onSelect={(t) => updateDay(day, "arriveTime", t)}
+                          options={TIME_OPTIONS}
+                          disabled={controlsDisabled}
+                          startFrom={effectiveEntry.leaveTime}
+                        />
+                      </View>
 
-                      {renderToggleButton(day, controlsDisabled)}
+                      <View style={styles.toggleGrid}>
+                        <InfoToggleRow
+                          label="Travel meal?"
+                          value={!!effectiveEntry.travelPD}
+                          onChange={(v) => updateDay(day, "travelPD", v)}
+                          disabled={controlsDisabled}
+                          infoTitle="Travel Meal"
+                          infoText="Turn this on if a travel meal is provided/covered for this travel day."
+                          compact
+                        />
 
-                      {dayToggleOpen && (
-                        <>
-                          <InfoToggleRow
-                            label="Travel meal?"
-                            value={!!effectiveEntry.travelPD}
-                            onChange={(v) => updateDay(day, "travelPD", v)}
-                            disabled={controlsDisabled}
-                            infoTitle="Travel Meal"
-                            infoText="Turn this on if a travel meal is provided/covered for this travel day."
-                          />
-
-                          <InfoToggleRow
-                            label="Overnight?"
-                            value={boolish(effectiveEntry.overnight)}
-                            onChange={(v) => updateDay(day, "overnight", v)}
-                            disabled={controlsDisabled}
-                            infoTitle="Overnight"
-                            infoText="Turn this on if your travel day required an overnight stay."
-                          />
-                        </>
-                      )}
+                        <InfoToggleRow
+                          label="Overnight?"
+                          value={boolish(effectiveEntry.overnight)}
+                          onChange={(v) => updateDay(day, "overnight", v)}
+                          disabled={controlsDisabled}
+                          infoTitle="Overnight"
+                          infoText="Turn this on if your travel day required an overnight stay."
+                          compact
+                        />
+                      </View>
 
                       {renderDayNotesField(day, effectiveEntry.dayNotes, controlsDisabled)}
                     </View>
@@ -4356,14 +4882,171 @@ export default function WeekTimesheet() {
                   {/* On Set UI */}
                   {!isHalfHoliday && effectiveEntry.mode === "onset" && (
                     <View style={styles.onSetBlock}>
-                      <TimeDropdown label="Leave Time" value={effectiveEntry.leaveTime} onSelect={(t) => updateDay(day, "leaveTime", t)} options={TIME_OPTIONS} disabled={controlsDisabled} />
-                      <TimeDropdown label="Arrive Time" value={effectiveEntry.arriveTime} onSelect={(t) => updateDay(day, "arriveTime", t)} options={TIME_OPTIONS} disabled={controlsDisabled} />
+                      <View style={styles.timelineRow}>
+                        <TimeDropdown
+                          label="Leave Time"
+                          value={effectiveEntry.leaveTime}
+                          onSelect={(t) => updateDay(day, "leaveTime", t)}
+                          options={TIME_OPTIONS}
+                          disabled={controlsDisabled}
+                          compact
+                        />
+                        <TimeGapLabel
+                          start={effectiveEntry.leaveTime}
+                          end={effectiveEntry.arriveTime}
+                          label="Travel"
+                        />
+                      </View>
 
-                      <PrecallDropdown value={effectiveEntry.precallDuration} onSelect={(v) => updateDay(day, "precallDuration", v)} disabled={controlsDisabled} />
+                      <View style={styles.timelineRow}>
+                        <TimeDropdown
+                          label="Arrive Time"
+                          value={effectiveEntry.arriveTime}
+                          onSelect={(t) => updateDay(day, "arriveTime", t)}
+                          options={TIME_OPTIONS}
+                          disabled={controlsDisabled}
+                          startFrom={effectiveEntry.leaveTime}
+                          compact
+                        />
+                        <TimeGapLabel
+                          start={effectiveEntry.arriveTime}
+                          end={hasValidPrecallSequence(effectiveEntry) ? effectiveEntry.precallDuration : effectiveEntry.callTime}
+                          label={hasValidPrecallSequence(effectiveEntry) ? "Arrive to Pre-Call" : "Arrive to Unit Call"}
+                          paidCapMinutes={ON_SET_EARLY_ARRIVAL_CAP_MINUTES}
+                        />
+                      </View>
 
-                      <TimeDropdown label="Unit Call" value={effectiveEntry.callTime} onSelect={(t) => updateDay(day, "callTime", t)} options={TIME_OPTIONS} disabled={controlsDisabled} />
-                      <TimeDropdown label="Wrap Time" value={effectiveEntry.wrapTime} onSelect={(t) => updateDay(day, "wrapTime", t)} options={TIME_OPTIONS} disabled={controlsDisabled} />
-                      <TimeDropdown label="Arrive Back" value={effectiveEntry.arriveBack} onSelect={(t) => updateDay(day, "arriveBack", t)} options={TIME_OPTIONS} disabled={controlsDisabled} />
+                      <View style={styles.timelineRow}>
+                        <PrecallDropdown
+                          value={effectiveEntry.precallDuration}
+                          onSelect={(v) => updateDay(day, "precallDuration", v)}
+                          disabled={controlsDisabled}
+                          startFrom={effectiveEntry.arriveTime}
+                          invalidSequence={Boolean(
+                            effectiveEntry.precallDuration
+                            && effectiveEntry.callTime
+                            && !hasValidPrecallSequence(effectiveEntry)
+                          )}
+                          compact
+                        />
+                        <TimeGapLabel
+                          start={effectiveEntry.precallDuration}
+                          end={effectiveEntry.callTime}
+                          label="Pre-Call"
+                          invalid={Boolean(
+                            effectiveEntry.precallDuration
+                            && effectiveEntry.callTime
+                            && !hasValidPrecallSequence(effectiveEntry)
+                          )}
+                          maxElapsedMinutes={MAX_REASONABLE_PRECALL_WINDOW_MINUTES}
+                        />
+                      </View>
+
+                      <View style={styles.timelineRangeRow}>
+                        <View style={styles.timelineTimeStack}>
+                          <TimeDropdown
+                            label="Unit Call"
+                            value={effectiveEntry.callTime}
+                            onSelect={(t) => updateDay(day, "callTime", t)}
+                            options={TIME_OPTIONS}
+                            disabled={controlsDisabled}
+                            startFrom={effectiveEntry.precallDuration || effectiveEntry.arriveTime}
+                            compact
+                            stacked
+                          />
+                          <TimeDropdown
+                            label="Wrap Time"
+                            value={effectiveEntry.wrapTime}
+                            onSelect={(t) => updateDay(day, "wrapTime", t)}
+                            options={TIME_OPTIONS}
+                            disabled={controlsDisabled}
+                            startFrom={effectiveEntry.callTime}
+                            compact
+                            stacked
+                          />
+                        </View>
+                        <TimeGapLabel
+                          start={effectiveEntry.callTime}
+                          end={effectiveEntry.wrapTime}
+                          label="On Set"
+                          overtimeAfterMinutes={ON_SET_STANDARD_DAY_MINUTES}
+                          minimumOvertimeMinutes={computeOnSetEarlyCallOvertimeMinutes(effectiveEntry)}
+                          fillSpace
+                        />
+                      </View>
+
+                      <View style={styles.timelineRow}>
+                        <TimeDropdown
+                          label="Arrive Back"
+                          value={effectiveEntry.arriveBack}
+                          onSelect={(t) => updateDay(day, "arriveBack", t)}
+                          options={TIME_OPTIONS}
+                          disabled={controlsDisabled}
+                          startFrom={effectiveEntry.wrapTime}
+                          compact
+                        />
+                        <TimeGapLabel
+                          start={effectiveEntry.wrapTime}
+                          end={effectiveEntry.arriveBack}
+                          label="Travel"
+                          includedWithinStandardMinutes={computeReturnTravelWithinStandardMinutes(effectiveEntry)}
+                          shortDuration
+                          splitSpace
+                        />
+                      </View>
+
+                      <InfoToggleRow
+                        label="Travel to another job?"
+                        value={boolish(effectiveEntry.additionalTravelEnabled)}
+                        onChange={(value) => updateDay(day, "additionalTravelEnabled", value)}
+                        disabled={controlsDisabled}
+                        infoTitle="Travel to another job"
+                        infoText="Turn this on when you finish this on-set day and then travel for a different job. The extra travel time is added to this day's paid total."
+                        compact
+                      />
+
+                      {boolish(effectiveEntry.additionalTravelEnabled) && (
+                        <View style={styles.additionalTravelBlock}>
+                          <FormField
+                            label="Other job"
+                            placeholder="Job number or production"
+                            value={effectiveEntry.additionalTravelJob || ""}
+                            onChangeText={(value) => updateDay(day, "additionalTravelJob", value)}
+                            disabled={controlsDisabled}
+                            density="compact"
+                          />
+                          <View style={styles.timelineRangeRow}>
+                            <View style={styles.timelineTimeStack}>
+                              <TimeDropdown
+                                label="Travel from"
+                                value={effectiveEntry.additionalTravelStartTime}
+                                onSelect={(value) => updateDay(day, "additionalTravelStartTime", value)}
+                                options={TIME_OPTIONS}
+                                disabled={controlsDisabled}
+                                startFrom={effectiveEntry.arriveBack || effectiveEntry.wrapTime}
+                                compact
+                                stacked
+                              />
+                              <TimeDropdown
+                                label="Travel until"
+                                value={effectiveEntry.additionalTravelEndTime}
+                                onSelect={(value) => updateDay(day, "additionalTravelEndTime", value)}
+                                options={TIME_OPTIONS}
+                                disabled={controlsDisabled}
+                                startFrom={effectiveEntry.additionalTravelStartTime}
+                                compact
+                                stacked
+                              />
+                            </View>
+                            <TimeGapLabel
+                              start={effectiveEntry.additionalTravelStartTime}
+                              end={effectiveEntry.additionalTravelEndTime}
+                              label="Extra travel"
+                              fillSpace
+                            />
+                          </View>
+                        </View>
+                      )}
 
                       {renderToggleButton(day, controlsDisabled)}
 
@@ -4439,7 +5122,7 @@ export default function WeekTimesheet() {
 
                       {yardEntry.isTurnaround === true && (
                         <View style={[styles.turnaroundPanel, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-                          <Text style={{ color: colors.textMuted, fontSize: 11, fontWeight: "800" }}>Turnaround for job (last 3 weeks)</Text>
+                          <Text style={{ color: colors.textMuted, fontSize: t.typography.caption.fontSize, fontWeight: "800" }}>Credit earned from job</Text>
 
                           <TouchableOpacity
                             style={[styles.turnaroundSelect, { backgroundColor: colors.inputBackground, borderColor: colors.inputBorder }]}
@@ -4458,10 +5141,10 @@ export default function WeekTimesheet() {
                           </TouchableOpacity>
 
                           {yardEntry.turnaroundJob?.location ? (
-                            <Text style={{ color: colors.textMuted, marginTop: 4, fontSize: 12 }}>{yardEntry.turnaroundJob.location}</Text>
+                            <Text style={{ color: colors.textMuted, marginTop: t.spacing.xxs, fontSize: t.typography.metadata.fontSize }}>{yardEntry.turnaroundJob.location}</Text>
                           ) : null}
 
-                          <Text style={{ color: colors.textMuted, marginTop: 6, fontSize: 11 }}>
+                          <Text style={{ color: colors.textMuted, marginTop: t.spacing.xxs, fontSize: t.typography.caption.fontSize }}>
                             Note: Turnaround days don’t auto-create time blocks — add one only if needed.
                           </Text>
                         </View>
@@ -4469,12 +5152,11 @@ export default function WeekTimesheet() {
 
                       {renderYardSegments(day, segsForUI, controlsDisabled)}
 
-                      <View style={styles.addLunchRow}>
-                        {renderYardLunchField(day, yardEntry, controlsDisabled, true)}
-
+                      <View style={styles.addBlockRow}>
                         <TouchableOpacity
                                                 style={[
                                                   styles.addBlockBtn,
+                                                  styles.addBlockRowAction,
                                                   { backgroundColor: addBlockButtonColors.backgroundColor, borderColor: addBlockButtonColors.borderColor, opacity: controlsDisabled ? 0.5 : 1 },
                                                 ]}
                                                 onPress={() => addYardSegment(day)}
@@ -4483,6 +5165,7 @@ export default function WeekTimesheet() {
                                                 <Icon name="plus" size={14} color={addBlockButtonColors.color} />
                                                 <Text style={[styles.addBlockText, { color: addBlockButtonColors.color }]}>Add time block</Text>
                                               </TouchableOpacity>
+                        {renderToggleButton(day, controlsDisabled, styles.addBlockRowAction)}
                       </View>
 
                       {isWeekend && (segsForUI.length || 0) > 0 && (
@@ -4504,17 +5187,14 @@ export default function WeekTimesheet() {
                         </TouchableOpacity>
                       )}
 
-                      {renderToggleButton(day, controlsDisabled)}
                       {renderYardToggleFields(day, yardEntry, controlsDisabled)}
 
                       {renderDayNotesField(day, yardEntry.dayNotes, controlsDisabled)}
                     </>
                   )}
                 </>
-              ) : isWeekend ? (
+              ) : isWeekend && !isWeekendEnabled ? (
                 <>
-                  <Text style={{ color: colors.textMuted, marginBottom: 6 }}>Weekend (optional)</Text>
-
                   {String(entry.mode || "").toLowerCase() === "workshop" ? (
                     <>
                       {renderWorkshopModeRow(day, entry, controlsDisabled)}
@@ -4525,23 +5205,12 @@ export default function WeekTimesheet() {
                   ) : String(entry.mode || "").toLowerCase() !== "yard" ? (
                     <>
                       {renderWorkshopModeRow(day, entry, controlsDisabled)}
-                      <TouchableOpacity
-                        style={[
-                          styles.addBlockBtn,
-                          { backgroundColor: addBlockButtonColors.backgroundColor, borderColor: addBlockButtonColors.borderColor, opacity: controlsDisabled ? 0.5 : 1 },
-                        ]}
-                        onPress={() => addYardSegment(day)}
-                        disabled={controlsDisabled}
-                      >
-                        <Icon name="plus" size={14} color={addBlockButtonColors.color} />
-                        <Text style={[styles.addBlockText, { color: addBlockButtonColors.color }]}>Add time block</Text>
-                      </TouchableOpacity>
                     </>
                   ) : (
                     <>
                       {renderWorkshopModeRow(day, entry, controlsDisabled)}
                       <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
-                        {!controlsDisabled && !isHalfHoliday && (
+                        {showTurnaroundControls && !controlsDisabled && !isHalfHoliday && (
                           <TouchableOpacity
                             style={[
                               styles.turnaroundBtn,
@@ -4560,7 +5229,7 @@ export default function WeekTimesheet() {
                             }}
                             disabled={controlsDisabled}
                           >
-                            <Icon name={entry.isTurnaround ? "check-circle" : "refresh-ccw"} size={12} color={entry.isTurnaround ? colors.accent : colors.text} />
+                            <Icon name={entry.isTurnaround ? "check-circle" : "refresh-ccw"} size={10} color={entry.isTurnaround ? colors.accent : colors.text} />
                             <Text style={[styles.turnaroundBtnText, { color: colors.text }]}>Turnaround</Text>
                           </TouchableOpacity>
                         )}
@@ -4568,7 +5237,7 @@ export default function WeekTimesheet() {
 
                       {entry.isTurnaround === true && (
                         <View style={[styles.turnaroundPanel, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-                          <Text style={{ color: colors.textMuted, fontSize: 11, fontWeight: "800" }}>Turnaround for job (last 3 weeks)</Text>
+                          <Text style={{ color: colors.textMuted, fontSize: t.typography.caption.fontSize, fontWeight: "800" }}>Credit earned from job</Text>
 
                           <TouchableOpacity
                             style={[styles.turnaroundSelect, { backgroundColor: colors.inputBackground, borderColor: colors.inputBorder }]}
@@ -4590,12 +5259,11 @@ export default function WeekTimesheet() {
 
                       {renderYardSegments(day, entry.yardSegments, controlsDisabled)}
 
-                      <View style={styles.addLunchRow}>
-                        {renderYardLunchField(day, entry, controlsDisabled, true)}
-
+                      <View style={styles.addBlockRow}>
                         <TouchableOpacity
                           style={[
                             styles.addBlockBtn,
+                            styles.addBlockRowAction,
                             { backgroundColor: addBlockButtonColors.backgroundColor, borderColor: addBlockButtonColors.borderColor, opacity: controlsDisabled ? 0.5 : 1 },
                           ]}
                           onPress={() => addYardSegment(day)}
@@ -4604,6 +5272,7 @@ export default function WeekTimesheet() {
                           <Icon name="plus" size={14} color={addBlockButtonColors.color} />
                           <Text style={[styles.addBlockText, { color: addBlockButtonColors.color }]}>Add time block</Text>
                         </TouchableOpacity>
+                        {renderToggleButton(day, controlsDisabled, styles.addBlockRowAction)}
                       </View>
 
                       {entry.yardSegments?.length > 0 && (
@@ -4625,7 +5294,6 @@ export default function WeekTimesheet() {
                         </TouchableOpacity>
                       )}
 
-                      {renderToggleButton(day, controlsDisabled)}
                       {renderYardToggleFields(day, entry, controlsDisabled)}
 
                       {renderDayNotesField(day, entry.dayNotes, controlsDisabled)}
@@ -4649,7 +5317,7 @@ export default function WeekTimesheet() {
 
                   {entry.isTurnaround === true && (
                     <View style={[styles.turnaroundPanel, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-                      <Text style={{ color: colors.textMuted, fontSize: 11, fontWeight: "800" }}>Turnaround for job (last 3 weeks)</Text>
+                      <Text style={{ color: colors.textMuted, fontSize: t.typography.caption.fontSize, fontWeight: "800" }}>Credit earned from job</Text>
 
                       <TouchableOpacity
                         style={[styles.turnaroundSelect, { backgroundColor: colors.inputBackground, borderColor: colors.inputBorder }]}
@@ -4671,12 +5339,11 @@ export default function WeekTimesheet() {
 
                   {renderYardSegments(day, entry.yardSegments, controlsDisabled)}
 
-                  <View style={styles.addLunchRow}>
-                    {renderYardLunchField(day, entry, controlsDisabled, true)}
-
+                  <View style={styles.addBlockRow}>
                     <TouchableOpacity
                       style={[
                         styles.addBlockBtn,
+                        styles.addBlockRowAction,
                         { backgroundColor: addBlockButtonColors.backgroundColor, borderColor: addBlockButtonColors.borderColor, opacity: controlsDisabled ? 0.5 : 1 },
                       ]}
                       onPress={() => addYardSegment(day)}
@@ -4685,8 +5352,30 @@ export default function WeekTimesheet() {
                       <Icon name="plus" size={14} color={addBlockButtonColors.color} />
                       <Text style={[styles.addBlockText, { color: addBlockButtonColors.color }]}>Add time block</Text>
                     </TouchableOpacity>
+                    {renderToggleButton(day, controlsDisabled, styles.addBlockRowAction)}
                   </View>
-                  {renderToggleButton(day, controlsDisabled)}
+
+                  {isWeekend && entry.yardSegments?.length > 0 && (
+                    <TouchableOpacity
+                      style={[
+                        styles.addBlockBtn,
+                        { backgroundColor: colors.surface, borderColor: colors.danger, opacity: controlsDisabled ? 0.5 : 1 },
+                      ]}
+                      onPress={() =>
+                        Alert.alert("Turn off weekend day?", `This will remove all time blocks for ${day} and return it to Weekend (optional).`, [
+                          { text: "Cancel", style: "cancel" },
+                          { text: "Turn off", style: "destructive", onPress: () => clearWeekendBlocks(day) },
+                        ])
+                      }
+                      disabled={controlsDisabled}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Turn off ${day}`}
+                    >
+                      <Icon name="x-circle" size={14} color={colors.danger} />
+                      <Text style={[styles.addBlockText, { color: colors.danger }]}>Turn off weekend day</Text>
+                    </TouchableOpacity>
+                  )}
+
                   {renderYardToggleFields(day, entry, controlsDisabled)}
 
                   {renderDayNotesField(day, entry.dayNotes, controlsDisabled)}
@@ -4699,23 +5388,17 @@ export default function WeekTimesheet() {
           );
         })}
 
-        <TextInput
+        <TextArea
+          label="General notes for the week"
           placeholder="General notes for the week"
-          placeholderTextColor={colors.textMuted}
-          style={[
-            styles.input,
-            { backgroundColor: colors.inputBackground, borderColor: colors.inputBorder, color: colors.text, opacity: isLocked ? 0.6 : 1 },
-          ]}
-          multiline
-          editable={!isLocked}
+          disabled={isLocked}
           value={timesheet.notes}
           onChangeText={(t) => setTimesheet((prev) => ({ ...prev, notes: t }))}
-          accessibilityLabel="General notes for the week"
         />
 
         <HoursSummary timesheet={timesheet} holidaysByDay={holidaysByDay} bankHolidaysByDay={bankHolidaysByDay} />
 
-        <View style={{ flexDirection: "row", justifyContent: "space-between", marginHorizontal: 10, marginTop: 10, marginBottom: 10 }}>
+        <View style={styles.actionRow}>
           {isLocked ? (
             <View style={{ flex: 1, alignItems: "center" }}>
               <Text style={[styles.statusHint, { color: colors.textMuted }]}>
@@ -4758,266 +5441,376 @@ export default function WeekTimesheet() {
           )}
         </View>
         </AsyncContentState>
-      </ScrollView>
-    </View>
+    </PageShell>
   );
 }
 
 /* ───────────────────────── styles ───────────────────────── */
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 6 },
-  stickyHeader: { paddingTop: 2, marginBottom: 10 },
-  headerRow: { flexDirection: "row", alignItems: "center", marginBottom: 10, gap: 8 },
+  container: { flex: 1, padding: t.spacing.xxs },
+  stickyHeader: { paddingTop: t.spacing.none, marginBottom: t.spacing.xs },
+  headerRow: { flexDirection: "row", alignItems: "center", marginBottom: t.spacing.xs, gap: t.spacing.xs },
   backBtn: { flexDirection: "row", alignItems: "center", minWidth: 64, minHeight: 44 },
-  backText: { fontSize: 14, marginLeft: 6 },
-  title: { flex: 1, fontSize: 16, fontWeight: "700", textAlign: "center" },
+  backText: { fontSize: t.typography.body.fontSize, marginLeft: t.spacing.xxs },
+  title: { flex: 1, fontSize: t.typography.bodyLarge.fontSize, fontWeight: "700", textAlign: "center" },
 
-  statusRow: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 },
+  statusRow: { flexDirection: "row", alignItems: "center", gap: t.spacing.xs, marginBottom: t.spacing.xs },
   statusRowCentered: { justifyContent: "center" },
-  pill: { paddingVertical: 3, paddingHorizontal: 8, borderRadius: 999, borderWidth: 1, marginRight: 6 },
-  pillText: { fontWeight: "800", fontSize: 11 },
-  statusHint: { fontSize: 11 },
+  pill: { paddingVertical: t.spacing.xxs, paddingHorizontal: t.spacing.xs, borderRadius: t.radius.pill, borderWidth: 1, marginRight: t.spacing.xxs },
+  pillText: { fontWeight: "800", fontSize: t.typography.caption.fontSize },
+  statusHint: { fontSize: t.typography.caption.fontSize },
 
   creditBox: {
-    marginHorizontal: 8,
-    marginBottom: 10,
-    borderRadius: 10,
+    marginBottom: t.spacing.xs,
+    borderRadius: t.radius.md,
     borderWidth: 1,
-    padding: 10,
+    padding: t.spacing.xs,
   },
+  creditHeader: {
+    minHeight: 28,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: t.spacing.xs,
+  },
+  creditHeaderTitle: { flexDirection: "row", alignItems: "center", gap: t.spacing.xxs, flexShrink: 1 },
+  creditHeaderCount: { flexDirection: "row", alignItems: "center", gap: t.spacing.xxs, flexShrink: 0 },
 
   dayHeaderRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: 8,
-    marginBottom: 4,
+    gap: t.spacing.xs,
+    marginBottom: t.spacing.xxs,
   },
   dayTitleWrap: {
     flexDirection: "row",
     alignItems: "baseline",
-    gap: 8,
+    gap: t.spacing.xs,
     flex: 1,
     minWidth: 0,
   },
   dayBlock: {
-    paddingHorizontal: 8,
-    paddingTop: 8,
-    paddingBottom: 18,
-    marginBottom: 14,
-    borderBottomWidth: 2,
+    padding: t.spacing.xs,
+    borderRadius: t.radius.sm,
+    marginBottom: t.spacing.xs,
+    borderWidth: 1,
   },
-  dayTitle: { fontSize: 14, fontWeight: "700" },
-  dayModeTitle: { fontSize: 12, fontWeight: "700", opacity: 0.9 },
+  dayTitle: { fontSize: t.typography.body.fontSize, fontWeight: "700" },
+  dayModeTitle: { fontSize: t.typography.metadata.fontSize, fontWeight: "700", opacity: 0.9, flexShrink: 1 },
+  dayTotalBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: t.spacing.xxs,
+    paddingVertical: t.spacing.none,
+    paddingHorizontal: t.spacing.xxs,
+    borderRadius: t.radius.pill,
+    borderWidth: 1,
+    flexShrink: 0,
+    alignSelf: "center",
+  },
+  dayTotalText: { fontSize: t.typography.micro.fontSize, fontWeight: "800" },
   dayTypeDropdown: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 4,
+    gap: t.spacing.xxs,
     borderWidth: 1,
-    borderRadius: 999,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
+    borderRadius: t.radius.pill,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
     flexShrink: 1,
   },
   unpaidToggleRow: {
     flexDirection: "row",
+    alignItems: "center",
     justifyContent: "flex-end",
-    alignItems: "flex-end",
-    gap: 6,
-    marginBottom: 0,
+    gap: t.spacing.xxs,
+    marginBottom: t.spacing.none,
     flexShrink: 0,
   },
   turnaroundActionRow: {
     flexDirection: "row",
     justifyContent: "flex-end",
   },
-  unpaidInlineNote: { marginBottom: 4 },
-  unpaidInlineText: { fontSize: 10.5 },
+  unpaidInlineNote: { marginBottom: t.spacing.xxs },
+  unpaidInlineText: { fontSize: t.typography.bodyLarge.fontSize },
 
-  bankHolidayBlock: { padding: 8, borderRadius: 8, borderWidth: 1, marginBottom: 6 },
+  bankHolidayBlock: { padding: t.spacing.xs, borderRadius: t.radius.sm, borderWidth: 1, marginBottom: t.spacing.xxs },
 
-  holidayBlock: { padding: 8, borderRadius: 8, borderWidth: 1 },
-  holidayHeaderRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 },
-  holidaySub: { fontSize: 11, marginTop: 3 },
+  holidayBlock: { padding: t.spacing.xs, borderRadius: t.radius.sm, borderWidth: 1 },
+  holidayHeaderRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: t.spacing.xs },
+  holidaySub: { fontSize: t.typography.caption.fontSize, marginTop: t.spacing.xxs },
 
-  modeRow: { flexDirection: "row", marginBottom: 4, gap: 6 },
-  modeBtn: { flex: 1, minHeight: 44, paddingVertical: 7, borderRadius: 8, alignItems: "center", justifyContent: "center", borderWidth: 1 },
-  modeBtnSingle: { flex: 1, paddingHorizontal: 18 },
-  modeText: { fontSize: 12, fontWeight: "700" },
-
-  onSetBlock: { marginTop: 2 },
-
-  label: { fontSize: 11, marginBottom: 2 },
-  dropdownBox: {
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    borderRadius: 8,
-    borderWidth: 1,
-    minHeight: 44,
+  modeRow: { flexDirection: "row", marginBottom: t.spacing.xxs, gap: t.spacing.xxs },
+  modeBtn: {
+    flex: 1,
+    width: 0,
+    minWidth: 0,
+    minHeight: 32,
+    paddingVertical: t.spacing.xxs,
+    borderRadius: t.radius.sm,
+    alignItems: "center",
     justifyContent: "center",
+    borderWidth: 1,
   },
+  modeBtnSingle: { flex: 1, paddingHorizontal: t.spacing.md },
+  modeText: { fontSize: t.typography.metadata.fontSize, fontWeight: "700" },
 
-  sectionCap: { marginBottom: 4, fontWeight: "700", fontSize: 12, opacity: 0.9 },
-  segmentBlock: { marginBottom: 6 },
-  segmentRow: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 6 },
-  workshopBlock: { marginTop: 2, marginBottom: 4 },
-  workshopAllocationBlock: { marginBottom: 8 },
-  workshopRow: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 6 },
-  workshopJobInput: { flex: 1, paddingVertical: 8, paddingHorizontal: 10, borderRadius: 8, fontSize: 12, borderWidth: 1, minHeight: 36 },
-  workshopHoursInput: { width: 82, paddingVertical: 8, paddingHorizontal: 10, borderRadius: 8, fontSize: 12, borderWidth: 1, minHeight: 36, textAlign: "center" },
+  onSetBlock: { marginTop: t.spacing.none },
+  additionalTravelBlock: { marginTop: t.spacing.xxs, marginBottom: t.spacing.xxs },
+  timeDropdownWrap: { marginBottom: t.spacing.xxs, flex: 1 },
+  precallDropdownWrap: { marginBottom: t.spacing.xs },
+  timelineRow: { flexDirection: "row", alignItems: "flex-end", gap: t.spacing.xs },
+  timelineRangeRow: { flexDirection: "row", alignItems: "stretch", gap: t.spacing.xs },
+  timelineTimeStack: { flex: 1 },
+  timelineTimeField: {
+    width: "auto",
+    alignSelf: "stretch",
+    flex: 1,
+    marginBottom: t.spacing.xxs,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: t.spacing.xxs,
+  },
+  timelineStackTimeField: { width: "100%", flex: 0 },
+  timelineInlineLabel: { width: 68, marginBottom: t.spacing.none, flexShrink: 0 },
+  timelineInlineDropdown: { flex: 1, alignItems: "center" },
+  timeGapRow: {
+    width: "42%",
+    minHeight: 32,
+    alignItems: "stretch",
+    justifyContent: "center",
+    marginBottom: t.spacing.xxs,
+  },
+  timeGapPill: {
+    minHeight: 32,
+    width: "100%",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: t.spacing.xxs,
+    paddingVertical: t.spacing.xxs,
+    paddingHorizontal: t.spacing.xxs,
+    borderRadius: t.radius.pill,
+    borderWidth: 1,
+  },
+  timeGapText: { flexShrink: 1, fontSize: t.typography.micro.fontSize, fontWeight: "800", textAlign: "center" },
+  timeGapFill: { alignSelf: "stretch" },
+  timeGapPillFill: { flex: 1, borderRadius: t.radius.xl, flexDirection: "row", gap: t.spacing.xxs },
+  timeGapTextFill: { fontSize: t.typography.micro.fontSize, lineHeight: t.typography.micro.lineHeight },
+  timeGapPillSplit: { flex: 1, borderRadius: t.radius.xl },
+  timeGapTextSplit: { fontSize: t.typography.micro.fontSize, lineHeight: t.typography.micro.lineHeight },
+
+  label: { fontSize: t.typography.caption.fontSize, marginBottom: t.spacing.none },
+  dropdownBox: {
+    paddingVertical: t.spacing.xxs,
+    paddingHorizontal: t.spacing.xs,
+    borderRadius: t.radius.sm,
+    borderWidth: 1,
+    minHeight: 32,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  timePickerHeading: { gap: t.spacing.xxs, paddingHorizontal: t.spacing.sm, paddingTop: t.spacing.xs, paddingBottom: t.spacing.xs },
+
+  sectionCap: { marginBottom: t.spacing.xxs, fontWeight: "700", fontSize: t.typography.metadata.fontSize, opacity: 0.9 },
+  segmentBlock: { marginBottom: t.spacing.xxs },
+  segmentRow: { flexDirection: "row", alignItems: "center", gap: t.spacing.xxs, marginBottom: t.spacing.xxs },
+  workshopBlock: { marginTop: t.spacing.none, marginBottom: t.spacing.xxs },
+  workshopAllocationBlock: { marginBottom: t.spacing.xs },
+  workshopRow: { flexDirection: "row", alignItems: "center", gap: t.spacing.xxs, marginBottom: t.spacing.xxs },
+  workshopJobInput: { flex: 1, paddingVertical: t.spacing.xs, paddingHorizontal: t.spacing.xs, borderRadius: t.radius.sm, fontSize: t.typography.metadata.fontSize, borderWidth: 1, minHeight: 36 },
+  workshopHoursInput: { width: 82, paddingVertical: t.spacing.xs, paddingHorizontal: t.spacing.xs, borderRadius: t.radius.sm, fontSize: t.typography.metadata.fontSize, borderWidth: 1, minHeight: 36, textAlign: "center" },
   segmentDelete: {
-    marginLeft: 6,
-    paddingVertical: 6,
-    paddingHorizontal: 8,
-    borderRadius: 8,
+    marginLeft: t.spacing.xxs,
+    paddingVertical: t.spacing.xxs,
+    paddingHorizontal: t.spacing.xs,
+    borderRadius: t.radius.sm,
     borderWidth: 1,
     justifyContent: "center",
     alignItems: "center",
     width: 44,
     height: 44,
   },
-  segmentNoteInput: { paddingVertical: 6, paddingHorizontal: 8, borderRadius: 8, fontSize: 12, borderWidth: 1, minHeight: 32 },
+  compactSegmentDelete: {
+    width: 34,
+    height: 34,
+    marginLeft: t.spacing.none,
+    paddingHorizontal: t.spacing.none,
+    paddingVertical: t.spacing.none,
+  },
+  segmentNoteInput: { paddingVertical: t.spacing.xxs, paddingHorizontal: t.spacing.xs, borderRadius: t.radius.sm, fontSize: t.typography.metadata.fontSize, borderWidth: 1, minHeight: 32 },
 
-  addLunchRow: {
+  addBlockRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: 12,
-    marginTop: 2,
-    marginBottom: 6,
+    gap: t.spacing.sm,
+    marginTop: t.spacing.none,
+    marginBottom: t.spacing.xxs,
   },
+  addBlockRowAction: {
+    flex: 1,
+    alignSelf: "stretch",
+    justifyContent: "center",
+  },
+  weekendHeaderAction: { alignSelf: "center", flexShrink: 0 },
   addBlockBtn: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
+    gap: t.spacing.xxs,
     alignSelf: "flex-end",
-    paddingVertical: 4,
-    minHeight: 44,
-    paddingHorizontal: 8,
-    borderRadius: 999,
+    paddingVertical: t.spacing.none,
+    minHeight: 30,
+    paddingHorizontal: t.spacing.xs,
+    borderRadius: t.radius.pill,
     borderWidth: 1,
   },
-  addBlockText: { fontWeight: "700", fontSize: 12 },
-  jobLink: { flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 6, paddingHorizontal: 7, borderRadius: 8, marginBottom: 5, borderWidth: 1 },
-  jobMain: { flex: 1, minWidth: 0, fontWeight: "700", fontSize: 12.5 },
-  jobSub: { flexShrink: 1, maxWidth: "38%", fontSize: 12 },
+  addBlockText: { fontWeight: "700", fontSize: t.typography.metadata.fontSize },
+  jobLink: { flexDirection: "row", alignItems: "center", gap: t.spacing.xs, paddingVertical: t.spacing.xxs, paddingHorizontal: t.spacing.xs, borderRadius: t.radius.sm, marginBottom: t.spacing.xxs, borderWidth: 1 },
+  jobMain: { flex: 1, minWidth: 0, fontWeight: "700", fontSize: t.typography.bodyLarge.fontSize },
+  jobSub: { flexShrink: 1, maxWidth: "38%", fontSize: t.typography.metadata.fontSize, textAlign: "right" },
+  jobOverviewCard: {
+    width: "88%",
+    maxWidth: 520,
+    maxHeight: "72%",
+    borderRadius: t.radius.xl,
+    borderWidth: 1,
+    padding: t.spacing.sm,
+  },
+  jobOverviewHeader: { flexDirection: "row", alignItems: "center", gap: t.spacing.xs, marginBottom: t.spacing.xs },
+  jobOverviewEyebrow: { fontSize: t.typography.micro.fontSize, fontWeight: "900", letterSpacing: 1.2, marginBottom: t.spacing.none },
+  jobOverviewTitle: { fontSize: t.typography.bodyLarge.fontSize, fontWeight: "900" },
+  jobOverviewClose: {
+    width: 32,
+    height: 32,
+    borderRadius: t.radius.pill,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  jobOverviewContent: { paddingBottom: t.spacing.xxs },
+  jobOverviewRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: t.spacing.xs,
+    paddingVertical: t.spacing.xs,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  jobOverviewLabel: { fontSize: t.typography.micro.fontSize, fontWeight: "800", textTransform: "uppercase", letterSpacing: 0.6, marginBottom: t.spacing.none },
+  jobOverviewValue: { fontSize: t.typography.bodyLarge.fontSize, fontWeight: "700", lineHeight: t.typography.bodyLarge.lineHeight },
+  jobOverviewDone: { minHeight: 42, borderRadius: t.radius.md, alignItems: "center", justifyContent: "center", marginTop: t.spacing.xs },
+  jobOverviewDoneText: { fontSize: t.typography.bodySmall.fontSize, fontWeight: "900" },
 
-  dayInput: { padding: 8, borderRadius: 8, marginTop: 4, fontSize: 12, borderWidth: 1 },
-  input: { padding: 10, borderRadius: 8, marginHorizontal: 10, marginTop: 8, marginBottom: 8, fontSize: 13, height: 55, borderWidth: 1 },
+  dayNotesInput: {
+    height: t.controls.buttonHeight,
+    minHeight: t.controls.buttonHeight,
+  },
 
-  toggleGrid: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginVertical: 2 },
-  toggleRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginVertical: 2, gap: 6 },
+  dayInput: {
+    paddingVertical: t.spacing.none,
+    paddingHorizontal: t.spacing.xs,
+    minHeight: 32,
+    borderRadius: t.radius.sm,
+    marginTop: t.spacing.xxs,
+    fontSize: t.typography.metadata.fontSize,
+    lineHeight: t.typography.metadata.lineHeight,
+    borderWidth: 1,
+    textAlignVertical: "center",
+  },
+  input: { padding: t.spacing.xs, borderRadius: t.radius.sm, marginHorizontal: t.spacing.xs, marginTop: t.spacing.xs, marginBottom: t.spacing.xs, fontSize: t.typography.bodySmall.fontSize, height: 55, borderWidth: 1 },
+
+  toggleGrid: { flexDirection: "row", flexWrap: "wrap", columnGap: 8, rowGap: 4, marginVertical: t.spacing.xxs },
+  toggleRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginVertical: t.spacing.none, gap: t.spacing.xxs },
   toggleRowCompact: {
     flexBasis: "48%",
     maxWidth: "48%",
     flexGrow: 1,
-    marginVertical: 0,
-    paddingVertical: 3,
-    paddingHorizontal: 5,
-    borderRadius: 8,
+    marginVertical: t.spacing.none,
+    minHeight: 34,
+    paddingVertical: t.spacing.none,
+    paddingHorizontal: t.spacing.xxs,
+    borderRadius: t.radius.sm,
   },
   toggleTextWrap: { flex: 1, minWidth: 0 },
-  toggleLabelRow: { flexDirection: "row", alignItems: "center", gap: 3, flexWrap: "wrap" },
-  toggleStatusText: { fontSize: 10, fontWeight: "800", flexShrink: 1 },
-  labelCompact: { fontSize: 10 },
-  lunchToggleRow: {
-    flexDirection: "row",
-    alignItems: "center",
+  toggleLabelRow: { flexDirection: "row", alignItems: "center", gap: t.spacing.xxs, flexWrap: "wrap" },
+  toggleLabelRowCompact: { flexWrap: "nowrap" },
+  toggleStatusText: { fontSize: t.typography.micro.fontSize, fontWeight: "800", flexShrink: 1 },
+  labelCompact: { fontSize: t.typography.micro.fontSize, flexShrink: 1 },
+  switchCompact: { transform: [{ scaleX: 0.78 }, { scaleY: 0.78 }], marginHorizontal: -5 },
+  modalOverlay: { flex: 1, backgroundColor: staticColors.rgba_11xlyme, justifyContent: "center", alignItems: "center" },
+  modalBox: { width: "70%", maxHeight: "60%", borderRadius: t.radius.md, padding: t.spacing.xs, borderWidth: 1 },
+  modalItem: {
+    height: TIME_OPTION_ROW_HEIGHT,
+    paddingHorizontal: t.spacing.xs,
+    borderBottomWidth: 1,
     justifyContent: "center",
-    gap: 10,
-    marginVertical: 6,
+    alignItems: "center",
+  },
+  modalSelectedIcon: {
+    position: "absolute",
+    right: 12,
+  },
+  closeBtn: { marginTop: t.spacing.xs, padding: t.spacing.xs, borderRadius: t.radius.sm, alignItems: "center" },
+
+  actionButton: { flex: 1, minHeight: 44, alignItems: "center", justifyContent: "center", paddingVertical: t.spacing.sm, borderRadius: t.radius.sm, marginHorizontal: t.spacing.none },
+  actionButtonText: { fontWeight: "bold", fontSize: t.typography.bodyLarge.fontSize },
+  actionRow: {
     width: "100%",
-  },
-  lunchToggleRowInline: {
-    width: "auto",
-    marginVertical: 0,
-    flexShrink: 0,
-  },
-  lunchRightGroup: {
-    flex: 1,
     flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
+    justifyContent: "space-between",
+    gap: t.spacing.xxs,
+    marginTop: t.spacing.xs,
+    marginBottom: t.spacing.xs,
   },
-  lunchRightGroupInline: {
-    flex: 0,
-  },
-  lunchChoiceText: {
-    fontSize: 12,
-    fontWeight: "800",
-  },
-  lunchChoiceActive: {
-    fontWeight: "900",
-  },
-  lunchChoiceLeft: {
-    flex: 1,
-    textAlign: "right",
-  },
-  lunchChoiceLeftInline: {
-    flex: 0,
-  },
-
-  infoBtn: {
-    width: 22,
-    height: 22,
-    borderRadius: 999,
-    borderWidth: 1,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-
-  modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.6)", justifyContent: "center", alignItems: "center" },
-  modalBox: { width: "70%", maxHeight: "60%", borderRadius: 10, padding: 10, borderWidth: 1 },
-  modalItem: { padding: 10, borderBottomWidth: 1 },
-  closeBtn: { marginTop: 8, padding: 10, borderRadius: 8, alignItems: "center" },
-
-  actionButton: { flex: 1, minHeight: 44, alignItems: "center", justifyContent: "center", paddingVertical: 12, borderRadius: 8, marginHorizontal: 0 },
-  actionButtonText: { fontWeight: "bold", fontSize: 15 },
 
   turnaroundBtn: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 4,
-    paddingVertical: 2,
-    minHeight: 44,
-    paddingHorizontal: 8,
-    borderRadius: 999,
+    gap: t.spacing.xxs,
+    paddingVertical: t.spacing.none,
+    minHeight: 24,
+    paddingHorizontal: t.spacing.xxs,
+    borderRadius: t.radius.pill,
     borderWidth: 1,
   },
-  turnaroundBtnText: { fontWeight: "700", fontSize: 10.5, letterSpacing: 0.2 },
+  turnaroundBtnText: { fontWeight: "700", fontSize: t.typography.micro.fontSize, letterSpacing: 0.1 },
+  unpaidDayBtn: { minHeight: 24, paddingVertical: t.spacing.none, paddingHorizontal: t.spacing.xxs, gap: t.spacing.xxs },
+  unpaidDayBtnText: { fontSize: t.typography.micro.fontSize, letterSpacing: 0.1 },
   turnaroundPanel: {
     borderWidth: 1,
-    borderRadius: 10,
-    padding: 10,
-    marginBottom: 8,
+    borderRadius: t.radius.md,
+    padding: t.spacing.xs,
+    marginBottom: t.spacing.xs,
   },
   turnaroundSelect: {
-    marginTop: 6,
+    marginTop: t.spacing.xxs,
     borderWidth: 1,
-    borderRadius: 10,
-    paddingVertical: 10,
-    paddingHorizontal: 10,
+    borderRadius: t.radius.md,
+    paddingVertical: t.spacing.xs,
+    paddingHorizontal: t.spacing.xs,
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
   },
 
   summaryBox: {
-    marginHorizontal: 10,
-    marginTop: 6,
-    marginBottom: 10,
-    borderRadius: 10,
+    width: "100%",
+    marginTop: t.spacing.xxs,
+    marginBottom: t.spacing.xs,
+    borderRadius: t.radius.md,
     borderWidth: 1,
-    padding: 10,
+    padding: t.spacing.xs,
   },
   summaryHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   summaryRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    paddingVertical: 3,
+    paddingVertical: t.spacing.xxs,
   },
-  summaryLabel: { fontSize: 12, fontWeight: "700" },
-  summaryValue: { fontSize: 12, fontWeight: "900" },
-  summaryDivider: { height: 1, opacity: 0.4, marginVertical: 8 },
+  summaryLabel: { fontSize: t.typography.metadata.fontSize, fontWeight: "700" },
+  summarySubLabel: { fontSize: t.typography.caption.fontSize, fontWeight: "700", paddingLeft: t.spacing.sm },
+  summaryValue: { fontSize: t.typography.metadata.fontSize, fontWeight: "900" },
+  summaryDivider: { height: 1, opacity: 0.4, marginVertical: t.spacing.xs },
 });

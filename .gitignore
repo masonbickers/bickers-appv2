@@ -31,6 +31,8 @@ npm-debug.*
 yarn-debug.*
 yarn-error.*
 *.log
+playwright-report/
+test-results/
 
 # Local env (don’t commit secrets)
 .env
@@ -53,6 +55,7 @@ app-example
 
 # ignore junk
 node_modules__OLD/
+node_modules 2/
 .DS_Store
 **/.DS_Store
 app.json.bak

@@ -1,33 +1,19 @@
+import { AppText as Text, AppPressable as TouchableOpacity } from "../../../components/ui/AppPrimitives";
 // app/(protected)/service/work.js
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useFocusEffect, useRouter } from "expo-router";
-import { useCallback, useState } from "react";
 import {
-  ScrollView,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
-} from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+  useFocusEffect,
+  useRouter } from "expo-router";
+import { useCallback,
+  useState } from "react";
+import { StyleSheet, View } from "react-native";
 import Icon from "react-native-vector-icons/Feather";
 
-import PageHeaderCard from "../../../components/PageHeaderCard";
+import PageShell from "../../../components/layout/PageShell";
+import { servicePalette as COLORS } from "../../../lib/design/semantics";
 import { designTokens as t } from "../../../lib/design/tokens";
 import { useTheme } from "../../../providers/ThemeProvider";
-
-const COLORS = {
-  background: "#000000",
-  card: "#151517",
-  border: "#2B2B31",
-  textHigh: "#F5F5F5",
-  textMid: "#D4D4D8",
-  textLow: "#A1A1AA",
-  primaryAction: "#D94B52",
-  recceAction: "#D94B52",
-  inputBg: "#111114",
-  lightGray: "#3F3F46",
-};
+import { staticColors } from "../../../lib/design/staticColors";
 
 const FEATURE_FLAGS = {
   motResultLog: false,
@@ -39,10 +25,10 @@ const SERVICE_DRAFTS_KEY = "serviceFormDrafts_v1";
 const MINOR_SERVICE_DRAFTS_KEY = "minorServiceFormDrafts_v1";
 
 const FORM_ICON_COLORS = {
-  service: "#2563EB",
-  inspection: "#64748B",
+  service: staticColors.hex_2563eb_6ywilf,
+  inspection: staticColors.hex_64748b_4jwrvh,
   defect: COLORS.primaryAction,
-  repair: "#D97706",
+  repair: staticColors.hex_d97706_6cn8pp,
 };
 
 function getDraftTimestampFromId(id) {
@@ -67,11 +53,8 @@ function buildDraftList(raw, type, routePrefix, fallbackTitle) {
 
 export default function WorkScreen() {
   const router = useRouter();
-  const { colors, colorScheme } = useTheme();
+  const { colors } = useTheme();
   const [serviceDrafts, setServiceDrafts] = useState([]);
-  const [scrollAreaHeight, setScrollAreaHeight] = useState(0);
-  const [contentHeight, setContentHeight] = useState(0);
-  const scrollEnabled = contentHeight > scrollAreaHeight + 1;
 
   const go = (route) => {
     router.push(route);
@@ -143,36 +126,15 @@ export default function WorkScreen() {
   );
 
   return (
-    <SafeAreaView
-      edges={["left", "right"]}
-      style={[
-        styles.container,
-        {
-          backgroundColor:
-            colorScheme === "light" ? "#FFFFFF" : colors.background || COLORS.background,
-        },
-      ]}
+    <PageShell
+      contentSpacing="compact"
+      header={{
+        variant: "hero",
+        eyebrow: "Workshop",
+        title: "Workshop Forms",
+        subtitle: "Templates for servicing, MOT prep, defects and safety checks.",
+      }}
     >
-      <PageHeaderCard
-        eyebrow="Workshop"
-        title="Workshop Forms"
-        subtitle="Templates for servicing, MOT prep, defects and safety checks."
-        style={styles.headerCard}
-      />
-
-      <ScrollView
-        contentContainerStyle={styles.scrollContent}
-        scrollEnabled={scrollEnabled}
-        bounces={scrollEnabled}
-        alwaysBounceVertical={false}
-        showsVerticalScrollIndicator={scrollEnabled}
-        onLayout={(event) => {
-          setScrollAreaHeight(event.nativeEvent.layout.height);
-        }}
-        onContentSizeChange={(_, height) => {
-          setContentHeight(height);
-        }}
-      >
         {/* SECTION: SERVICE FORMS */}
         <View style={styles.sectionDivider}>
           <Text
@@ -345,15 +307,14 @@ export default function WorkScreen() {
           </>
         )}
 
-      </ScrollView>
-    </SafeAreaView>
+    </PageShell>
   );
 }
 
 /* ---------- SMALL CARD COMPONENT ---------- */
 
 function FormCard({ icon, iconTone = "service", title, subtitle, onPress, colors }) {
-  const iconColor = FORM_ICON_COLORS[iconTone] || "#64748B";
+  const iconColor = FORM_ICON_COLORS[iconTone] || staticColors.hex_64748b_4jwrvh;
 
   return (
     <TouchableOpacity
@@ -388,12 +349,6 @@ function FormCard({ icon, iconTone = "service", title, subtitle, onPress, colors
           {subtitle}
         </Text>
       </View>
-      <Icon
-        name="chevron-right"
-        size={18}
-        color={colors.textMuted || COLORS.textMid}
-        style={{ marginLeft: 8 }}
-      />
     </TouchableOpacity>
   );
 }
@@ -433,12 +388,6 @@ function DraftCard({ draft, onPress, colors }) {
           {draft.serviceType} · {draft.serviceDate}
         </Text>
       </View>
-      <Icon
-        name="chevron-right"
-        size={18}
-        color={colors.textMuted || COLORS.textMid}
-        style={{ marginLeft: 8 }}
-      />
     </TouchableOpacity>
   );
 }
@@ -452,8 +401,8 @@ const styles = StyleSheet.create({
   },
   headerCard: {
     marginHorizontal: t.spacing.md,
-    marginTop: 0,
-    marginBottom: 0,
+    marginTop: t.spacing.none,
+    marginBottom: t.spacing.none,
   },
   header: {
     flexDirection: "row",
@@ -462,44 +411,43 @@ const styles = StyleSheet.create({
     paddingVertical: t.spacing.sm,
   },
   backButton: {
-    paddingRight: 10,
+    paddingRight: t.spacing.xs,
   },
   pageTitle: {
-    fontSize: 20,
+    fontSize: t.typography.titleSmall.fontSize,
     fontWeight: "800",
     color: COLORS.textHigh,
   },
   pageSubtitle: {
-    marginTop: 2,
-    fontSize: 12,
+    marginTop: t.spacing.none,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textMid,
   },
   scrollContent: {
     padding: t.spacing.md,
-    paddingTop: 0,
-    paddingBottom: 24,
+    paddingTop: t.spacing.none,
+    paddingBottom: 140,
   },
   sectionDivider: {
     flexDirection: "row",
     alignItems: "center",
-    marginTop: 12,
-    marginBottom: 8,
+    marginTop: t.spacing.xs,
   },
   sectionTitle: {
-    fontSize: 17,
+    fontSize: t.typography.sectionTitle.fontSize,
     fontWeight: "800",
     color: COLORS.textHigh,
-    paddingRight: 10,
+    paddingRight: t.spacing.xs,
   },
   draftsWrap: {
-    marginTop: 2,
-    marginBottom: 12,
+    marginTop: t.spacing.none,
+    marginBottom: t.spacing.sm,
   },
   draftsTitle: {
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
     fontWeight: "700",
     color: COLORS.textHigh,
-    marginBottom: 8,
+    marginBottom: t.spacing.xs,
   },
 });
 
@@ -508,59 +456,58 @@ const cardStyles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: COLORS.card,
-    borderRadius: 10,
+    borderRadius: t.radius.md,
     minHeight: 72,
-    padding: 14,
-    marginBottom: 10,
+    padding: t.spacing.sm,
     borderWidth: 1,
   },
   iconWrap: {
     width: 32,
     height: 32,
-    borderRadius: 16,
-    backgroundColor: "#262626",
+    borderRadius: t.radius.pill,
+    backgroundColor: staticColors.hex_262626_70t9oi,
     alignItems: "center",
     justifyContent: "center",
-    marginRight: 10,
+    marginRight: t.spacing.xs,
   },
   title: {
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     fontWeight: "700",
     color: COLORS.textHigh,
-    marginBottom: 2,
+    marginBottom: t.spacing.none,
   },
   subtitle: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textLow,
   },
   draftCard: {
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: COLORS.card,
-    borderRadius: 10,
+    borderRadius: t.radius.md,
     minHeight: 64,
-    padding: 14,
-    marginBottom: 8,
+    padding: t.spacing.sm,
+    marginBottom: t.spacing.xs,
     borderWidth: 1,
     borderColor: COLORS.primaryAction,
   },
   draftIconWrap: {
     width: 32,
     height: 32,
-    borderRadius: 16,
-    backgroundColor: "rgba(217, 75, 82, 0.35)",
+    borderRadius: t.radius.pill,
+    backgroundColor: staticColors.rgba_6el2ey,
     alignItems: "center",
     justifyContent: "center",
-    marginRight: 10,
+    marginRight: t.spacing.xs,
   },
   draftTitle: {
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
     fontWeight: "700",
     color: COLORS.textHigh,
-    marginBottom: 2,
+    marginBottom: t.spacing.none,
   },
   draftSubtitle: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textLow,
   },
 });

@@ -1,21 +1,23 @@
+import { AppText as Text, AppPressable as TouchableOpacity } from "../../../components/ui/AppPrimitives";
+import {
+  servicePalette as COLORS } from "../../../lib/design/semantics";
 import { useRouter } from "expo-router";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect,
+  useMemo,
+  useState } from "react";
 import {
   ActivityIndicator,
   Alert,
-  ScrollView,
   StyleSheet,
-  Text,
-  TouchableOpacity,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 import { doc, serverTimestamp, updateDoc } from "firebase/firestore";
 
-import PageHeaderCard from "../../../components/PageHeaderCard";
+import PageShell from "../../../components/layout/PageShell";
 import { db } from "../../../firebaseConfig";
 import { designTokens as t } from "../../../lib/design/tokens";
+import { groupServiceIssuesByAsset } from "../../../lib/serviceIssueGrouping";
 import {
   isOpenAdvisoryItem,
   resolveMonitorReportItem,
@@ -23,17 +25,7 @@ import {
 import { useServiceCacheActions, useServiceCollection } from "../../../hooks/useServiceData";
 import { runOrQueueFirestoreMutations } from "../../../lib/sync/firestoreQueue";
 import { useTheme } from "../../../providers/ThemeProvider";
-
-const COLORS = {
-  background: "#0D0D0D",
-  card: "#1A1A1A",
-  border: "#333333",
-  textHigh: "#FFFFFF",
-  textMid: "#E0E0E0",
-  textLow: "#888888",
-  primaryAction: "#ED1C25",
-  amber: "#F59E0B",
-};
+import { staticColors } from "../../../lib/design/staticColors";
 
 function normaliseKey(value) {
   return String(value || "")
@@ -126,9 +118,15 @@ function buildOpenDefects({ vehicleChecks, vehicleIssues, defectReports }) {
     .filter((issue) => isApprovedDefect(issue?.review) && isOpenMaintenance(issue?.maintenance?.status))
     .map((issue) => ({
       id: `issue-${issue.id}`,
-      title: issue?.title || issue?.category || "Vehicle issue",
-      details: issue?.description || issue?.notes || issue?.review?.notes || "Approved vehicle issue.",
-      asset: getVehicleText(issue) || "Vehicle issue",
+      title:
+        issue?.title ||
+        issue?.category ||
+        (issue?.assetType === "equipment" ? "Equipment issue" : "Vehicle issue"),
+      details: issue?.description || issue?.notes || issue?.review?.notes || "Approved maintenance issue.",
+      asset:
+        getEquipmentText(issue) ||
+        getVehicleText(issue) ||
+        (issue?.assetType === "equipment" ? "Equipment issue" : "Vehicle issue"),
       date: getRecordDate(issue),
       route: `/service/defects/${buildDefectRouteId("vehicleIssues", issue.id)}`,
     }));
@@ -208,7 +206,7 @@ function useCollectionRows(collectionName, label) {
 
 export default function ServiceIssuesScreen() {
   const router = useRouter();
-  const { colors, colorScheme } = useTheme();
+  const { colors } = useTheme();
   const { patchServiceRow } = useServiceCacheActions();
   const [loading, setLoading] = useState(true);
   const [resolvingId, setResolvingId] = useState(null);
@@ -322,23 +320,14 @@ export default function ServiceIssuesScreen() {
   };
 
   return (
-    <SafeAreaView
-      edges={["left", "right"]}
-      style={[
-        styles.container,
-        {
-          backgroundColor:
-            colorScheme === "light" ? "#FFFFFF" : colors.background || COLORS.background,
-        },
-      ]}
+    <PageShell
+      header={{
+        variant: "hero",
+        eyebrow: "Workshop",
+        title: "Issues",
+        subtitle: "Open defects and amber advisories needing workshop attention.",
+      }}
     >
-      <PageHeaderCard
-        eyebrow="Workshop"
-        title="Issues"
-        subtitle="Open defects and amber advisories needing workshop attention."
-        style={styles.headerCard}
-      />
-
       {loading ? (
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={colors.accent || COLORS.primaryAction} />
@@ -347,7 +336,7 @@ export default function ServiceIssuesScreen() {
           </Text>
         </View>
       ) : (
-        <ScrollView contentContainerStyle={styles.scrollContent}>
+        <View style={styles.contentStack}>
           <View style={styles.summaryRow}>
             <SummaryCard label="Open defects" value={defects.length} tone="red" colors={colors} />
             <SummaryCard label="Advisories" value={visibleAdvisories.length} tone="amber" colors={colors} />
@@ -381,10 +370,9 @@ export default function ServiceIssuesScreen() {
             resolvingId={resolvingId}
           />
 
-          <View style={{ height: 40 }} />
-        </ScrollView>
+        </View>
       )}
-    </SafeAreaView>
+    </PageShell>
   );
 }
 
@@ -421,7 +409,15 @@ function IssueSection({
   resolvingId,
 }) {
   const badgeColor = tone === "red" ? COLORS.primaryAction : COLORS.amber;
-  const canResolve = typeof onResolve === "function";
+  const [expandedGroups, setExpandedGroups] = useState(() => new Set());
+  const toggleGroup = (groupKey) => {
+    setExpandedGroups((current) => {
+      const next = new Set(current);
+      if (next.has(groupKey)) next.delete(groupKey);
+      else next.add(groupKey);
+      return next;
+    });
+  };
   return (
     <View style={styles.sectionBlock}>
       <View style={styles.sectionHeaderRow}>
@@ -453,91 +449,240 @@ function IssueSection({
           </Text>
         </View>
       ) : (
-        items.map((item) => {
-          const CardShell = item.route && !canResolve ? TouchableOpacity : View;
-          const cardProps =
-            item.route && !canResolve
-              ? {
-                  activeOpacity: 0.85,
-                  onPress: () => onOpen(item.route),
-                }
-              : {};
-          const isResolving = resolvingId === item.id;
-
-          return (
-          <CardShell
-            key={item.id}
-            style={[
-              styles.issueCard,
-              {
-                backgroundColor: colors.surfaceAlt || COLORS.card,
-                borderColor: colors.border || COLORS.border,
-              },
-            ]}
-            {...cardProps}
-          >
-            <View style={[styles.iconWrap, { backgroundColor: badgeColor }]}>
-              <Icon name={icon} size={17} color="#FFFFFF" />
-            </View>
-            <View style={{ flex: 1 }}>
-              <View style={styles.issueHeaderRow}>
-                <Text style={[styles.issueTitle, { color: colors.text || COLORS.textHigh }]}>
-                  {item.title}
+        groupServiceIssuesByAsset(items).map((group) =>
+          group.items.length > 1 ? (
+            <View key={group.key} style={styles.vehicleGroup}>
+              <View style={styles.vehicleGroupHeader}>
+                <Icon name="truck" size={t.iconSize.sm} color={colors.textMuted || COLORS.textMid} />
+                <Text style={[styles.vehicleGroupTitle, { color: colors.text || COLORS.textHigh }]}> 
+                  {group.asset}
                 </Text>
-                <Text style={[styles.issueDate, { color: colors.textMuted || COLORS.textLow }]}>
-                  {formatDate(item.date)}
+                <Text style={[styles.vehicleGroupCount, { color: colors.textMuted || COLORS.textMid }]}> 
+                  {group.items.length} items
                 </Text>
               </View>
-              <Text style={[styles.assetText, { color: colors.textMuted || COLORS.textMid }]}>
-                {item.asset}
-              </Text>
-              <Text style={[styles.detailText, { color: colors.textMuted || COLORS.textMid }]}>
-                {item.details}
-              </Text>
-              {canResolve && (
-                <View style={styles.actionRow}>
-                  {!!item.route && (
-                    <TouchableOpacity
-                      style={[
-                        styles.actionButton,
-                        { borderColor: colors.border || COLORS.border },
-                      ]}
-                      activeOpacity={0.85}
-                      onPress={() => onOpen(item.route)}
-                    >
-                      <Icon
-                        name="file-text"
-                        size={13}
-                        color={colors.text || COLORS.textHigh}
-                      />
-                      <Text style={[styles.actionText, { color: colors.text || COLORS.textHigh }]}>
-                        Open record
-                      </Text>
-                    </TouchableOpacity>
-                  )}
+              <View
+                style={[
+                  styles.groupedIssueList,
+                  {
+                    backgroundColor: colors.surfaceAlt || COLORS.card,
+                    borderColor: colors.border || COLORS.border,
+                  },
+                ]}
+              >
+                {(expandedGroups.has(group.key) ? group.items : group.items.slice(0, 3)).map((item, index) => (
+                  <GroupedIssueRow
+                    key={item.id}
+                    item={item}
+                    icon={icon}
+                    badgeColor={badgeColor}
+                    colors={colors}
+                    onOpen={onOpen}
+                    onResolve={onResolve}
+                    isResolving={resolvingId === item.id}
+                    showDivider={index > 0}
+                  />
+                ))}
+                {group.items.length > 3 ? (
                   <TouchableOpacity
-                    style={[
-                      styles.actionButton,
-                      styles.resolveButton,
-                      { borderColor: colors.success || "#157347" },
-                    ]}
-                    activeOpacity={0.85}
-                    disabled={isResolving}
-                    onPress={() => onResolve(item)}
+                    style={[styles.groupToggle, { borderTopColor: colors.border || COLORS.border }]}
+                    onPress={() => toggleGroup(group.key)}
+                    activeOpacity={0.8}
+                    accessibilityRole="button"
+                    accessibilityLabel={expandedGroups.has(group.key) ? `Show fewer ${group.asset} items` : `Show all ${group.asset} items`}
                   >
-                    <Icon name="check-circle" size={13} color={colors.success || "#157347"} />
-                    <Text style={[styles.actionText, { color: colors.success || "#157347" }]}>
-                      {isResolving ? "Saving..." : "Mark fixed"}
+                    <Text style={[styles.groupToggleText, { color: colors.link || colors.accent }]}> 
+                      {expandedGroups.has(group.key)
+                        ? "Show less"
+                        : `Show ${group.items.length - 3} more`}
                     </Text>
+                    <Icon
+                      name={expandedGroups.has(group.key) ? "chevron-up" : "chevron-down"}
+                      size={t.iconSize.sm}
+                      color={colors.link || colors.accent}
+                    />
                   </TouchableOpacity>
-                </View>
-              )}
+                ) : null}
+              </View>
             </View>
-          </CardShell>
-        );
-        })
+          ) : (
+            <IssueCard
+              key={group.items[0].id}
+              item={group.items[0]}
+              icon={icon}
+              badgeColor={badgeColor}
+              colors={colors}
+              onOpen={onOpen}
+              onResolve={onResolve}
+              isResolving={resolvingId === group.items[0].id}
+            />
+          )
+        )
       )}
     </View>
+  );
+}
+
+function GroupedIssueRow({
+  item,
+  icon,
+  badgeColor,
+  colors,
+  onOpen,
+  onResolve,
+  isResolving,
+  showDivider,
+}) {
+  const canResolve = typeof onResolve === "function";
+  const CardShell = item.route ? TouchableOpacity : View;
+  const cardProps = item.route
+    ? {
+        activeOpacity: 0.85,
+        onPress: () => onOpen(item.route),
+        accessibilityRole: "button",
+        accessibilityLabel: `Open ${item.title}`,
+      }
+    : {};
+
+  return (
+    <CardShell
+      style={[
+        styles.groupedIssueRow,
+        showDivider && {
+          borderTopWidth: StyleSheet.hairlineWidth,
+          borderTopColor: colors.border || COLORS.border,
+        },
+      ]}
+      {...cardProps}
+    >
+      <View style={[styles.groupedIssueIcon, { backgroundColor: badgeColor }]}> 
+        <Icon name={icon} size={t.iconSize.xs} color={staticColors.hex_ffffff_5c2ocm} />
+      </View>
+      <View style={styles.groupedIssueCopy}>
+        <Text numberOfLines={1} style={[styles.groupedIssueTitle, { color: colors.text || COLORS.textHigh }]}> 
+          {item.title}
+        </Text>
+        <View style={styles.groupedIssueMeta}>
+          <Text numberOfLines={1} style={[styles.groupedIssueDetail, { color: colors.textMuted || COLORS.textMid }]}> 
+            {item.details}
+          </Text>
+          <Text style={[styles.issueDate, { color: colors.textMuted || COLORS.textLow }]}> 
+            {formatDate(item.date)}
+          </Text>
+          {!!item.route ? (
+            <Icon name="arrow-up-right" size={t.iconSize.xs} color={colors.textMuted || COLORS.textMid} />
+          ) : null}
+        </View>
+      </View>
+      {canResolve ? (
+        <TouchableOpacity
+          style={[styles.compactResolveButton, { borderColor: colors.success || staticColors.hex_157347_a4inet }]}
+          activeOpacity={0.8}
+          disabled={isResolving}
+          accessibilityRole="button"
+          accessibilityLabel={`Mark ${item.title} fixed`}
+          onPress={(event) => {
+            event?.stopPropagation?.();
+            onResolve(item);
+          }}
+        >
+          <Icon
+            name={isResolving ? "loader" : "check"}
+            size={t.iconSize.sm}
+            color={colors.success || staticColors.hex_157347_a4inet}
+          />
+        </TouchableOpacity>
+      ) : null}
+    </CardShell>
+  );
+}
+
+function IssueCard({
+  item,
+  icon,
+  badgeColor,
+  colors,
+  onOpen,
+  onResolve,
+  isResolving,
+  showAsset = true,
+}) {
+  const CardShell = item.route ? TouchableOpacity : View;
+  const cardProps = item.route
+    ? {
+        activeOpacity: 0.85,
+        onPress: () => onOpen(item.route),
+        accessibilityRole: "button",
+        accessibilityLabel: `Open ${item.title}`,
+      }
+    : {};
+  const canResolve = typeof onResolve === "function";
+
+  return (
+    <CardShell
+      style={[
+        styles.issueCard,
+        {
+          backgroundColor: colors.surfaceAlt || COLORS.card,
+          borderColor: colors.border || COLORS.border,
+        },
+      ]}
+      {...cardProps}
+    >
+      <View style={[styles.iconWrap, { backgroundColor: badgeColor }]}> 
+        <Icon name={icon} size={17} color={staticColors.hex_ffffff_5c2ocm} />
+      </View>
+      <View style={{ flex: 1 }}>
+        <Text style={[styles.issueTitle, { color: colors.text || COLORS.textHigh }]}> 
+          {item.title}
+        </Text>
+        <View style={styles.issueMetaRow}>
+          {showAsset ? (
+            <Text
+              numberOfLines={1}
+              style={[styles.assetText, { color: colors.textMuted || COLORS.textMid }]}
+            > 
+              {item.asset}
+            </Text>
+          ) : (
+            <View style={styles.assetSpacer} />
+          )}
+          <View style={styles.issueMetaAction}>
+            <Text style={[styles.issueDate, { color: colors.textMuted || COLORS.textLow }]}> 
+              {formatDate(item.date)}
+            </Text>
+            {!!item.route && (
+              <Icon name="arrow-up-right" size={t.iconSize.xs} color={colors.textMuted || COLORS.textMid} />
+            )}
+          </View>
+        </View>
+        <Text style={[styles.detailText, { color: colors.textMuted || COLORS.textMid }]}> 
+          {item.details}
+        </Text>
+        {canResolve && (
+          <View style={styles.actionRow}>
+            <TouchableOpacity
+              style={[
+                styles.actionButton,
+                styles.resolveButton,
+                { borderColor: colors.success || staticColors.hex_157347_a4inet },
+              ]}
+              activeOpacity={0.85}
+              disabled={isResolving}
+              onPress={(event) => {
+                event?.stopPropagation?.();
+                onResolve(item);
+              }}
+            >
+              <Icon name="check-circle" size={13} color={colors.success || staticColors.hex_157347_a4inet} />
+              <Text style={[styles.actionText, { color: colors.success || staticColors.hex_157347_a4inet }]}> 
+                {isResolving ? "Saving..." : "Mark fixed"}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        )}
+      </View>
+    </CardShell>
   );
 }
 
@@ -552,143 +697,234 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   loadingText: {
-    marginTop: 10,
-    fontSize: 13,
+    marginTop: t.spacing.xs,
+    fontSize: t.typography.bodySmall.fontSize,
   },
   headerCard: {
     marginHorizontal: t.spacing.md,
-    marginTop: 0,
-    marginBottom: 0,
+    marginTop: t.spacing.none,
+    marginBottom: t.spacing.none,
   },
   headerContent: {
-    paddingTop: 10,
-    paddingBottom: 8,
+    paddingTop: t.spacing.xs,
+    paddingBottom: t.spacing.xs,
   },
   headerEyebrow: {
-    fontSize: 11,
-    lineHeight: 14,
+    fontSize: t.typography.caption.fontSize,
+    lineHeight: t.typography.caption.lineHeight,
   },
   headerTitle: {
-    fontSize: 22,
-    lineHeight: 27,
-    marginTop: 1,
+    fontSize: t.typography.titleSmall.fontSize,
+    lineHeight: t.typography.titleSmall.lineHeight,
+    marginTop: t.spacing.none,
   },
   headerSubtitle: {
-    marginTop: 2,
-    fontSize: 12,
-    lineHeight: 16,
+    marginTop: t.spacing.none,
+    fontSize: t.typography.metadata.fontSize,
+    lineHeight: t.typography.metadata.lineHeight,
   },
   scrollContent: {
-    padding: 16,
-    paddingTop: 6,
-    paddingBottom: 104,
+    padding: t.spacing.md,
+    paddingTop: t.spacing.xxs,
+    paddingBottom: 140,
   },
   summaryRow: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 10,
-    marginBottom: 14,
+    gap: t.spacing.xs,
+  },
+  contentStack: {
+    gap: t.spacing.md,
   },
   summaryCard: {
     flex: 1,
     minWidth: 130,
-    borderRadius: 10,
+    borderRadius: t.radius.md,
     borderWidth: 1,
-    padding: 14,
+    padding: t.spacing.sm,
   },
   summaryValue: {
-    fontSize: 22,
+    fontSize: t.typography.titleSmall.fontSize,
     fontWeight: "900",
   },
   summaryLabel: {
-    marginTop: 2,
-    fontSize: 12,
+    marginTop: t.spacing.none,
+    fontSize: t.typography.metadata.fontSize,
   },
   sectionBlock: {
-    marginBottom: 16,
+    gap: t.spacing.sm,
   },
   sectionHeaderRow: {
     flexDirection: "row",
     alignItems: "flex-end",
-    marginBottom: 8,
   },
   sectionTitle: {
-    fontSize: 17,
+    fontSize: t.typography.sectionTitle.fontSize,
     fontWeight: "800",
   },
   sectionSubtitle: {
-    marginTop: 2,
-    fontSize: 12,
+    marginTop: t.spacing.none,
+    fontSize: t.typography.metadata.fontSize,
   },
   sectionCount: {
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
     fontWeight: "800",
   },
   emptyCard: {
-    borderRadius: 10,
+    borderRadius: t.radius.md,
     borderWidth: 1,
-    padding: 14,
+    padding: t.spacing.sm,
   },
   emptyText: {
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
   },
   issueCard: {
     flexDirection: "row",
-    borderRadius: 10,
+    borderRadius: t.radius.md,
     borderWidth: 1,
-    padding: 14,
-    marginBottom: 9,
+    padding: t.spacing.sm,
+  },
+  vehicleGroup: {
+    gap: t.spacing.xs,
+  },
+  vehicleGroupHeader: {
+    minHeight: t.controls.chipMinHeight,
+    paddingHorizontal: t.spacing.xxs,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: t.spacing.xs,
+  },
+  vehicleGroupTitle: {
+    flex: 1,
+    fontSize: t.typography.bodySmall.fontSize,
+    fontWeight: "800",
+  },
+  vehicleGroupCount: {
+    fontSize: t.typography.caption.fontSize,
+    fontWeight: "700",
+  },
+  groupedIssueList: {
+    borderRadius: t.radius.md,
+    borderWidth: 1,
+    overflow: "hidden",
+  },
+  groupedIssueRow: {
+    minHeight: 64,
+    paddingHorizontal: t.spacing.sm,
+    paddingVertical: t.spacing.xs,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: t.spacing.xs,
+  },
+  groupedIssueIcon: {
+    width: 28,
+    height: 28,
+    borderRadius: t.radius.pill,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  groupedIssueCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  groupedIssueTitle: {
+    fontSize: t.typography.body.fontSize,
+    fontWeight: "800",
+  },
+  groupedIssueMeta: {
+    marginTop: t.spacing.xxs,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: t.spacing.xxs,
+  },
+  groupedIssueDetail: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: t.typography.caption.fontSize,
+  },
+  compactResolveButton: {
+    width: t.controls.buttonHeight,
+    height: t.controls.buttonHeight,
+    borderRadius: t.radius.pill,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  groupToggle: {
+    minHeight: t.controls.buttonHeight,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: t.spacing.sm,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: t.spacing.xxs,
+  },
+  groupToggleText: {
+    fontSize: t.typography.metadata.fontSize,
+    fontWeight: "800",
   },
   iconWrap: {
     width: 34,
     height: 34,
-    borderRadius: 17,
+    borderRadius: t.radius.pill,
     alignItems: "center",
     justifyContent: "center",
-    marginRight: 10,
+    marginRight: t.spacing.xs,
   },
-  issueHeaderRow: {
+  issueMetaRow: {
     flexDirection: "row",
-    gap: 8,
+    alignItems: "center",
+    gap: t.spacing.xs,
+    marginTop: t.spacing.xxs,
+  },
+  issueMetaAction: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: t.spacing.xxs,
+    flexShrink: 0,
   },
   issueTitle: {
     flex: 1,
-    fontSize: 15,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "800",
   },
   issueDate: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
   },
   assetText: {
-    marginTop: 3,
-    fontSize: 13,
+    flex: 1,
+    minWidth: 0,
+    fontSize: t.typography.bodySmall.fontSize,
     fontWeight: "700",
   },
+  assetSpacer: {
+    flex: 1,
+  },
   detailText: {
-    marginTop: 5,
-    fontSize: 13,
-    lineHeight: 18,
+    marginTop: t.spacing.xxs,
+    fontSize: t.typography.bodySmall.fontSize,
+    lineHeight: t.typography.bodySmall.lineHeight,
   },
   actionRow: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 8,
-    marginTop: 10,
+    gap: t.spacing.xs,
+    marginTop: t.spacing.xs,
   },
   actionButton: {
     minHeight: 32,
-    borderRadius: 999,
+    borderRadius: t.radius.pill,
     borderWidth: 1,
-    paddingHorizontal: 10,
+    paddingHorizontal: t.spacing.xs,
     flexDirection: "row",
     alignItems: "center",
-    gap: 5,
+    gap: t.spacing.xxs,
   },
   resolveButton: {
-    backgroundColor: "rgba(21,115,71,0.08)",
+    backgroundColor: staticColors.rgba_13f5dp4,
   },
   actionText: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "800",
   },
 });

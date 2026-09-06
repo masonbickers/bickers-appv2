@@ -2,8 +2,6 @@ import { Fragment, useCallback, useRef, useState } from "react";
 import {
   ActivityIndicator,
   StyleSheet,
-  Text,
-  TouchableOpacity,
   View,
 } from "react-native";
 import Icon from "react-native-vector-icons/Feather";
@@ -11,6 +9,7 @@ import Icon from "react-native-vector-icons/Feather";
 import { ASYNC_STATES, resolveAsyncState } from "../lib/asyncState";
 import { designTokens as t } from "../lib/design/tokens";
 import { useTheme } from "../providers/ThemeProvider";
+import { AppButton, AppText } from "./ui/AppPrimitives";
 
 export function LoadingState({ label = "Loading…", compact = false, style }) {
   const { colors, tokens } = useTheme();
@@ -30,7 +29,7 @@ export function LoadingState({ label = "Loading…", compact = false, style }) {
       ]}
     >
       <ActivityIndicator size={compact ? "small" : "large"} color={colors.accent} />
-      <Text style={[styles.stateText, { color: colors.textMuted }]}>{label}</Text>
+      <AppText variant="bodySmall" tone="secondary" style={styles.stateText}>{label}</AppText>
     </View>
   );
 }
@@ -77,29 +76,21 @@ export function ErrorState({
     >
       <Icon name="alert-circle" size={compact ? 17 : 22} color={colors.danger} />
       <View style={styles.textColumn}>
-        {title ? <Text style={[styles.stateTitle, { color: colors.text }]}>{title}</Text> : null}
-        <Text style={[styles.stateText, { color: colors.textMuted }]}>{message}</Text>
+        {title ? <AppText variant="bodyStrong" style={styles.stateTitle}>{title}</AppText> : null}
+        <AppText variant="bodySmall" tone="secondary" style={styles.stateText}>{message}</AppText>
       </View>
       {onRetry ? (
-        <TouchableOpacity
-          accessibilityRole="button"
+        <AppButton
+          label="Retry"
           accessibilityLabel="Retry loading data"
-          accessibilityState={{ disabled: busy }}
           disabled={busy}
           onPress={retry}
-          style={[
-            styles.actionButton,
-            {
-              borderColor: colors.border,
-              backgroundColor: colors.surface,
-              opacity: busy ? 0.6 : 1,
-              borderRadius: tokens.radius.sm,
-            },
-          ]}
-        >
-          {busy ? <ActivityIndicator size="small" color={colors.accent} /> : null}
-          <Text style={[styles.actionText, { color: colors.accent }]}>Retry</Text>
-        </TouchableOpacity>
+          loading={busy}
+          variant="secondary"
+          density="compact"
+          size="small"
+          style={styles.actionButton}
+        />
       ) : null}
     </View>
   );
@@ -115,7 +106,7 @@ export function RefreshingIndicator({ visible = true, label = "Updating…", sty
       style={[styles.refreshing, style]}
     >
       <ActivityIndicator size="small" color={colors.accent} />
-      <Text style={[styles.refreshingText, { color: colors.textMuted }]}>{label}</Text>
+      <AppText variant="metadata" tone="secondary">{label}</AppText>
     </View>
   );
 }
@@ -145,24 +136,12 @@ export function EmptyState({
       ]}
     >
       <Icon name={icon} size={compact ? 22 : 28} color={colors.textMuted} />
-      {title ? <Text style={[styles.emptyTitle, { color: colors.text }]}>{title}</Text> : null}
+      {title ? <AppText variant="sectionTitle" align="center" style={styles.emptyTitle}>{title}</AppText> : null}
       {message ? (
-        <Text style={[styles.emptyMessage, { color: colors.textMuted }]}>{message}</Text>
+        <AppText variant="bodySmall" tone="secondary" align="center" style={styles.emptyMessage}>{message}</AppText>
       ) : null}
       {actionLabel && onAction ? (
-        <TouchableOpacity
-          accessibilityRole="button"
-          accessibilityLabel={actionLabel}
-          onPress={onAction}
-          style={[
-            styles.emptyAction,
-            { backgroundColor: colors.accent, borderRadius: tokens.radius.sm },
-          ]}
-        >
-          <Text style={[styles.emptyActionText, { color: colors.textOnAccent }]}>
-            {actionLabel}
-          </Text>
-        </TouchableOpacity>
+        <AppButton label={actionLabel} onPress={onAction} density={compact ? "compact" : "standard"} style={styles.emptyAction} />
       ) : null}
     </View>
   );
@@ -239,18 +218,12 @@ const styles = StyleSheet.create({
     paddingVertical: t.spacing.xs,
   },
   textColumn: { flex: 1, minWidth: 0 },
-  stateTitle: { fontSize: 14, lineHeight: 20, fontWeight: "800", marginBottom: 2 },
-  stateText: { flexShrink: 1, fontSize: 13, lineHeight: 18, fontWeight: "600" },
+  stateTitle: { marginBottom: t.spacing.xxs },
+  stateText: { flexShrink: 1 },
   actionButton: {
     minHeight: t.controls.buttonHeightLg,
-    borderWidth: 1,
-    paddingHorizontal: t.spacing.sm,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: t.spacing.xxs,
+    flexShrink: 0,
   },
-  actionText: { fontSize: 13, lineHeight: 18, fontWeight: "800" },
   refreshing: {
     minHeight: 32,
     marginBottom: t.spacing.xs,
@@ -259,7 +232,6 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     gap: t.spacing.xs,
   },
-  refreshingText: { fontSize: 12, lineHeight: 16, fontWeight: "700" },
   emptyCard: {
     minHeight: 150,
     borderWidth: 1,
@@ -269,13 +241,11 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   compactEmpty: { minHeight: 104, paddingVertical: t.spacing.md },
-  emptyTitle: { marginTop: 10, fontSize: 17, lineHeight: 22, fontWeight: "800", textAlign: "center" },
-  emptyMessage: { marginTop: 5, fontSize: 13, lineHeight: 19, textAlign: "center" },
+  emptyTitle: { marginTop: t.spacing.sm },
+  emptyMessage: { marginTop: t.spacing.xs },
   emptyAction: {
     minHeight: t.controls.buttonHeightLg,
     marginTop: t.spacing.sm,
-    paddingHorizontal: t.spacing.md,
-    justifyContent: "center",
+    alignSelf: "center",
   },
-  emptyActionText: { fontSize: 14, lineHeight: 20, fontWeight: "800" },
 });

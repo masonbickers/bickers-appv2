@@ -1,22 +1,26 @@
+import { AppButton, AppText as Text, AppPressable as TouchableOpacity, Checkbox, FormField, SegmentedControl, TextArea } from "../../../components/ui/AppPrimitives";
+import {
+  servicePalette as COLORS } from "../../../lib/design/semantics";
 // app/(protected)/service/defect-form.jsx
 import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
-import { useLocalSearchParams, useNavigation, useRouter } from "expo-router";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useLocalSearchParams,
+  useNavigation,
+  useRouter } from "expo-router";
+import { useEffect,
+  useMemo,
+  useRef,
+  useState } from "react";
 import {
     ActivityIndicator,
-    Alert,
-    Image,
-    Platform,
-    ScrollView,
-    StyleSheet,
-    Switch,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  Alert,
+  Image,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+
 import Icon from "react-native-vector-icons/Feather";
 
 import {
@@ -40,18 +44,9 @@ import {
 import { useServiceCacheActions, useServiceCollectionReader } from "../../../hooks/useServiceData";
 import { runOrQueueFirestoreMutations } from "../../../lib/sync/firestoreQueue";
 import { useTheme } from "../../../providers/ThemeProvider";
-
-const COLORS = {
-  background: "#0D0D0D",
-  card: "#1A1A1A",
-  border: "#333333",
-  textHigh: "#FFFFFF",
-  textMid: "#E0E0E0",
-  textLow: "#888888",
-  inputBg: "#1F1F1F",
-  primaryAction: "#ED1C25",
-  pillBg: "#262626",
-};
+import { staticColors } from "../../../lib/design/staticColors";
+import { designTokens as t } from "../../../lib/design/tokens";
+import PageShell from "../../../components/layout/PageShell";
 
 function isDownloadUrl(uri) {
   return typeof uri === "string" && /^https?:\/\//i.test(uri);
@@ -498,64 +493,19 @@ export default function DefectFormScreen() {
     backgroundColor: colors.surfaceAlt || COLORS.card,
     borderColor: colors.border || COLORS.border,
   };
-  const themedInput = {
-    backgroundColor: colors.inputBackground || "#FFFFFF",
-    borderColor: colors.inputBorder || colors.border || COLORS.border,
-    color: colors.text || COLORS.textHigh,
-  };
   const themedLabel = { color: colors.textMuted || COLORS.textMid };
 
   return (
-    <SafeAreaView
-      edges={["left", "right"]}
-      style={[
-        styles.container,
-        { backgroundColor: colors.background || COLORS.background },
-      ]}
-    >
+    <PageShell mode="form" width="form" header={{
+      variant: "compact",
+      title: "Defect report",
+      subtitle: "Log issues reported by drivers or crew against a vehicle.",
+      onBack: () => confirmLeave(() => router.back()),
+    }}>
       {/* HEADER */}
-      <View
-        style={[
-          styles.header,
-          { borderBottomColor: colors.border || COLORS.border },
-        ]}
-      >
-        <TouchableOpacity
-          style={styles.backButton}
-          onPress={() => confirmLeave(() => router.back())}
-          activeOpacity={0.8}
-        >
-          <Icon
-            name="chevron-left"
-            size={22}
-            color={colors.text || COLORS.textHigh}
-          />
-        </TouchableOpacity>
+      
 
-        <View style={{ flex: 1 }}>
-          <Text
-            style={[
-              styles.title,
-              { color: colors.text || COLORS.textHigh },
-            ]}
-          >
-            Defect report
-          </Text>
-          <Text
-            style={[
-              styles.subtitle,
-              { color: colors.textMuted || COLORS.textMid },
-            ]}
-          >
-            Log issues reported by drivers or crew against a vehicle.
-          </Text>
-        </View>
-      </View>
-
-      <ScrollView
-        contentContainerStyle={styles.content}
-        showsVerticalScrollIndicator={false}
-      >
+      <>
         {/* VEHICLE SECTION – MATCH MINOR SERVICE STYLE */}
         <View style={styles.sectionHeaderRow}>
           <Text
@@ -629,25 +579,12 @@ export default function DefectFormScreen() {
             </>
           ) : (
             <>
-              <Text style={[styles.label, themedLabel]}>Search vehicle</Text>
-              <View style={[styles.searchBox, themedInput]}>
-                <Icon
-                  name="search"
-                  size={16}
-                  color={colors.textMuted || COLORS.textMid}
-                  style={{ marginRight: 6 }}
-                />
-                <TextInput
-                  style={[
-                    styles.searchInput,
-                    { color: colors.text || COLORS.textHigh },
-                  ]}
-                  placeholder="Name, reg, manufacturer or model…"
-                  placeholderTextColor={colors.textMuted || COLORS.textLow}
-                  value={vehicleSearch}
-                  onChangeText={setVehicleSearch}
-                />
-              </View>
+              <FormField
+                label="Search vehicle"
+                placeholder="Name, reg, manufacturer or model…"
+                value={vehicleSearch}
+                onChangeText={setVehicleSearch}
+              />
 
               {loadingVehicles ? (
                 <View style={styles.centerRow}>
@@ -660,8 +597,8 @@ export default function DefectFormScreen() {
                   </Text>
                 </View>
               ) : (
-                <ScrollView
-                  style={{ maxHeight: 150, marginTop: 8 }}
+                <View
+                  style={{ maxHeight: 150, marginTop: t.spacing.xs }}
                   nestedScrollEnabled
                 >
                   {filteredVehicles.map((v) => {
@@ -708,37 +645,30 @@ export default function DefectFormScreen() {
                       </TouchableOpacity>
                     );
                   })}
-                </ScrollView>
+                </View>
               )}
             </>
           )}
 
           {/* Manual fields still available / prefilled */}
-          <Text style={[styles.label, themedLabel, { marginTop: 12 }]}>
-            Vehicle name
-          </Text>
-          <TextInput
-            style={[styles.input, themedInput]}
+          <FormField
+            label="Vehicle name"
+            style={{ marginTop: t.spacing.sm }}
             placeholder="e.g. Amarok, Silverado…"
-            placeholderTextColor={colors.textMuted || COLORS.textLow}
             value={vehicleName}
             onChangeText={setVehicleName}
           />
 
-          <Text style={[styles.label, themedLabel]}>Registration</Text>
-          <TextInput
-            style={[styles.input, themedInput]}
+          <FormField
+            label="Registration"
             placeholder="e.g. AB12 CDE"
-            placeholderTextColor={colors.textMuted || COLORS.textLow}
             value={registration}
             onChangeText={setRegistration}
           />
 
-          <Text style={[styles.label, themedLabel]}>Location on vehicle</Text>
-          <TextInput
-            style={[styles.input, themedInput]}
+          <FormField
+            label="Location on vehicle"
             placeholder="e.g. OSR wheel, front bumper, dash…"
-            placeholderTextColor={colors.textMuted || COLORS.textLow}
             value={location}
             onChangeText={setLocation}
           />
@@ -758,69 +688,37 @@ export default function DefectFormScreen() {
 
         <View style={[styles.card, themedCard]}>
 
-          <Text style={[styles.label, themedLabel]}>Description</Text>
-          <TextInput
-            style={[styles.input, themedInput, styles.multiline]}
+          <TextArea
+            label="Description"
             placeholder="Short summary of the issue…"
-            placeholderTextColor={colors.textMuted || COLORS.textLow}
             value={description}
             onChangeText={setDescription}
-            multiline
           />
 
-          <Text style={[styles.label, themedLabel]}>Severity</Text>
-          <View style={styles.pillRow}>
-            <SeverityPill
-              label="Immediate"
-              active={severity === "Immediate"}
-              onPress={() => setSeverity("Immediate")}
-            />
-            <SeverityPill
-              label="General"
-              active={severity === "General"}
-              onPress={() => setSeverity("General")}
-            />
-          </View>
+          <SegmentedControl
+            options={[{ label: "Immediate", value: "Immediate" }, { label: "General", value: "General" }]}
+            value={severity}
+            onChange={setSeverity}
+          />
 
-          <View style={styles.switchRow}>
-            <View style={{ flex: 1 }}>
-              <Text style={[styles.label, themedLabel]}>
-                Vehicle off road?
-              </Text>
-              <Text
-                style={[
-                  styles.switchHint,
-                  { color: colors.textMuted || COLORS.textLow },
-                ]}
-              >
-                If yes, treat as “do not drive / do not use” until cleared.
-              </Text>
-            </View>
-            <Switch
-              value={offRoad}
-              onValueChange={setOffRoad}
-              thumbColor={offRoad ? COLORS.primaryAction : "#999"}
-              trackColor={{ true: "rgba(255,59,48,0.4)", false: "#D5DEE8" }}
-            />
-          </View>
+          <Checkbox
+            checked={offRoad}
+            onChange={setOffRoad}
+            label="Vehicle off road? If yes, treat as “do not drive / do not use” until cleared."
+          />
 
-          <Text style={[styles.label, themedLabel]}>Reported by</Text>
-          <TextInput
-            style={[styles.input, themedInput]}
+          <FormField
+            label="Reported by"
             placeholder="Driver / crew name"
-            placeholderTextColor={colors.textMuted || COLORS.textLow}
             value={reportedBy}
             onChangeText={setReportedBy}
           />
 
-          <Text style={[styles.label, themedLabel]}>Additional notes</Text>
-          <TextInput
-            style={[styles.input, themedInput, styles.multiline]}
+          <TextArea
+            label="Additional notes"
             placeholder="Any extra context, sounds, when it happens, etc."
-            placeholderTextColor={colors.textMuted || COLORS.textLow}
             value={notes}
             onChangeText={setNotes}
-            multiline
           />
         </View>
 
@@ -846,7 +744,7 @@ export default function DefectFormScreen() {
               style={[
                 styles.addPhotoButton,
                 {
-                  backgroundColor: colors.inputBackground || "#FFFFFF",
+                  backgroundColor: colors.inputBackground || staticColors.hex_ffffff_5c2ocm,
                   borderColor: colors.border || COLORS.border,
                 },
               ]}
@@ -873,7 +771,7 @@ export default function DefectFormScreen() {
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
-              style={{ marginTop: 10 }}
+              style={{ marginTop: t.spacing.xs }}
             >
               {photos.map((uri) => (
                 <View key={uri} style={styles.photoThumbWrapper}>
@@ -882,7 +780,7 @@ export default function DefectFormScreen() {
                     style={styles.removePhotoBtn}
                     onPress={() => handleRemovePhoto(uri)}
                   >
-                    <Icon name="x" size={12} color="#fff" />
+                    <Icon name="x" size={12} color={staticColors.hex_fff_yhjmu8} />
                   </TouchableOpacity>
                 </View>
               ))}
@@ -891,71 +789,18 @@ export default function DefectFormScreen() {
         </View>
 
         {/* SAVE BUTTON */}
-        <TouchableOpacity
-          style={[
-            styles.saveButton,
-            {
-              backgroundColor: saving ? "#555" : COLORS.primaryAction,
-            },
-          ]}
+        <AppButton
+          label="Save defect"
+          icon="save"
           onPress={handleSave}
+          loading={saving}
           disabled={saving}
-          activeOpacity={0.9}
-        >
-          {saving ? (
-            <ActivityIndicator size="small" color={COLORS.textHigh} />
-          ) : (
-            <>
-              <Icon
-                name="save"
-                size={16}
-                color={COLORS.textHigh}
-                style={{ marginRight: 6 }}
-              />
-              <Text style={styles.saveButtonText}>Save defect</Text>
-            </>
-          )}
-        </TouchableOpacity>
+          fullWidth
+        />
 
         <View style={{ height: 20 }} />
-      </ScrollView>
-    </SafeAreaView>
-  );
-}
-
-/* ---------- SMALL COMPONENTS ---------- */
-
-function SeverityPill({ label, active, onPress }) {
-  const { colors } = useTheme();
-
-  return (
-    <TouchableOpacity
-      onPress={onPress}
-      activeOpacity={0.9}
-      style={[
-        styles.severityPill,
-        {
-          backgroundColor: colors.inputBackground || "#FFFFFF",
-          borderColor: colors.border || COLORS.border,
-        },
-        active && {
-          backgroundColor: colors.accentSoft || "rgba(255,59,48,0.18)",
-          borderColor: colors.accent || COLORS.primaryAction,
-        },
-      ]}
-    >
-      <Text
-        style={[
-          styles.severityPillText,
-          { color: colors.textMuted || COLORS.textMid },
-          active && {
-            color: colors.accent || COLORS.primaryAction,
-          },
-        ]}
-      >
-        {label}
-      </Text>
-    </TouchableOpacity>
+      </>
+    </PageShell>
   );
 }
 
@@ -969,84 +814,84 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingHorizontal: t.spacing.md,
+    paddingVertical: t.spacing.sm,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
   },
   backButton: {
-    paddingRight: 10,
+    paddingRight: t.spacing.xs,
   },
   title: {
-    fontSize: 22,
+    fontSize: t.typography.titleSmall.fontSize,
     fontWeight: "800",
     color: COLORS.textHigh,
   },
   subtitle: {
-    fontSize: 13,
-    marginTop: 2,
+    fontSize: t.typography.bodySmall.fontSize,
+    marginTop: t.spacing.none,
     color: COLORS.textMid,
   },
   content: {
-    padding: 16,
+    padding: t.spacing.md,
     paddingBottom: 110,
   },
   card: {
     backgroundColor: COLORS.card,
-    borderRadius: 10,
-    padding: 14,
-    marginBottom: 12,
+    borderRadius: t.radius.md,
+    padding: t.spacing.sm,
+    marginBottom: t.spacing.sm,
     borderWidth: 1,
     borderColor: COLORS.border,
   },
 
   /* SECTION HEADERS */
   sectionHeaderRow: {
-    marginTop: 6,
-    marginBottom: 6,
+    marginTop: t.spacing.xxs,
+    marginBottom: t.spacing.xxs,
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "flex-end",
   },
   sectionTitle: {
-    fontSize: 15,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "700",
     color: COLORS.textHigh,
   },
   sectionTitleAlt: {
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     fontWeight: "700",
     color: COLORS.textHigh,
-    marginBottom: 8,
+    marginBottom: t.spacing.xs,
   },
   sectionHint: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textMid,
   },
 
   /* LABELS / INPUTS */
   label: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "600",
     color: COLORS.textMid,
-    marginTop: 6,
-    marginBottom: 4,
+    marginTop: t.spacing.xxs,
+    marginBottom: t.spacing.xxs,
   },
   labelSmall: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     fontWeight: "600",
     color: COLORS.textLow,
-    marginBottom: 4,
+    marginBottom: t.spacing.xxs,
   },
   input: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 8,
+    backgroundColor: staticColors.hex_ffffff_5c2ocm,
+    borderRadius: t.radius.sm,
     borderWidth: 1,
     borderColor: COLORS.border,
     color: COLORS.textHigh,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    fontSize: 14,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xs,
+    fontSize: t.typography.body.fontSize,
   },
   multiline: {
     minHeight: 70,
@@ -1057,82 +902,82 @@ const styles = StyleSheet.create({
   searchBox: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#FFFFFF",
-    borderRadius: 8,
+    backgroundColor: staticColors.hex_ffffff_5c2ocm,
+    borderRadius: t.radius.sm,
     borderWidth: 1,
     borderColor: COLORS.border,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
   },
   searchInput: {
     flex: 1,
     color: COLORS.textHigh,
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
   },
   centerRow: {
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 10,
+    paddingVertical: t.spacing.xs,
   },
   emptyText: {
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
     color: COLORS.textMid,
   },
   vehicleRow: {
     flexDirection: "row",
     alignItems: "center",
-    paddingVertical: 8,
+    paddingVertical: t.spacing.xs,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
   },
   vehicleRowActive: {
-    backgroundColor: "rgba(255,59,48,0.12)",
-    borderRadius: 8,
-    paddingHorizontal: 8,
+    backgroundColor: staticColors.rgba_mxgb69,
+    borderRadius: t.radius.sm,
+    paddingHorizontal: t.spacing.xs,
   },
   vehicleName: {
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     fontWeight: "600",
     color: COLORS.textHigh,
   },
   vehicleReg: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textMid,
   },
   selectedVehicleRow: {
     flexDirection: "row",
     alignItems: "center",
-    paddingVertical: 4,
+    paddingVertical: t.spacing.xxs,
   },
   vehicleMetaRow: {
-    marginTop: 8,
+    marginTop: t.spacing.xs,
   },
   vehicleMeta: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textMid,
   },
 
   /* SEVERITY / SWITCH */
   pillRow: {
     flexDirection: "row",
-    marginTop: 4,
-    marginBottom: 4,
+    marginTop: t.spacing.xxs,
+    marginBottom: t.spacing.xxs,
   },
   severityPill: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
-    backgroundColor: "#FFFFFF",
-    marginRight: 8,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
+    borderRadius: t.radius.pill,
+    backgroundColor: staticColors.hex_ffffff_5c2ocm,
+    marginRight: t.spacing.xs,
     borderWidth: 1,
     borderColor: COLORS.border,
   },
   severityPillActive: {
-    backgroundColor: "rgba(255,59,48,0.18)",
+    backgroundColor: staticColors.rgba_mxgb17,
     borderColor: COLORS.primaryAction,
   },
   severityPillText: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textMid,
     fontWeight: "600",
   },
@@ -1142,19 +987,19 @@ const styles = StyleSheet.create({
   switchRow: {
     flexDirection: "row",
     alignItems: "center",
-    marginTop: 8,
+    marginTop: t.spacing.xs,
   },
   switchHint: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     color: COLORS.textLow,
-    marginTop: 2,
+    marginTop: t.spacing.none,
   },
 
   /* PHOTOS */
   photosHint: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textMid,
-    marginBottom: 8,
+    marginBottom: t.spacing.xs,
   },
   photoRow: {
     flexDirection: "row",
@@ -1163,27 +1008,27 @@ const styles = StyleSheet.create({
   addPhotoButton: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderRadius: 999,
-    backgroundColor: "#FFFFFF",
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xs,
+    borderRadius: t.radius.pill,
+    backgroundColor: staticColors.hex_ffffff_5c2ocm,
     borderWidth: 1,
     borderColor: COLORS.border,
   },
   addPhotoText: {
-    marginLeft: 6,
-    fontSize: 12,
+    marginLeft: t.spacing.xxs,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "600",
     color: COLORS.textHigh,
   },
   photoThumbWrapper: {
-    marginRight: 10,
-    marginTop: 6,
+    marginRight: t.spacing.xs,
+    marginTop: t.spacing.xxs,
   },
   photoThumb: {
     width: 90,
     height: 90,
-    borderRadius: 8,
+    borderRadius: t.radius.sm,
   },
   removePhotoBtn: {
     position: "absolute",
@@ -1191,24 +1036,24 @@ const styles = StyleSheet.create({
     right: 4,
     width: 20,
     height: 20,
-    borderRadius: 10,
-    backgroundColor: "rgba(0,0,0,0.7)",
+    borderRadius: t.radius.pill,
+    backgroundColor: staticColors.rgba_11xlynb,
     alignItems: "center",
     justifyContent: "center",
   },
 
   /* SAVE */
   saveButton: {
-    marginTop: 6,
-    borderRadius: 999,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
+    marginTop: t.spacing.xxs,
+    borderRadius: t.radius.pill,
+    paddingVertical: t.spacing.sm,
+    paddingHorizontal: t.spacing.md,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
   },
   saveButtonText: {
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     fontWeight: "700",
     color: COLORS.textHigh,
   },

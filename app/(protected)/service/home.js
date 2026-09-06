@@ -1,23 +1,22 @@
+import { AppText as Text, AppPressable as TouchableOpacity } from "../../../components/ui/AppPrimitives";
 // app/(protected)/service/home.js
 import { useRouter } from "expo-router";
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Image,
-  RefreshControl,
-  ScrollView,
   StyleSheet,
-  Text,
-  TouchableOpacity,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
 import PageHeaderCard from "../../../components/PageHeaderCard";
+import PageShell from "../../../components/layout/PageShell";
 import { useServiceCollection } from "../../../hooks/useServiceData";
 import { resolveWorkspaceAccess } from "../../../lib/access";
+import { shouldBlockInitialRender } from "../../../lib/asyncState";
 import { createDashboardCardStyles } from "../../../lib/design/dashboard";
+import { servicePalette as COLORS } from "../../../lib/design/semantics";
 import { designTokens as t } from "../../../lib/design/tokens";
 import {
   getEquipmentNextInspection,
@@ -30,21 +29,9 @@ import {
 import { countOpenMonitorItems } from "../../../lib/serviceAdvisories";
 import { useAuth } from "../../../providers/AuthProvider";
 import { useTheme } from "../../../providers/ThemeProvider";
+import { staticColors } from "../../../lib/design/staticColors";
 
 /* ---------- CONSTANTS & HELPERS ---------- */
-
-const COLORS = {
-  background: "#000000",
-  card: "#151517",
-  border: "#2B2B31",
-  textHigh: "#F5F5F5",
-  textMid: "#D4D4D8",
-  textLow: "#A1A1AA",
-  primaryAction: "#D94B52",
-  recceAction: "#D94B52",
-  inputBg: "#111114",
-  lightGray: "#3F3F46",
-};
 
 const SERVICE_ROUTES = {
   settings: "/(protected)/service/settings",
@@ -56,13 +43,10 @@ const SERVICE_ROUTES = {
   mainApp: "/screens/homescreen",
 };
 
+const INITIAL_LOAD_MAX_MS = 4000;
+
 function safeArray(value) {
   return Array.isArray(value) ? value : [];
-}
-
-function safeString(value, fallback = "") {
-  if (value === null || value === undefined) return fallback;
-  return String(value);
 }
 
 function toDateMaybe(value) {
@@ -134,17 +118,6 @@ function pickWorstStatusCode(motCode, serviceCode) {
   if (codes.includes("ok")) return "ok";
 
   return "unknown";
-}
-
-function formatDateShort(value) {
-  const d = toDateMaybe(value);
-  if (!d) return "";
-
-  return d.toLocaleDateString("en-GB", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "2-digit",
-  });
 }
 
 function normaliseKey(value) {
@@ -337,7 +310,7 @@ function buildActivityItems({
 
 export default function ServiceHomeScreen() {
   const router = useRouter();
-  const { colors, colorScheme } = useTheme();
+  const { colors } = useTheme();
   const { employee } = useAuth();
 
   const vehiclesResource = useServiceCollection("vehicles", { orderByField: "name" });
@@ -369,10 +342,27 @@ export default function ServiceHomeScreen() {
     inspectionsResource,
     equipmentResource,
   ];
-  const loading = serviceResources.some((resource) => resource.isInitialLoading);
-  const refreshing = serviceResources.some((resource) => resource.isRefreshing);
+  const [initialLoadTimedOut, setInitialLoadTimedOut] = useState(false);
+  // Render progressively once any collection has resolved. Secondary badge and
+  // activity listeners should not hold the entire dashboard behind a loader.
+  const allResourcesLoading = shouldBlockInitialRender(serviceResources);
+  const loading = allResourcesLoading && !initialLoadTimedOut;
+  const refreshing =
+    !loading && serviceResources.some((resource) => resource.isRefreshing);
   const refreshServiceHome = () =>
     Promise.all(serviceResources.map((resource) => resource.refresh()));
+
+  useEffect(() => {
+    if (!allResourcesLoading) {
+      setInitialLoadTimedOut(false);
+      return undefined;
+    }
+    const timer = setTimeout(
+      () => setInitialLoadTimedOut(true),
+      INITIAL_LOAD_MAX_MS
+    );
+    return () => clearTimeout(timer);
+  }, [allResourcesLoading]);
 
   const workspaceAccess = useMemo(
     () => resolveWorkspaceAccess(employee),
@@ -473,112 +463,53 @@ export default function ServiceHomeScreen() {
     return { total, overdue, dueSoon, defects };
   }, [openDefectCount, processed]);
 
-  const attentionVehicles = useMemo(() => {
-    const overdue = processed.filter(
-      (v) =>
-        v.motStatus.code === "overdue" || v.serviceStatus.code === "overdue"
-    );
-
-    const dueSoon = processed.filter(
-      (v) =>
-        v.motStatus.code === "due-soon" || v.serviceStatus.code === "due-soon"
-    );
-
-    const seen = new Set();
-    const dedupedCombined = [...overdue, ...dueSoon].filter((v) => {
-      if (seen.has(v.id)) return false;
-      seen.add(v.id);
-      return true;
-    });
-
-    const byUrgency = dedupedCombined.sort((a, b) => {
-      const aMot = daysUntilDate(a.motDateRaw);
-      const aService = daysUntilDate(a.serviceDateRaw);
-      const bMot = daysUntilDate(b.motDateRaw);
-      const bService = daysUntilDate(b.serviceDateRaw);
-
-      const aWorst = Math.min(
-        aMot ?? Number.POSITIVE_INFINITY,
-        aService ?? Number.POSITIVE_INFINITY
-      );
-
-      const bWorst = Math.min(
-        bMot ?? Number.POSITIVE_INFINITY,
-        bService ?? Number.POSITIVE_INFINITY
-      );
-
-      return aWorst - bWorst;
-    });
-
-    return byUrgency.slice(0, 5);
-  }, [processed]);
-
   return (
-    <SafeAreaView
-      edges={["left", "right"]}
-      style={[
-        styles.container,
-        {
-          backgroundColor:
-            colorScheme === "light" ? "#FFFFFF" : colors.background || COLORS.background,
-        },
-      ]}
-    >
-      <PageHeaderCard
-        eyebrow="Workshop"
-        title="Service & Maintenance"
-        subtitle="Overview of MOT, servicing, defects and workshop activity."
-        style={styles.headerCard}
-        contentStyle={styles.headerContent}
-        topSlot={
-          <View style={styles.header}>
-            <View style={{ flex: 1 }}>
-              <Image
-                source={require("../../../assets/images/bickers-action-logo.png")}
-                style={styles.logo}
-                resizeMode="contain"
-              />
-            </View>
+    <PageShell
+      contentSpacing="compact"
+      customHeader={
+        <PageHeaderCard
+          eyebrow="Workshop"
+          title="Service & Maintenance"
+          subtitle="Overview of MOT, servicing, defects and workshop activity."
+          contentStyle={styles.headerContent}
+          topSlot={
+            <View style={styles.header}>
+              <View style={{ flex: 1 }}>
+                <Image
+                  source={require("../../../assets/images/bickers-action-logo.png")}
+                  style={styles.logo}
+                  resizeMode="contain"
+                />
+              </View>
 
-            {canSwitchToMainApp && (
+              {canSwitchToMainApp && (
+                <TouchableOpacity
+                  style={[styles.profileButton, { borderColor: colors.border || COLORS.border }]}
+                  onPress={() => safePush(SERVICE_ROUTES.mainApp)}
+                  activeOpacity={0.8}
+                  accessibilityRole="button"
+                  accessibilityLabel="Switch to main app"
+                >
+                  <Icon name="grid" size={21} color={colors.text || COLORS.textHigh} />
+                </TouchableOpacity>
+              )}
+
               <TouchableOpacity
-                style={[
-                  styles.profileButton,
-                  { borderColor: colors.border || COLORS.border },
-                ]}
-                onPress={() => safePush(SERVICE_ROUTES.mainApp)}
+                style={[styles.profileButton, { borderColor: colors.border || COLORS.border }]}
+                onPress={() => safePush(SERVICE_ROUTES.settings)}
                 activeOpacity={0.8}
                 accessibilityRole="button"
-                accessibilityLabel="Switch to main app"
+                accessibilityLabel="Open service settings"
               >
-                <Icon
-                  name="grid"
-                  size={21}
-                  color={colors.text || COLORS.textHigh}
-                />
+                <Icon name="user" size={22} color={colors.text || COLORS.textHigh} />
               </TouchableOpacity>
-            )}
-
-            <TouchableOpacity
-              style={[
-                styles.profileButton,
-                { borderColor: colors.border || COLORS.border },
-              ]}
-              onPress={() => safePush(SERVICE_ROUTES.settings)}
-              activeOpacity={0.8}
-              accessibilityRole="button"
-              accessibilityLabel="Open service settings"
-            >
-              <Icon
-                name="user"
-                size={22}
-                color={colors.text || COLORS.textHigh}
-              />
-            </TouchableOpacity>
-          </View>
-        }
-      />
-
+            </View>
+          }
+        />
+      }
+      customHeaderPlacement="scroll"
+      refresh={{ refreshing, onRefresh: refreshServiceHome }}
+    >
       {loading ? (
         <View style={styles.loadingContainer}>
           <ActivityIndicator
@@ -595,17 +526,7 @@ export default function ServiceHomeScreen() {
           </Text>
         </View>
       ) : (
-        <ScrollView
-          contentContainerStyle={styles.scrollContent}
-          refreshControl={
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={refreshServiceHome}
-              tintColor={colors.accent}
-              colors={[colors.accent]}
-            />
-          }
-        >
+        <>
           {/* FLEET SUMMARY CARD */}
           <View
             style={[
@@ -637,20 +558,20 @@ export default function ServiceHomeScreen() {
                 value={summary.overdue}
                 color={
                   summary.overdue > 0
-                    ? "#ED1C25"
+                    ? staticColors.hex_ed1c25_4py4qa
                     : colors.textMuted || COLORS.textMid
                 }
                 labelColor={colors.textMuted || COLORS.textMid}
               />
             </View>
 
-            <View style={[styles.summaryRow, { marginTop: 10 }]}>
+            <View style={[styles.summaryRow, { marginTop: t.spacing.xs }]}>
               <SummaryItem
                 label="Due soon (30d)"
                 value={summary.dueSoon}
                 color={
                   summary.dueSoon > 0
-                    ? "#FF9500"
+                    ? staticColors.hex_ff9500_5c3jxm
                     : colors.textMuted || COLORS.textMid
                 }
                 labelColor={colors.textMuted || COLORS.textMid}
@@ -660,7 +581,7 @@ export default function ServiceHomeScreen() {
                 value={summary.defects}
                 color={
                   summary.defects > 0
-                    ? "#ED1C25"
+                    ? staticColors.hex_ed1c25_4py4qa
                     : colors.textMuted || COLORS.textMid
                 }
                 labelColor={colors.textMuted || COLORS.textMid}
@@ -702,7 +623,7 @@ export default function ServiceHomeScreen() {
             />
           </View>
 
-          <View style={[styles.quickRow, { marginTop: 10 }]}>
+          <View style={styles.quickRow}>
             <QuickActionCard
               icon="alert-triangle"
               title="Defects & Issues"
@@ -733,7 +654,7 @@ export default function ServiceHomeScreen() {
             />
           </View>
 
-          <View style={[styles.quickRow, { marginTop: 10 }]}>
+          <View style={styles.quickRow}>
             <QuickActionCard
               icon="activity"
               title="Activity History"
@@ -750,235 +671,9 @@ export default function ServiceHomeScreen() {
             />
           </View>
 
-          {/* ATTENTION NEEDED */}
-          <View style={styles.sectionDivider}>
-            <Text
-              style={[
-                styles.sectionTitle,
-                { color: colors.text || COLORS.textHigh },
-              ]}
-            >
-              Attention Needed
-            </Text>
-          </View>
-
-          {attentionVehicles.length === 0 ? (
-            <View style={styles.emptyState}>
-              <Icon
-                name="check-circle"
-                size={30}
-                color={colors.textMuted || COLORS.textMid}
-              />
-              <Text
-                style={[
-                  styles.emptyTitle,
-                  { color: colors.text || COLORS.textHigh },
-                ]}
-              >
-                Nothing urgent
-              </Text>
-              <Text
-                style={[
-                  styles.emptySubtitle,
-                  { color: colors.textMuted || COLORS.textMid },
-                ]}
-              >
-                No MOT or service items are overdue or due soon.
-              </Text>
-            </View>
-          ) : (
-            attentionVehicles.map((v) => {
-              const vehicleId = safeString(v?.id);
-              const name = v?.name || v?.vehicleName || "Unnamed vehicle";
-              const reg = v?.reg || v?.registration || "";
-              const manufacturer = v?.manufacturer || "";
-              const model = v?.model || "";
-              const taxStatus = v.taxStatus || "Unknown";
-              const insuranceStatus = v.insuranceStatus || "Unknown";
-              const worstCode = v?.worstCode;
-
-              const motStatusWithDate = {
-                ...v.motStatus,
-                label:
-                  v.motStatus.label +
-                  (v.motDateRaw ? ` · ${formatDateShort(v.motDateRaw)}` : ""),
-              };
-
-              const serviceStatusWithDate = {
-                ...v.serviceStatus,
-                label:
-                  v.serviceStatus.label +
-                  (v.serviceDateRaw
-                    ? ` · ${formatDateShort(v.serviceDateRaw)}`
-                    : ""),
-              };
-
-              let borderAccent = colors.border || COLORS.border;
-              if (worstCode === "overdue") borderAccent = "#ED1C25";
-              else if (worstCode === "due-soon") borderAccent = "#FF9500";
-
-              return (
-                <TouchableOpacity
-                  key={vehicleId || `${name}-${reg}`}
-                  style={[
-                    styles.vehicleCard,
-                    {
-                      backgroundColor: colors.surfaceAlt || COLORS.card,
-                      borderLeftColor: borderAccent,
-                      borderColor: colors.border || COLORS.border,
-                    },
-                  ]}
-                  activeOpacity={0.85}
-                  disabled={!vehicleId}
-                  onPress={() => {
-                    if (!vehicleId) {
-                      console.warn("Cannot open vehicle. Missing vehicle id:", v);
-                      return;
-                    }
-
-                    safePush(`/(protected)/service/vehicles/${vehicleId}`);
-                  }}
-                >
-                  <View style={styles.vehicleHeaderRow}>
-                    <View style={{ flex: 1 }}>
-                      <Text
-                        style={[
-                          styles.vehicleTitle,
-                          { color: colors.text || COLORS.textHigh },
-                        ]}
-                      >
-                        {name}
-                      </Text>
-
-                      {!!reg && (
-                        <Text
-                          style={[
-                            styles.vehicleReg,
-                            { color: colors.textMuted || COLORS.textMid },
-                          ]}
-                        >
-                          {reg}
-                        </Text>
-                      )}
-
-                      {(manufacturer || model) && (
-                        <Text
-                          style={[
-                            styles.vehicleReg,
-                            { color: colors.textMuted || COLORS.textMid },
-                          ]}
-                        >
-                          {manufacturer}
-                          {manufacturer && model ? " · " : ""}
-                          {model}
-                        </Text>
-                      )}
-                    </View>
-
-                    <View style={{ alignItems: "flex-end" }}>
-                      <Text
-                        style={[
-                          styles.cardHint,
-                          { color: colors.textMuted || COLORS.textLow },
-                        ]}
-                      >
-                        Tap to view & book work
-                      </Text>
-                      <Icon
-                        name="chevron-right"
-                        size={18}
-                        color={colors.textMuted || COLORS.textMid}
-                        style={{ marginTop: 2 }}
-                      />
-                    </View>
-                  </View>
-
-                  <View style={styles.statusRow}>
-                    <StatusPill label="MOT" status={motStatusWithDate} />
-                    <StatusPill label="Service" status={serviceStatusWithDate} />
-
-                    {v.hasDefects && (
-                      <View style={styles.defectPill}>
-                        <Icon
-                          name="alert-triangle"
-                          size={14}
-                          color={COLORS.textHigh}
-                          style={{ marginRight: 4 }}
-                        />
-                        <Text style={styles.defectText}>
-                          {v.defects.length} defect
-                          {v.defects.length > 1 ? "s" : ""}
-                        </Text>
-                      </View>
-                    )}
-                  </View>
-
-                  <View style={styles.metaRow}>
-                    <View style={styles.metaItem}>
-                      <Text
-                        style={[
-                          styles.metaLabel,
-                          { color: colors.textMuted || COLORS.textLow },
-                        ]}
-                      >
-                        Tax
-                      </Text>
-                      <Text
-                        style={[
-                          styles.metaValue,
-                          { color: colors.textMuted || COLORS.textMid },
-                        ]}
-                      >
-                        {taxStatus}
-                      </Text>
-                    </View>
-                    <View style={styles.metaItem}>
-                      <Text
-                        style={[
-                          styles.metaLabel,
-                          { color: colors.textMuted || COLORS.textLow },
-                        ]}
-                      >
-                        Insurance
-                      </Text>
-                      <Text
-                        style={[
-                          styles.metaValue,
-                          { color: colors.textMuted || COLORS.textMid },
-                        ]}
-                      >
-                        {insuranceStatus}
-                      </Text>
-                    </View>
-                    {typeof v.mileage === "number" && (
-                      <View style={styles.metaItem}>
-                        <Text
-                          style={[
-                            styles.metaLabel,
-                            { color: colors.textMuted || COLORS.textLow },
-                          ]}
-                        >
-                          Odo
-                        </Text>
-                        <Text
-                          style={[
-                            styles.metaValue,
-                            { color: colors.textMuted || COLORS.textMid },
-                          ]}
-                        >
-                          {v.mileage.toLocaleString("en-GB")} mi
-                        </Text>
-                      </View>
-                    )}
-                  </View>
-                </TouchableOpacity>
-              );
-            })
-          )}
-
-        </ScrollView>
+        </>
       )}
-    </SafeAreaView>
+    </PageShell>
   );
 }
 
@@ -1013,7 +708,7 @@ function QuickActionCard({
         quickStyles.card,
         dashboardCards.quickActionCard,
         {
-          borderColor: "rgba(100,116,139,0.28)",
+          borderColor: staticColors.rgba_z8bd5i,
           shadowOpacity: 0,
           elevation: 0,
         },
@@ -1048,48 +743,21 @@ function QuickActionCard({
   );
 }
 
-function StatusPill({ label, status }) {
-  const code = status?.code;
-  if (code === "unknown") return null;
-
-  let bg = "rgba(74, 74, 74, 0.7)";
-  let fg = COLORS.textHigh;
-
-  if (code === "overdue") {
-    bg = "rgba(255,59,48,0.22)";
-    fg = "#ED1C25";
-  } else if (code === "due-soon") {
-    bg = "rgba(255,149,0,0.22)";
-    fg = "#FF9500";
-  } else if (code === "ok") {
-    bg = "rgba(52,199,89,0.22)";
-    fg = "#34C759";
-  }
-
-  return (
-    <View style={[styles.statusPill, { backgroundColor: bg }]}>
-      <Text style={[styles.statusPillText, { color: fg }]}>
-        {label}: {status?.label || "No date"}
-      </Text>
-    </View>
-  );
-}
-
 /* ---------- STYLES ---------- */
 
 const summaryStyles = StyleSheet.create({
   item: {
     flex: 1,
     minWidth: 0,
-    paddingRight: 12,
+    paddingRight: t.spacing.sm,
   },
   value: {
-    fontSize: 20,
+    fontSize: t.typography.titleSmall.fontSize,
     fontWeight: "800",
   },
   label: {
-    fontSize: 13,
-    marginTop: 2,
+    fontSize: t.typography.bodySmall.fontSize,
+    marginTop: t.spacing.none,
   },
 });
 
@@ -1097,18 +765,19 @@ const quickStyles = StyleSheet.create({
   card: {
     flex: 1,
     minWidth: 0,
-    borderRadius: 10,
-    padding: 14,
+    borderRadius: t.radius.md,
+    padding: t.spacing.sm,
+    paddingRight: t.spacing.xl,
     borderWidth: 1,
   },
   iconWrap: {
     width: 28,
     height: 28,
-    borderRadius: 14,
-    backgroundColor: "#262626",
+    borderRadius: t.radius.pill,
+    backgroundColor: staticColors.hex_262626_70t9oi,
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 8,
+    marginBottom: t.spacing.xs,
   },
   badge: {
     position: "absolute",
@@ -1116,28 +785,28 @@ const quickStyles = StyleSheet.create({
     right: -9,
     minWidth: 18,
     height: 18,
-    borderRadius: 9,
-    paddingHorizontal: 4,
+    borderRadius: t.radius.md,
+    paddingHorizontal: t.spacing.xxs,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#ED1C25",
+    backgroundColor: staticColors.hex_ed1c25_4py4qa,
     borderWidth: 1,
-    borderColor: "#FFFFFF",
+    borderColor: staticColors.hex_ffffff_5c2ocm,
   },
   badgeText: {
-    color: "#FFFFFF",
-    fontSize: 10,
-    lineHeight: 12,
+    color: staticColors.hex_ffffff_5c2ocm,
+    fontSize: t.typography.micro.fontSize,
+    lineHeight: t.typography.micro.lineHeight,
     fontWeight: "800",
   },
   title: {
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     fontWeight: "700",
-    marginBottom: 2,
+    marginBottom: t.spacing.none,
     flexShrink: 1,
   },
   subtitle: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     flexShrink: 1,
   },
 });
@@ -1147,17 +816,13 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: COLORS.background,
   },
-  headerCard: {
-    marginHorizontal: t.spacing.md,
-    marginTop: t.spacing.xs,
-    marginBottom: 0,
-  },
   headerContent: {
-    paddingTop: 4,
+    paddingHorizontal: t.spacing.none,
+    paddingTop: t.spacing.xxs,
     paddingBottom: t.spacing.sm,
   },
   header: {
-    paddingHorizontal: 0,
+    paddingHorizontal: t.spacing.none,
     paddingVertical: t.spacing.xs,
     flexDirection: "row",
     alignItems: "center",
@@ -1165,20 +830,20 @@ const styles = StyleSheet.create({
   logo: {
     width: 140,
     height: 40,
-    marginBottom: 0,
+    marginBottom: t.spacing.none,
   },
   pageTitle: {
     color: COLORS.textHigh,
-    fontSize: 22,
+    fontSize: t.typography.titleSmall.fontSize,
     fontWeight: "800",
   },
   pageSubtitle: {
     marginTop: t.spacing.xxs,
     color: COLORS.textMid,
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
   },
   profileButton: {
-    marginLeft: 12,
+    marginLeft: t.spacing.sm,
     width: t.controls.iconButtonSm,
     height: t.controls.iconButtonSm,
     borderRadius: t.controls.iconButtonSm / 2,
@@ -1197,65 +862,59 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     padding: t.spacing.md,
-    paddingTop: 0,
-    paddingBottom: 110,
+    paddingTop: t.spacing.none,
+    paddingBottom: 140,
   },
   infoCard: {
     backgroundColor: COLORS.card,
-    padding: 14,
-    borderRadius: 10,
-    marginBottom: t.spacing.sm,
+    padding: t.spacing.sm,
+    borderRadius: t.radius.md,
     borderWidth: 1,
   },
   infoTextTitle: {
     color: COLORS.textHigh,
-    fontSize: 18,
+    fontSize: t.typography.sectionTitle.fontSize,
     fontWeight: "700",
-    marginBottom: 8,
+    marginBottom: t.spacing.xs,
   },
   summaryRow: {
     flexDirection: "row",
-    gap: 10,
+    gap: t.spacing.xs,
   },
   sectionDivider: {
     flexDirection: "row",
     alignItems: "center",
-    marginTop: 12,
-    marginBottom: 8,
   },
   sectionTitle: {
     color: COLORS.textHigh,
-    fontSize: 17,
+    fontSize: t.typography.sectionTitle.fontSize,
     fontWeight: "800",
-    paddingRight: 10,
+    paddingRight: t.spacing.xs,
   },
   quickRow: {
     flexDirection: "row",
     alignItems: "stretch",
-    gap: 10,
+    gap: t.spacing.xs,
   },
   emptyState: {
     alignItems: "center",
     justifyContent: "center",
-    marginTop: 4,
-    paddingHorizontal: 24,
+    paddingHorizontal: t.spacing.xl,
   },
   emptyTitle: {
-    marginTop: 10,
-    fontSize: 16,
+    marginTop: t.spacing.xs,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "700",
   },
   emptySubtitle: {
-    marginTop: 6,
-    fontSize: 13,
+    marginTop: t.spacing.xxs,
+    fontSize: t.typography.bodySmall.fontSize,
     textAlign: "center",
   },
   vehicleCard: {
     backgroundColor: COLORS.card,
-    borderRadius: 10,
-    marginTop: 5,
-    padding: 14,
-    marginBottom: 12,
+    borderRadius: t.radius.md,
+    padding: t.spacing.sm,
     borderWidth: 1,
     borderLeftWidth: 3,
     borderLeftColor: COLORS.border,
@@ -1263,67 +922,67 @@ const styles = StyleSheet.create({
   vehicleHeaderRow: {
     flexDirection: "row",
     alignItems: "center",
-    marginBottom: 6,
+    marginBottom: t.spacing.xxs,
   },
   vehicleTitle: {
-    fontSize: 15,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "700",
     color: COLORS.textHigh,
   },
   vehicleReg: {
-    marginTop: 2,
-    fontSize: 12,
+    marginTop: t.spacing.none,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textMid,
   },
   cardHint: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     color: COLORS.textLow,
   },
   statusRow: {
     flexDirection: "row",
     flexWrap: "wrap",
-    marginTop: 4,
+    marginTop: t.spacing.xxs,
     alignItems: "center",
   },
   statusPill: {
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    marginRight: 8,
-    marginBottom: 4,
+    borderRadius: t.radius.pill,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
+    marginRight: t.spacing.xs,
+    marginBottom: t.spacing.xxs,
   },
   statusPillText: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     fontWeight: "600",
   },
   metaRow: {
     flexDirection: "row",
     flexWrap: "wrap",
-    marginTop: 8,
+    marginTop: t.spacing.xs,
   },
   metaItem: {
-    marginRight: 16,
-    marginBottom: 2,
+    marginRight: t.spacing.md,
+    marginBottom: t.spacing.none,
   },
   metaLabel: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     color: COLORS.textLow,
   },
   metaValue: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textMid,
   },
   defectPill: {
     flexDirection: "row",
     alignItems: "center",
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
+    borderRadius: t.radius.pill,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
     backgroundColor: COLORS.recceAction,
-    marginBottom: 4,
+    marginBottom: t.spacing.xxs,
   },
   defectText: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     color: COLORS.textHigh,
     fontWeight: "600",
   },

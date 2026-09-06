@@ -1,15 +1,18 @@
+import { AppText as Text, AppPressable as TouchableOpacity } from "../../../../components/ui/AppPrimitives";
+import {
+  servicePalette as COLORS } from "../../../../lib/design/semantics";
 // app/(protected)/service/service-history/[vehicleId].jsx
-import { useLocalSearchParams, useRouter } from "expo-router";
-import { useEffect, useMemo, useState } from "react";
+import { useLocalSearchParams,
+  useRouter } from "expo-router";
+import { useEffect,
+  useMemo,
+  useState } from "react";
 import {
   ActivityIndicator,
-  ScrollView,
   StyleSheet,
-  Text,
-  TouchableOpacity,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+
 import Icon from "react-native-vector-icons/Feather";
 
 import {
@@ -19,18 +22,9 @@ import {
 } from "../../../../lib/fleetSchema";
 import { useServiceCollectionReader } from "../../../../hooks/useServiceData";
 import { useTheme } from "../../../../providers/ThemeProvider";
-
-const COLORS = {
-  background: "#0D0D0D",
-  card: "#1A1A1A",
-  border: "#333333",
-  textHigh: "#FFFFFF",
-  textMid: "#E0E0E0",
-  textLow: "#888888",
-  chipBg: "#262626",
-  accent: "#ED1C25",
-  accentSoft: "rgba(255,59,48,0.14)",
-};
+import { staticColors } from "../../../../lib/design/staticColors";
+import { designTokens as t } from "../../../../lib/design/tokens";
+import PageShell from "../../../../components/layout/PageShell";
 
 function toDateMaybe(value) {
   if (!value) return null;
@@ -188,58 +182,14 @@ export default function ServiceHistoryListScreen() {
   };
 
   return (
-    <SafeAreaView
-      edges={["left", "right"]}
-      style={[
-        styles.container,
-        { backgroundColor: colors.background || COLORS.background },
-      ]}
-    >
+    <PageShell header={{
+      variant: "compact",
+      title: "Service history",
+      subtitle: [headerReg, headerName].filter(Boolean).join(" · "),
+      onBack: router.back,
+    }}>
       {/* HEADER */}
-      <View
-        style={[
-          styles.header,
-          { borderBottomColor: colors.border || COLORS.border },
-        ]}
-      >
-        <TouchableOpacity
-          style={[
-            styles.backButton,
-            { borderColor: colors.border || COLORS.border },
-          ]}
-          onPress={() => router.back()}
-          activeOpacity={0.8}
-        >
-          <Icon
-            name="chevron-left"
-            size={20}
-            color={colors.text || COLORS.textHigh}
-          />
-        </TouchableOpacity>
-
-        <View style={{ flex: 1 }}>
-          <Text
-            style={[
-              styles.title,
-              { color: colors.text || COLORS.textHigh },
-            ]}
-            numberOfLines={1}
-          >
-            Service history
-          </Text>
-          <Text
-            style={[
-              styles.subtitle,
-              { color: colors.textMuted || COLORS.textMid },
-            ]}
-            numberOfLines={1}
-          >
-            {headerReg}
-            {headerReg && headerName ? " · " : ""}
-            {headerName}
-          </Text>
-        </View>
-      </View>
+      
 
       {loading ? (
         <View style={styles.loadingContainer}>
@@ -265,7 +215,7 @@ export default function ServiceHistoryListScreen() {
           </Text>
         </View>
       ) : (
-        <ScrollView contentContainerStyle={styles.content}>
+        <>
           {/* VEHICLE SUMMARY CARD */}
           <View
             style={[
@@ -304,7 +254,7 @@ export default function ServiceHistoryListScreen() {
                     name="activity"
                     size={12}
                     color={COLORS.textMid}
-                    style={{ marginRight: 4 }}
+                    style={{ marginRight: t.spacing.xxs }}
                   />
                   <Text style={styles.mileageChipText}>
                     {mileageValue.toLocaleString("en-GB")} mi
@@ -348,7 +298,7 @@ export default function ServiceHistoryListScreen() {
             style={[
               styles.statsStrip,
               {
-                backgroundColor: colors.surfaceAlt || "#111111",
+                backgroundColor: colors.surfaceAlt || staticColors.hex_111111_a7aqp2,
                 borderColor: colors.border || COLORS.border,
               },
             ]}
@@ -419,7 +369,7 @@ export default function ServiceHistoryListScreen() {
                               name="tool"
                               size={12}
                               color={COLORS.textHigh}
-                              style={{ marginRight: 4 }}
+                              style={{ marginRight: t.spacing.xxs }}
                             />
                             <Text style={styles.typePillText}>
                               {item.type || "Service"}
@@ -479,9 +429,9 @@ export default function ServiceHistoryListScreen() {
           </View>
 
           <View style={{ height: 24 }} />
-        </ScrollView>
+        </>
       )}
-    </SafeAreaView>
+    </PageShell>
   );
 }
 
@@ -493,28 +443,28 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingHorizontal: t.spacing.md,
+    paddingVertical: t.spacing.sm,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
   },
   backButton: {
     width: 32,
     height: 32,
-    borderRadius: 16,
+    borderRadius: t.radius.pill,
     borderWidth: 1,
     borderColor: COLORS.border,
     alignItems: "center",
     justifyContent: "center",
-    marginRight: 10,
+    marginRight: t.spacing.xs,
   },
   title: {
-    fontSize: 18,
+    fontSize: t.typography.sectionTitle.fontSize,
     fontWeight: "800",
   },
   subtitle: {
-    fontSize: 12,
-    marginTop: 2,
+    fontSize: t.typography.metadata.fontSize,
+    marginTop: t.spacing.none,
     color: COLORS.textMid,
   },
   loadingContainer: {
@@ -523,167 +473,167 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   loadingText: {
-    marginTop: 8,
-    fontSize: 14,
+    marginTop: t.spacing.xs,
+    fontSize: t.typography.body.fontSize,
     color: COLORS.textMid,
   },
   content: {
-    padding: 16,
+    padding: t.spacing.md,
   },
 
   /* Vehicle summary */
   vehicleCard: {
     backgroundColor: COLORS.card,
-    borderRadius: 10,
-    padding: 14,
+    borderRadius: t.radius.md,
+    padding: t.spacing.sm,
     borderWidth: 1,
     borderColor: COLORS.border,
-    marginBottom: 10,
+    marginBottom: t.spacing.xs,
   },
   vehicleRowTop: {
     flexDirection: "row",
     alignItems: "center",
-    marginBottom: 8,
+    marginBottom: t.spacing.xs,
   },
   vehicleNameText: {
-    fontSize: 16,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "700",
     color: COLORS.textHigh,
   },
   vehicleRegText: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textMid,
-    marginTop: 2,
+    marginTop: t.spacing.none,
   },
   mileageChip: {
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: COLORS.chipBg,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 999,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
+    borderRadius: t.radius.pill,
   },
   mileageChipText: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     color: COLORS.textMid,
     fontWeight: "600",
   },
   vehicleMetaRow: {
     flexDirection: "row",
     alignItems: "center",
-    marginTop: 4,
+    marginTop: t.spacing.xxs,
   },
   metaItem: {
     flex: 1,
   },
   metaLabel: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     color: COLORS.textLow,
   },
   metaValue: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textMid,
-    marginTop: 2,
+    marginTop: t.spacing.none,
   },
   metaDivider: {
     width: 1,
     height: 26,
     backgroundColor: COLORS.border,
-    marginHorizontal: 10,
+    marginHorizontal: t.spacing.xs,
     opacity: 0.8,
   },
 
   /* Stats strip */
   statsStrip: {
     flexDirection: "row",
-    backgroundColor: "#111111",
-    borderRadius: 10,
+    backgroundColor: staticColors.hex_111111_a7aqp2,
+    borderRadius: t.radius.md,
     borderWidth: 1,
     borderColor: COLORS.border,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    marginBottom: 12,
+    paddingHorizontal: t.spacing.sm,
+    paddingVertical: t.spacing.xs,
+    marginBottom: t.spacing.sm,
   },
   statsItem: {
     flex: 1,
-    paddingHorizontal: 4,
+    paddingHorizontal: t.spacing.xxs,
   },
   statsLabel: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     color: COLORS.textLow,
   },
   statsValue: {
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
     color: COLORS.textHigh,
     fontWeight: "600",
-    marginTop: 2,
+    marginTop: t.spacing.none,
   },
 
   /* History list */
   card: {
     backgroundColor: COLORS.card,
-    borderRadius: 10,
-    padding: 14,
+    borderRadius: t.radius.md,
+    padding: t.spacing.sm,
     borderWidth: 1,
     borderColor: COLORS.border,
   },
   emptyText: {
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
     color: COLORS.textMid,
   },
   row: {
-    paddingVertical: 10,
+    paddingVertical: t.spacing.xs,
     borderBottomWidth: 1,
-    borderBottomColor: "rgba(255,255,255,0.04)",
+    borderBottomColor: staticColors.rgba_5ns94m,
   },
   rowHeader: {
     flexDirection: "row",
     alignItems: "center",
-    marginBottom: 2,
+    marginBottom: t.spacing.none,
   },
   rowTitleRow: {
     flexDirection: "row",
     alignItems: "center",
-    marginBottom: 4,
+    marginBottom: t.spacing.xxs,
   },
   typePill: {
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: COLORS.chipBg,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 999,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
+    borderRadius: t.radius.pill,
   },
   typePillText: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     color: COLORS.textHigh,
     fontWeight: "600",
   },
   recentPill: {
-    marginLeft: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 999,
+    marginLeft: t.spacing.xxs,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
+    borderRadius: t.radius.pill,
     backgroundColor: COLORS.accentSoft,
   },
   recentPillText: {
-    fontSize: 10,
+    fontSize: t.typography.micro.fontSize,
     color: COLORS.accent,
     fontWeight: "700",
     textTransform: "uppercase",
   },
   rowMeta: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     color: COLORS.textLow,
   },
   rowSummary: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textMid,
-    marginTop: 4,
+    marginTop: t.spacing.xxs,
   },
   tapHint: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     color: COLORS.textLow,
-    marginTop: 3,
+    marginTop: t.spacing.xxs,
   },
 });

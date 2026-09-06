@@ -1,64 +1,31 @@
+import { AppText as Text } from "../../../components/ui/AppPrimitives";
+import {
+  servicePalette as COLORS } from "../../../lib/design/semantics";
 import { useRouter } from "expo-router";
 import {
   StyleSheet,
-  Text,
-  TouchableOpacity,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
 import { useTheme } from "../../../providers/ThemeProvider";
-
-const COLORS = {
-  background: "#0D0D0D",
-  card: "#1A1A1A",
-  border: "#333333",
-  textHigh: "#FFFFFF",
-  textMid: "#E0E0E0",
-  primaryAction: "#ED1C25",
-};
+import { staticColors } from "../../../lib/design/staticColors";
+import { designTokens as t } from "../../../lib/design/tokens";
+import PageShell from "../../../components/layout/PageShell";
 
 export default function DailyCheckRoute() {
   const router = useRouter();
   const { colors } = useTheme();
 
   return (
-    <SafeAreaView
-      edges={["left", "right"]}
-      style={[
-        styles.container,
-        { backgroundColor: colors.background || COLORS.background },
-      ]}
+    <PageShell
+      header={{
+        variant: "compact",
+        title: "Daily Check",
+        subtitle: "Pre-shoot and daily vehicle checks are coming soon.",
+        onBack: router.back,
+      }}
     >
-      <View
-        style={[
-          styles.header,
-          { borderBottomColor: colors.border || COLORS.border },
-        ]}
-      >
-        <TouchableOpacity onPress={router.back} style={styles.backButton}>
-          <Icon
-            name="chevron-left"
-            size={22}
-            color={colors.text || COLORS.textHigh}
-          />
-        </TouchableOpacity>
-        <View style={{ flex: 1 }}>
-          <Text style={[styles.title, { color: colors.text || COLORS.textHigh }]}>
-            Daily Check
-          </Text>
-          <Text
-            style={[
-              styles.subtitle,
-              { color: colors.textMuted || COLORS.textMid },
-            ]}
-          >
-            Pre-shoot and daily vehicle checks are coming soon.
-          </Text>
-        </View>
-      </View>
-
       <View style={styles.content}>
         <View
           style={[
@@ -85,7 +52,7 @@ export default function DailyCheckRoute() {
           </Text>
         </View>
       </View>
-    </SafeAreaView>
+    </PageShell>
   );
 }
 
@@ -97,56 +64,56 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingHorizontal: t.spacing.md,
+    paddingVertical: t.spacing.sm,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
   },
   backButton: {
-    paddingRight: 10,
+    paddingRight: t.spacing.xs,
   },
   title: {
-    fontSize: 22,
+    fontSize: t.typography.titleSmall.fontSize,
     fontWeight: "800",
     color: COLORS.textHigh,
   },
   subtitle: {
-    marginTop: 2,
-    fontSize: 13,
+    marginTop: t.spacing.none,
+    fontSize: t.typography.bodySmall.fontSize,
     color: COLORS.textMid,
   },
   content: {
     flex: 1,
-    padding: 16,
+    padding: t.spacing.md,
     justifyContent: "center",
   },
   card: {
     alignItems: "center",
     borderWidth: 1,
     borderColor: COLORS.border,
-    borderRadius: 10,
+    borderRadius: t.radius.md,
     backgroundColor: COLORS.card,
-    paddingHorizontal: 18,
-    paddingVertical: 28,
+    paddingHorizontal: t.spacing.md,
+    paddingVertical: t.spacing.xl,
   },
   iconCircle: {
     width: 54,
     height: 54,
-    borderRadius: 27,
+    borderRadius: t.radius.pill,
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 14,
-    backgroundColor: "rgba(237,28,37,0.12)",
+    marginBottom: t.spacing.sm,
+    backgroundColor: staticColors.rgba_qyx9sr,
   },
   cardTitle: {
-    fontSize: 18,
+    fontSize: t.typography.sectionTitle.fontSize,
     fontWeight: "800",
     color: COLORS.textHigh,
   },
   cardText: {
-    marginTop: 6,
-    fontSize: 14,
-    lineHeight: 20,
+    marginTop: t.spacing.xxs,
+    fontSize: t.typography.body.fontSize,
+    lineHeight: t.typography.body.lineHeight,
     textAlign: "center",
     color: COLORS.textMid,
   },

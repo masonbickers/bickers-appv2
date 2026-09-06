@@ -1,7 +1,11 @@
+import { AppText as Text } from "../../components/ui/AppPrimitives";
 import { collection, doc, getDocs, updateDoc } from "firebase/firestore";
 import { useEffect } from "react";
-import { Text, View } from "react-native";
+import {
+  View,
+} from "react-native";
 import { db } from "../../firebaseConfig";
+import PageShell from "../../components/layout/PageShell";
 
 // simple function to generate random 4-digit code
 const generateCode = () => {
@@ -34,8 +38,10 @@ export default function FixEmployeesPage() {
   }, []);
 
   return (
-    <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
-      <Text>Assigning 4-digit codes... check console</Text>
-    </View>
+    <PageShell mode="static">
+      <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
+        <Text>Assigning 4-digit codes... check console</Text>
+      </View>
+    </PageShell>
   );
 }

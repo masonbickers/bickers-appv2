@@ -1,16 +1,18 @@
+import { AppButton, AppText as Text, Banner, Checkbox, FormStep, SegmentedControl, TextArea } from "../../components/ui/AppPrimitives";
 // app/holiday-request.js
-import { useRouter } from "expo-router";
-import { collection, doc, getDocs, setDoc } from "firebase/firestore";
-import { useEffect, useMemo, useState } from "react";
 import {
-  ScrollView,
+  useRouter } from "expo-router";
+import { collection,
+  doc,
+  getDocs,
+  setDoc } from "firebase/firestore";
+import { useEffect,
+  useMemo,
+  useState } from "react";
+import {
   StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
 import { Calendar } from "react-native-calendars";
 import Icon from "react-native-vector-icons/Feather";
 
@@ -20,16 +22,9 @@ import { runOrQueueFirestoreMutation } from "../../lib/sync/firestoreQueue";
 import { useAuth } from "../../providers/AuthProvider";
 import { useDataCache } from "../../providers/DataCacheProvider";
 import { useTheme } from "../../providers/ThemeProvider";
-
-function withAlpha(hex, alpha) {
-  const safeAlpha = Math.max(0, Math.min(1, Number(alpha) || 0));
-  const raw = String(hex || "").replace("#", "");
-  if (!/^[0-9a-fA-F]{6}$/.test(raw)) return `rgba(255,255,255,${safeAlpha})`;
-  const r = parseInt(raw.slice(0, 2), 16);
-  const g = parseInt(raw.slice(2, 4), 16);
-  const b = parseInt(raw.slice(4, 6), 16);
-  return `rgba(${r},${g},${b},${safeAlpha})`;
-}
+import { staticColors } from "../../lib/design/staticColors";
+import { withAlpha } from "../../lib/design/color";
+import PageShell from "../../components/layout/PageShell";
 
 export default function HolidayRequestPage() {
   const router = useRouter();
@@ -529,13 +524,13 @@ export default function HolidayRequestPage() {
       m[startDate] = {
         startingDay: true,
         color: colors.accent,
-        textColor: "#fff",
+        textColor: staticColors.hex_fff_yhjmu8,
       };
     }
 
     const last = endDate || startDate;
     if (last) {
-      m[last] = { ...(m[last] || {}), endingDay: true, color: colors.accent, textColor: "#fff" };
+      m[last] = { ...(m[last] || {}), endingDay: true, color: colors.accent, textColor: staticColors.hex_fff_yhjmu8 };
     }
 
     if (startDate && last) {
@@ -543,11 +538,11 @@ export default function HolidayRequestPage() {
       const endD = new Date(last);
       while (cur <= endD) {
         const s = cur.toISOString().split("T")[0];
-        if (!m[s]) m[s] = { color: withAlpha(colors.accent, 0.45), textColor: "#fff" };
+        if (!m[s]) m[s] = { color: withAlpha(colors.accent, 0.45), textColor: staticColors.hex_fff_yhjmu8 };
         cur.setDate(cur.getDate() + 1);
       }
       if (isSingleDay && halfDay && startDate) {
-        m[startDate] = { ...(m[startDate] || {}), color: withAlpha(colors.accent, 0.8), textColor: "#fff" };
+        m[startDate] = { ...(m[startDate] || {}), color: withAlpha(colors.accent, 0.8), textColor: staticColors.hex_fff_yhjmu8 };
       }
     }
 
@@ -631,6 +626,7 @@ export default function HolidayRequestPage() {
         // keep as strings (your web + HR parser supports these)
         startDate: startStr,
         endDate: endStr,
+        holidayYear: s.getFullYear(),
 
         // ✅ optional, but recommended for consistency:
         startHalfDay: single ? !!halfDay : false,
@@ -683,47 +679,18 @@ export default function HolidayRequestPage() {
   /* ---------------- loading gate ---------------- */
   if (loading || empLoading) {
     return (
-      <SafeAreaView
-        edges={["top", "left", "right"]}
-        style={[styles.container, { backgroundColor: colors.background }]}
-      >
-        <View style={{ padding: 16 }}>
+      <PageShell mode="form" width="form" header={{ variant: "compact", title: "Request Holiday", onBack: router.back }}>
+        <View style={{ padding: t.spacing.md }}>
           <Text style={{ color: colors.textMuted }}>Loading…</Text>
         </View>
-      </SafeAreaView>
+      </PageShell>
     );
   }
 
   return (
-    <SafeAreaView
-      edges={["top", "left", "right"]}
-      style={[styles.container, { backgroundColor: colors.background }]}
-    >
-      <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 16 }}>
+    <PageShell mode="form" width="form" header={{ variant: "compact", title: "Request Holiday", onBack: router.back }}>
         <View style={styles.heroCard}>
           <View style={styles.heroContent}>
-            <View style={styles.heroTopRow}>
-              <TouchableOpacity
-                style={[
-                  styles.heroBackButton,
-                  {
-                    backgroundColor: withAlpha(colors.surfaceAlt, 0.82),
-                    borderColor: withAlpha(colors.border, 0.82),
-                  },
-                ]}
-                onPress={() => router.back()}
-                activeOpacity={0.85}
-              >
-                <Icon name="arrow-left" size={15} color={colors.text} />
-              </TouchableOpacity>
-
-              <View style={styles.heroTitleWrap}>
-                <Text style={[styles.heroTitle, { color: colors.text }]}>Request Holiday</Text>
-              </View>
-
-              <View style={styles.heroSpacer} />
-            </View>
-
             <View style={styles.heroMetaRow}>
               <View
                 style={[
@@ -757,8 +724,7 @@ export default function HolidayRequestPage() {
           </View>
         </View>
 
-        {/* Calendar */}
-        <View style={[styles.card, { backgroundColor: colors.surfaceAlt, borderColor: colors.border }]}>
+        <FormStep number="1" title="Choose dates" hint="Select the first and last day of leave">
           <Calendar
             onDayPress={handleDayPress}
             markedDates={markedDates}
@@ -769,30 +735,26 @@ export default function HolidayRequestPage() {
               monthTextColor: colors.text,
               arrowColor: colors.accent,
               selectedDayBackgroundColor: colors.accent,
-              selectedDayTextColor: "#fff",
+              selectedDayTextColor: staticColors.hex_fff_yhjmu8,
               todayTextColor: colors.accent,
             }}
           />
-        </View>
 
-        {/* Chosen dates */}
-        <View style={[styles.card, { backgroundColor: colors.surfaceAlt, borderColor: colors.border, gap: 4 }]}>
+        <View style={{ gap: t.spacing.xxs, marginTop: t.spacing.sm }}>
           <Text style={{ color: colors.textMuted }}>
             Start:{" "}
             <Text style={{ color: colors.text }}>{startDate || "Not selected"}</Text>
-            {isSingleDay && halfDay ? <Text style={{ color: "#86efac" }}> ({halfDayPeriod} half)</Text> : null}
+            {isSingleDay && halfDay ? <Text style={{ color: staticColors.hex_86efac_dg95e1 }}> ({halfDayPeriod} half)</Text> : null}
           </Text>
           <Text style={{ color: colors.textMuted }}>
             End: <Text style={{ color: colors.text }}>{endDate || startDate || "Not selected"}</Text>
           </Text>
         </View>
+        </FormStep>
 
         {/* Allowance + request size */}
         {startDate ? (
-          <View style={[styles.card, { backgroundColor: colors.surfaceAlt, borderColor: colors.border }]}>
-            <Text style={{ color: colors.textMuted, fontWeight: "800", marginBottom: 6 }}>
-              Allowance check ({allowanceInfo.year})
-            </Text>
+          <Banner title={`Allowance check (${allowanceInfo.year})`} tone="info">
             <Text style={{ color: colors.textMuted }}>
               Allowance: <Text style={{ color: colors.text, fontWeight: "800" }}>{allowanceInfo.allowance}</Text>{" "}
               • Used (approved paid):{" "}
@@ -800,196 +762,104 @@ export default function HolidayRequestPage() {
               • Remaining paid:{" "}
               <Text style={{ color: colors.text, fontWeight: "800" }}>{allowanceInfo.remainingPaid}</Text>
             </Text>
-            <Text style={{ color: colors.textMuted, marginTop: 6 }}>
+            <Text style={{ color: colors.textMuted, marginTop: t.spacing.xxs }}>
               This request: <Text style={{ color: colors.text, fontWeight: "800" }}>{requestedDays}</Text> day(s) (weekdays only)
             </Text>
 
             {allowanceInfo.remainingPaid <= 0 ? (
-              <Text style={{ color: colors.danger || "#f87171", marginTop: 8, fontWeight: "800" }}>
+              <Text style={{ color: colors.danger || staticColors.hex_f87171_ohxdjs, marginTop: t.spacing.xs, fontWeight: "800" }}>
                 No paid holiday remaining — you can only book unpaid holiday.
               </Text>
             ) : null}
-          </View>
+          </Banner>
         ) : null}
 
         {/* Conflict warnings */}
         {holidayConflictMsg ? (
-          <View
-            style={[
-              styles.card,
-              {
-                backgroundColor: withAlpha(colors.danger || "#dc2626", 0.08),
-                borderColor: withAlpha(colors.danger || "#dc2626", 0.45),
-              },
-            ]}
-          >
-            <Text style={{ color: colors.danger || "#f87171", fontWeight: "900" }}>Holiday conflict</Text>
-            <Text style={{ color: colors.textMuted, marginTop: 6 }}>{holidayConflictMsg}</Text>
-          </View>
+          <Banner title="Holiday conflict" tone="danger">
+            <Text style={{ color: colors.textMuted, marginTop: t.spacing.xxs }}>{holidayConflictMsg}</Text>
+          </Banner>
         ) : null}
 
         {jobConflictMsg ? (
-          <View
-            style={[
-              styles.card,
-              {
-                backgroundColor: withAlpha("#d97706", 0.08),
-                borderColor: withAlpha("#d97706", 0.45),
-              },
-            ]}
-          >
-            <Text style={{ color: "#f59e0b", fontWeight: "900" }}>Job conflict</Text>
-            <Text style={{ color: colors.textMuted, marginTop: 6 }}>{jobConflictMsg}</Text>
-          </View>
+          <Banner title="Job conflict" tone="warning">
+            <Text style={{ color: colors.textMuted, marginTop: t.spacing.xxs }}>{jobConflictMsg}</Text>
+          </Banner>
         ) : null}
 
         {/* Leave Type – Paid / Unpaid / Accrued */}
-        <View style={[styles.card, { backgroundColor: colors.surfaceAlt, borderColor: colors.border }]}>
-          <Text style={{ color: colors.textMuted, marginBottom: 8, fontWeight: "700" }}>Leave Type</Text>
+        <FormStep number="2" title="Leave type" hint="Choose how this leave is recorded">
 
-          {[
-            { key: "Paid", label: paidAllowed ? "Paid holiday" : "Paid holiday (no paid remaining)", disabled: !paidAllowed },
-            { key: "Unpaid", label: "Unpaid holiday", disabled: false },
-          ].map((opt) => (
-            <TouchableOpacity
-              key={opt.key}
-              style={[styles.row, opt.disabled && styles.rowDisabled]}
-              onPress={() => !opt.disabled && setPaidStatus(opt.key)}
-              activeOpacity={0.85}
-            >
-              <Icon
-                name={paidStatus === opt.key ? "check-square" : "square"}
-                size={20}
-                color={paidStatus === opt.key ? colors.accent : colors.textMuted}
-                style={{ marginRight: 10 }}
-              />
-              <Text style={{ color: colors.text, fontSize: 16 }}>{opt.label}</Text>
-            </TouchableOpacity>
-          ))}
+          <SegmentedControl
+            value={paidStatus}
+            onChange={setPaidStatus}
+            options={[
+              { value: "Paid", label: paidAllowed ? "Paid holiday" : "Paid unavailable", disabled: !paidAllowed },
+              { value: "Unpaid", label: "Unpaid holiday" },
+            ]}
+          />
 
           {paidStatus === "Paid" && paidAllowed && requestedDays > allowanceInfo.remainingPaid ? (
-            <Text style={{ color: colors.danger || "#f87171", marginTop: 8, fontWeight: "800" }}>
+            <Text style={{ color: colors.danger || staticColors.hex_f87171_ohxdjs, marginTop: t.spacing.xs, fontWeight: "800" }}>
               Not enough paid remaining for this request — choose Unpaid or shorten/split.
             </Text>
           ) : null}
-        </View>
+        </FormStep>
 
-       
+
 
         {/* Half-day (single only) */}
-        <View style={[styles.card, { backgroundColor: colors.surfaceAlt, borderColor: colors.border }]}>
-          <Text style={{ color: colors.textMuted, marginBottom: 8, fontWeight: "700" }}>Half day</Text>
+        <FormStep number="3" title="Half day" hint="Available for single-day requests">
 
-          <TouchableOpacity
-            style={[styles.row, !isSingleDay && styles.rowDisabled]}
-            onPress={() => isSingleDay && setHalfDay((v) => !v)}
-            activeOpacity={0.85}
-          >
-            <Icon
-              name={halfDay ? "check-square" : "square"}
-              size={20}
-              color={halfDay ? colors.accent : colors.textMuted}
-              style={{ marginRight: 10 }}
-            />
-            <Text style={[styles.rowText, { color: colors.text }]}>
-              {isSingleDay ? "Book as half day" : "Half-day only available for a single day"}
-            </Text>
-          </TouchableOpacity>
+          <Checkbox
+            checked={halfDay}
+            onChange={setHalfDay}
+            disabled={!isSingleDay}
+            label={isSingleDay ? "Book as half day" : "Half-day only available for a single day"}
+          />
 
           {isSingleDay && halfDay && (
-            <View style={styles.choiceRow}>
-              <HalfChip
-                label="AM"
-                active={halfDayPeriod === "AM"}
-                onPress={() => setHalfDayPeriod("AM")}
-                colors={colors}
-              />
-              <HalfChip
-                label="PM"
-                active={halfDayPeriod === "PM"}
-                onPress={() => setHalfDayPeriod("PM")}
-                colors={colors}
-              />
-            </View>
+            <SegmentedControl
+              value={halfDayPeriod}
+              onChange={setHalfDayPeriod}
+              options={[{ value: "AM", label: "AM" }, { value: "PM", label: "PM" }]}
+            />
           )}
 
-          <Text style={{ color: colors.textMuted, marginTop: 8, fontSize: 12 }}>
+          <Text style={{ color: colors.textMuted, marginTop: t.spacing.xs, fontSize: t.typography.metadata.fontSize }}>
             Half-days are only for a single-day request.
           </Text>
-        </View>
+        </FormStep>
 
         {/* Notes */}
-        <View style={[styles.card, { backgroundColor: colors.surfaceAlt, borderColor: colors.border }]}>
-          <Text style={{ color: colors.textMuted, marginBottom: 6 }}>Notes / Reason</Text>
-          <TextInput
+        <FormStep number="4" title="Notes" hint="Optional context for the approver" last>
+          <TextArea
+            label="Notes / Reason"
             placeholder="Add notes or reason..."
-            placeholderTextColor="#777"
             value={notes}
             onChangeText={setNotes}
-            multiline
-            style={[
-              styles.notesInput,
-              { backgroundColor: colors.surface, color: colors.text, borderColor: colors.border },
-            ]}
           />
-        </View>
+        </FormStep>
 
         {/* Submit */}
-        <TouchableOpacity
-          style={[
-            styles.submitButton,
-            {
-              backgroundColor: colors.accent,
-              borderColor: colors.accent,
-              opacity: holidayConflict || jobConflict ? 0.6 : 1,
-            },
-          ]}
+        <AppButton
+          label={holidaysLoading || bookingsLoading ? "Loading…" : "Submit Request"}
           onPress={submitRequest}
-          activeOpacity={0.9}
           disabled={!!holidayConflict || !!jobConflict}
-        >
-          <Text style={[styles.submitText, { color: colors.surface }]}>
-            {holidaysLoading || bookingsLoading ? "Loading…" : "Submit Request"}
-          </Text>
-        </TouchableOpacity>
-      </ScrollView>
-    </SafeAreaView>
-  );
-}
-
-/* Small chip button for AM/PM */
-function HalfChip({ label, active, onPress, colors }) {
-  return (
-    <TouchableOpacity
-      onPress={onPress}
-      activeOpacity={0.85}
-      style={[
-        {
-          paddingVertical: 6,
-          paddingHorizontal: 12,
-          borderRadius: 999,
-          borderWidth: 1,
-          marginRight: 8,
-        },
-        active
-          ? { backgroundColor: colors.accent, borderColor: colors.accent }
-          : { backgroundColor: colors.surface, borderColor: colors.border },
-      ]}
-    >
-      <Text style={{ color: active ? colors.surface : colors.text, fontWeight: "800", fontSize: 12 }}>
-        {label}
-      </Text>
-    </TouchableOpacity>
+          loading={holidaysLoading || bookingsLoading}
+          fullWidth
+        />
+    </PageShell>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#0b0b0b" },
+  container: { flex: 1, backgroundColor: staticColors.hex_0b0b0b_9v81ck },
 
   heroCard: {
-    marginHorizontal: 12,
-    marginTop: 10,
-    marginBottom: 8,
+    marginHorizontal: t.spacing.sm,
+    marginTop: t.spacing.xs,
+    marginBottom: t.spacing.xs,
   },
   heroTopRow: {
     flexDirection: "row",
@@ -999,7 +869,7 @@ const styles = StyleSheet.create({
   heroBackButton: {
     width: 38,
     height: 38,
-    borderRadius: 19,
+    borderRadius: t.radius.pill,
     justifyContent: "center",
     alignItems: "center",
     borderWidth: 1,
@@ -1007,15 +877,15 @@ const styles = StyleSheet.create({
   heroTitleWrap: {
     flex: 1,
     alignItems: "center",
-    paddingHorizontal: 12,
+    paddingHorizontal: t.spacing.sm,
   },
   heroSpacer: {
     width: 38,
     height: 38,
   },
   heroContent: {
-    paddingBottom: 4,
-    paddingTop: 2,
+    paddingBottom: t.spacing.xxs,
+    paddingTop: t.spacing.none,
   },
   heroTitle: {
     ...t.typography.pageTitle,
@@ -1023,71 +893,31 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
   heroSubTitle: {
-    marginTop: 3,
-    fontSize: 13,
-    lineHeight: 18,
+    marginTop: t.spacing.xxs,
+    fontSize: t.typography.bodySmall.fontSize,
+    lineHeight: t.typography.bodySmall.lineHeight,
     fontWeight: "600",
     textAlign: "center",
   },
   heroMetaRow: {
-    marginTop: 10,
+    marginTop: t.spacing.xs,
     flexDirection: "row",
-    gap: 8,
+    gap: t.spacing.xs,
     flexWrap: "wrap",
     justifyContent: "center",
   },
   heroMetaChip: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
-    borderRadius: 999,
+    gap: t.spacing.xxs,
+    borderRadius: t.radius.pill,
     borderWidth: 1,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
   },
   heroMetaText: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     fontWeight: "700",
   },
 
-  card: {
-    borderWidth: 1,
-    borderRadius: 14,
-    marginHorizontal: 12,
-    marginBottom: 12,
-    padding: 12,
-  },
-
-  row: { flexDirection: "row", alignItems: "center", paddingVertical: 8 },
-  rowText: { color: "#fff", fontSize: 16 },
-  rowDisabled: { opacity: 0.45 },
-
-  choiceRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginLeft: 34,
-    marginTop: 4,
-  },
-
-  notesInput: {
-    padding: 12,
-    borderRadius: 10,
-    minHeight: 90,
-    textAlignVertical: "top",
-    borderWidth: 1,
-  },
-
-  submitButton: {
-    borderWidth: 1,
-    padding: 14,
-    borderRadius: 999,
-    alignItems: "center",
-    marginHorizontal: 12,
-    marginTop: 4,
-    marginBottom: 20,
-  },
-  submitText: {
-    fontWeight: "800",
-    fontSize: 14,
-  },
 });

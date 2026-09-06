@@ -1,34 +1,33 @@
+import { AppText as Text, AppPressable as TouchableOpacity, FormField, IconButton } from "../../../../components/ui/AppPrimitives";
 // app/(protected)/timesheet-query/[id]/index.js
-import { useLocalSearchParams, useRouter } from "expo-router";
+import {
+  useLocalSearchParams,
+  useRouter } from "expo-router";
 import {
     addDoc,
-    collection,
-    doc,
-    getDoc,
-    getDocs,
-    onSnapshot,
-    query,
-    serverTimestamp,
-    where,
-} from "firebase/firestore";
-import { useEffect, useState } from "react";
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  onSnapshot,
+  query,
+  serverTimestamp,
+  where,
+  } from "firebase/firestore";
+import { useEffect,
+  useState } from "react";
 import {
-    ActivityIndicator,
-    KeyboardAvoidingView,
-    Platform,
-    ScrollView,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
 import { db } from "../../../../firebaseConfig";
 import { isCrewedBooking } from "../../../../lib/bookingVisibility";
 import { useAuth } from "../../../../providers/AuthProvider";
 import { useTheme } from "../../../../providers/ThemeProvider";
+import { designTokens as t } from "../../../../lib/design/tokens";
+import PageShell from "../../../../components/layout/PageShell";
 
 const DAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
 
@@ -222,19 +221,19 @@ export default function TimesheetQuery() {
   ----------------------------------------------------------- */
   if (loading) {
     return (
-      <SafeAreaView style={{ flex: 1, backgroundColor: colors.background }}>
+      <PageShell mode="form" width="form" header={{ variant: "compact", title: "Timesheet Query", onBack: router.back }}>
         <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
           <ActivityIndicator size="large" color={colors.accent} />
         </View>
-      </SafeAreaView>
+      </PageShell>
     );
   }
 
   if (!queryData) {
     return (
-      <SafeAreaView style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
+      <PageShell mode="form" width="form" header={{ variant: "compact", title: "Timesheet Query", onBack: router.back }}>
         <Text style={{ color: colors.text }}>Query not found</Text>
-      </SafeAreaView>
+      </PageShell>
     );
   }
 
@@ -245,38 +244,18 @@ export default function TimesheetQuery() {
       UI RENDER
   ----------------------------------------------------------- */
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: colors.background }}>
-      <KeyboardAvoidingView
-        style={{ flex: 1 }}
-        behaviour={Platform.OS === "ios" ? "padding" : undefined}
-      >
-        <ScrollView contentContainerStyle={{ padding: 20 }}>
-          
-          {/* Back */}
-          <TouchableOpacity
-            onPress={() => router.back()}
-            style={{ flexDirection: "row", alignItems: "center", marginBottom: 20 }}
-          >
-            <Icon name="chevron-left" size={20} color={colors.text} />
-            <Text style={{ color: colors.text, marginLeft: 8 }}>Back</Text>
-          </TouchableOpacity>
-
-          {/* Header */}
-          <Text style={{ fontSize: 22, fontWeight: "700", color: colors.text, marginBottom: 18 }}>
-            Timesheet Query
-          </Text>
-
+    <PageShell mode="form" width="form" header={{ variant: "compact", title: "Timesheet Query", onBack: router.back }}>
           {/* ---------------- JOB INFO ---------------- */}
-          <Text style={{ fontWeight: "700", fontSize: 15, color: colors.textMuted }}>
+          <Text style={{ fontWeight: "700", fontSize: t.typography.bodyLarge.fontSize, color: colors.textMuted }}>
             Job Info — {dayName}
           </Text>
 
           <View
             style={{
-              marginTop: 10,
-              marginBottom: 20,
-              padding: 15,
-              borderRadius: 12,
+              marginTop: t.spacing.xs,
+              marginBottom: t.spacing.lg,
+              padding: t.spacing.md,
+              borderRadius: t.radius.md,
               backgroundColor: colors.surface,
               borderColor: colors.border,
               borderWidth: 1,
@@ -289,16 +268,16 @@ export default function TimesheetQuery() {
                 <View
                   key={job.id}
                   style={{
-                    paddingBottom: 10,
-                    marginBottom: 10,
+                    paddingBottom: t.spacing.xs,
+                    marginBottom: t.spacing.xs,
                     borderBottomWidth: 1,
                     borderColor: colors.border,
                   }}
                 >
-                  <Text style={{ color: colors.success, fontWeight: "700", fontSize: 15 }}>
+                  <Text style={{ color: colors.success, fontWeight: "700", fontSize: t.typography.bodyLarge.fontSize }}>
                     {job.jobNumber || job.id} • {job.client || "Client"}
                   </Text>
-                  <Text style={{ color: colors.textMuted, marginTop: 2 }}>
+                  <Text style={{ color: colors.textMuted, marginTop: t.spacing.none }}>
                     {job.location}
                   </Text>
                 </View>
@@ -310,9 +289,9 @@ export default function TimesheetQuery() {
           <Text
             style={{
               fontWeight: "700",
-              fontSize: 15,
+              fontSize: t.typography.bodyLarge.fontSize,
               color: colors.textMuted,
-              marginBottom: 6,
+              marginBottom: t.spacing.xxs,
             }}
           >
             Day Entry
@@ -320,20 +299,20 @@ export default function TimesheetQuery() {
 
           <View
             style={{
-              padding: 15,
-              borderRadius: 12,
+              padding: t.spacing.md,
+              borderRadius: t.radius.md,
               backgroundColor: colors.surface,
               borderColor: colors.border,
               borderWidth: 1,
-              marginBottom: 20,
+              marginBottom: t.spacing.lg,
             }}
           >
             {timesheetEntry ? (
               Object.entries(timesheetEntry).map(([key, val]) =>
                 val ? (
-                  <View key={key} style={{ marginBottom: 6 }}>
-                    <Text style={{ fontSize: 12, color: colors.textMuted }}>{key}</Text>
-                    <Text style={{ color: colors.text, fontSize: 15 }}>{String(val)}</Text>
+                  <View key={key} style={{ marginBottom: t.spacing.xxs }}>
+                    <Text style={{ fontSize: t.typography.metadata.fontSize, color: colors.textMuted }}>{key}</Text>
+                    <Text style={{ color: colors.text, fontSize: t.typography.bodyLarge.fontSize }}>{String(val)}</Text>
                   </View>
                 ) : null
               )
@@ -346,15 +325,15 @@ export default function TimesheetQuery() {
           <View
             style={{
               backgroundColor: colors.surfaceAlt,
-              borderRadius: 12,
+              borderRadius: t.radius.md,
               borderColor: colors.border,
               borderWidth: 1,
-              padding: 15,
-              marginBottom: 30,
+              padding: t.spacing.md,
+              marginBottom: t.spacing["2xl"],
             }}
           >
-            <Text style={{ color: colors.textMuted, fontSize: 13 }}>Field Queried</Text>
-            <Text style={{ fontSize: 16, fontWeight: "700", color: colors.text, marginBottom: 10 }}>
+            <Text style={{ color: colors.textMuted, fontSize: t.typography.bodySmall.fontSize }}>Field Queried</Text>
+            <Text style={{ fontSize: t.typography.bodyLarge.fontSize, fontWeight: "700", color: colors.text, marginBottom: t.spacing.xs }}>
               {queryData.field}
             </Text>
 
@@ -363,14 +342,14 @@ export default function TimesheetQuery() {
               style={{
                 color: colors.textMuted,
                 fontStyle: "italic",
-                marginTop: 4,
-                marginBottom: 10,
+                marginTop: t.spacing.xxs,
+                marginBottom: t.spacing.xs,
               }}
             >
               “{queryData.note || "No note provided"}”
             </Text>
 
-            <Text style={{ color: colors.textMuted, fontSize: 12, marginBottom: 10 }}>
+            <Text style={{ color: colors.textMuted, fontSize: t.typography.metadata.fontSize, marginBottom: t.spacing.xs }}>
               Created: {fmt(queryData.createdAt)}
             </Text>
 
@@ -379,20 +358,20 @@ export default function TimesheetQuery() {
                 router.push(`/(protected)/week/${queryData.weekStart}?day=${queryData.day}`)
               }
               style={{
-                borderRadius: 8,
-                paddingVertical: 10,
-                paddingHorizontal: 12,
+                borderRadius: t.radius.sm,
+                paddingVertical: t.spacing.xs,
+                paddingHorizontal: t.spacing.sm,
                 backgroundColor: colors.surface,
                 borderWidth: 1,
                 borderColor: colors.border,
                 flexDirection: "row",
                 alignItems: "center",
-                marginBottom: 5,
+                marginBottom: t.spacing.xxs,
               }}
             >
               <Icon name="edit-2" size={16} color={colors.text} />
               <Text
-                style={{ marginLeft: 8, color: colors.text, fontWeight: "600", fontSize: 14 }}
+                style={{ marginLeft: t.spacing.xs, color: colors.text, fontWeight: "600", fontSize: t.typography.body.fontSize }}
               >
                 Open Timesheet
               </Text>
@@ -400,18 +379,18 @@ export default function TimesheetQuery() {
           </View>
 
           {/* ---------------- CHAT THREAD ---------------- */}
-          <Text style={{ fontWeight: "700", fontSize: 16, color: colors.text, marginBottom: 10 }}>
+          <Text style={{ fontWeight: "700", fontSize: t.typography.bodyLarge.fontSize, color: colors.text, marginBottom: t.spacing.xs }}>
             Messages
           </Text>
 
           <View
             style={{
               backgroundColor: colors.surface,
-              borderRadius: 12,
-              padding: 15,
+              borderRadius: t.radius.md,
+              padding: t.spacing.md,
               borderColor: colors.border,
               borderWidth: 1,
-              marginBottom: 20,
+              marginBottom: t.spacing.lg,
             }}
           >
             {messages.length === 0 ? (
@@ -421,9 +400,9 @@ export default function TimesheetQuery() {
                 <View
                   key={msg.id}
                   style={{
-                    marginBottom: 14,
-                    padding: 10,
-                    borderRadius: 12,
+                    marginBottom: t.spacing.sm,
+                    padding: t.spacing.xs,
+                    borderRadius: t.radius.md,
                     alignSelf: msg.sender === "employee" ? "flex-end" : "flex-start",
                     backgroundColor:
                       msg.sender === "employee" ? colors.accentSoft : colors.surfaceAlt,
@@ -433,9 +412,9 @@ export default function TimesheetQuery() {
                   <Text style={{ color: colors.text }}>{msg.text}</Text>
                   <Text
                     style={{
-                      fontSize: 10,
+                      fontSize: t.typography.micro.fontSize,
                       color: colors.textMuted,
-                      marginTop: 4,
+                      marginTop: t.spacing.xxs,
                       textAlign: "right",
                     }}
                   >
@@ -447,41 +426,27 @@ export default function TimesheetQuery() {
           </View>
 
           <View style={{ height: 120 }} />
-        </ScrollView>
-
         {/* ---------------- MESSAGE COMPOSER ---------------- */}
         <View
           style={{
             flexDirection: "row",
             alignItems: "center",
-            padding: 12,
+            padding: t.spacing.sm,
             borderTopWidth: 1,
             borderColor: colors.border,
             backgroundColor: colors.surface,
           }}
         >
-          <TextInput
+          <FormField
+            label="Message"
             placeholder="Write a message…"
-            placeholderTextColor={colors.textMuted}
-            style={{
-              flex: 1,
-              padding: 12,
-              borderRadius: 20,
-              backgroundColor: colors.surfaceAlt,
-              color: colors.text,
-            }}
+            style={{ flex: 1 }}
             value={messageText}
             onChangeText={setMessageText}
           />
 
-          <TouchableOpacity
-            onPress={sendMessage}
-            style={{ marginLeft: 12, padding: 8 }}
-          >
-            <Icon name="send" size={20} color={colors.accent} />
-          </TouchableOpacity>
+          <IconButton icon="send" label="Send message" onPress={sendMessage} style={{ marginLeft: t.spacing.sm }} />
         </View>
-      </KeyboardAvoidingView>
-    </SafeAreaView>
+    </PageShell>
   );
 }

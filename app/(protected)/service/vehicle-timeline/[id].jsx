@@ -1,29 +1,25 @@
-import { useLocalSearchParams, useRouter } from "expo-router";
-import { useEffect, useMemo, useState } from "react";
+import { AppText as Text, AppPressable as TouchableOpacity } from "../../../../components/ui/AppPrimitives";
+import {
+  servicePalette as COLORS } from "../../../../lib/design/semantics";
+import { useLocalSearchParams,
+  useRouter } from "expo-router";
+import { useEffect,
+  useMemo,
+  useState } from "react";
 import {
   ActivityIndicator,
   Image,
   ScrollView,
   StyleSheet,
-  Text,
-  TouchableOpacity,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+
 import Icon from "react-native-vector-icons/Feather";
 
 import { useServiceCollection } from "../../../../hooks/useServiceData";
 import { useTheme } from "../../../../providers/ThemeProvider";
-
-const COLORS = {
-  background: "#0D0D0D",
-  card: "#1A1A1A",
-  border: "#333333",
-  textHigh: "#FFFFFF",
-  textMid: "#E0E0E0",
-  textLow: "#888888",
-  primaryAction: "#ED1C25",
-};
+import { designTokens as t } from "../../../../lib/design/tokens";
+import PageShell from "../../../../components/layout/PageShell";
 
 function toDateMaybe(value) {
   if (!value) return null;
@@ -291,41 +287,13 @@ export default function VehicleTimelineScreen() {
   const headerLabel = getVehicleLabel(vehicle, params);
 
   return (
-    <SafeAreaView
-      edges={["left", "right"]}
-      style={[
-        styles.container,
-        { backgroundColor: colors.background || COLORS.background },
-      ]}
-    >
-      <View
-        style={[
-          styles.header,
-          { borderBottomColor: colors.border || COLORS.border },
-        ]}
-      >
-        <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-          <Icon
-            name="chevron-left"
-            size={22}
-            color={colors.text || COLORS.textHigh}
-          />
-        </TouchableOpacity>
-        <View style={{ flex: 1 }}>
-          <Text style={[styles.pageTitle, { color: colors.text || COLORS.textHigh }]}>
-            Vehicle Timeline
-          </Text>
-          <Text
-            style={[
-              styles.pageSubtitle,
-              { color: colors.textMuted || COLORS.textMid },
-            ]}
-            numberOfLines={1}
-          >
-            {headerLabel}
-          </Text>
-        </View>
-      </View>
+    <PageShell header={{
+      variant: "compact",
+      title: "Vehicle Timeline",
+      subtitle: headerLabel,
+      onBack: router.back,
+    }}>
+      
 
       {loadingVehicle ? (
         <View style={styles.loadingContainer}>
@@ -343,7 +311,7 @@ export default function VehicleTimelineScreen() {
           </Text>
         </View>
       ) : (
-        <ScrollView contentContainerStyle={styles.scrollContent}>
+        <>
           {timeline.length === 0 ? (
             <View
               style={[
@@ -439,7 +407,7 @@ export default function VehicleTimelineScreen() {
                     <ScrollView
                       horizontal
                       showsHorizontalScrollIndicator={false}
-                      style={{ marginTop: 8 }}
+                      style={{ marginTop: t.spacing.xs }}
                     >
                       {item.photos.slice(0, 8).map((uri) => (
                         <Image key={uri} source={{ uri }} style={styles.photoThumb} />
@@ -450,9 +418,9 @@ export default function VehicleTimelineScreen() {
               </TouchableOpacity>
             ))
           )}
-        </ScrollView>
+        </>
       )}
-    </SafeAreaView>
+    </PageShell>
   );
 }
 
@@ -464,22 +432,22 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingHorizontal: t.spacing.md,
+    paddingVertical: t.spacing.sm,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
   },
   backButton: {
-    paddingRight: 10,
+    paddingRight: t.spacing.xs,
   },
   pageTitle: {
-    fontSize: 22,
+    fontSize: t.typography.titleSmall.fontSize,
     fontWeight: "800",
     color: COLORS.textHigh,
   },
   pageSubtitle: {
-    marginTop: 2,
-    fontSize: 13,
+    marginTop: t.spacing.none,
+    fontSize: t.typography.bodySmall.fontSize,
     color: COLORS.textMid,
   },
   loadingContainer: {
@@ -488,12 +456,12 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   loadingText: {
-    marginTop: 10,
+    marginTop: t.spacing.xs,
     color: COLORS.textMid,
   },
   scrollContent: {
-    padding: 16,
-    paddingBottom: 36,
+    padding: t.spacing.md,
+    paddingBottom: t.spacing["2xl"],
   },
   timelineRow: {
     flexDirection: "row",
@@ -505,7 +473,7 @@ const styles = StyleSheet.create({
   iconWrap: {
     width: 32,
     height: 32,
-    borderRadius: 16,
+    borderRadius: t.radius.pill,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: COLORS.primaryAction,
@@ -518,9 +486,9 @@ const styles = StyleSheet.create({
   timelineCard: {
     flex: 1,
     borderWidth: 1,
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 12,
+    borderRadius: t.radius.md,
+    padding: t.spacing.sm,
+    marginBottom: t.spacing.sm,
   },
   timelineHeaderRow: {
     flexDirection: "row",
@@ -528,45 +496,45 @@ const styles = StyleSheet.create({
   },
   timelineTitle: {
     flex: 1,
-    paddingRight: 8,
-    fontSize: 15,
+    paddingRight: t.spacing.xs,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "800",
   },
   timelineDate: {
     maxWidth: 112,
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     textAlign: "right",
   },
   timelineMeta: {
-    marginTop: 4,
-    fontSize: 12,
+    marginTop: t.spacing.xxs,
+    fontSize: t.typography.metadata.fontSize,
   },
   timelineSubtitle: {
-    marginTop: 6,
-    fontSize: 13,
-    lineHeight: 18,
+    marginTop: t.spacing.xxs,
+    fontSize: t.typography.bodySmall.fontSize,
+    lineHeight: t.typography.bodySmall.lineHeight,
   },
   photoThumb: {
     width: 70,
     height: 70,
-    borderRadius: 8,
-    marginRight: 8,
+    borderRadius: t.radius.sm,
+    marginRight: t.spacing.xs,
   },
   emptyState: {
     alignItems: "center",
     borderWidth: 1,
-    borderRadius: 10,
-    padding: 24,
+    borderRadius: t.radius.md,
+    padding: t.spacing.xl,
   },
   emptyTitle: {
-    marginTop: 10,
-    fontSize: 16,
+    marginTop: t.spacing.xs,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "800",
   },
   emptySubtitle: {
-    marginTop: 6,
-    fontSize: 13,
-    lineHeight: 18,
+    marginTop: t.spacing.xxs,
+    fontSize: t.typography.bodySmall.fontSize,
+    lineHeight: t.typography.bodySmall.lineHeight,
     textAlign: "center",
   },
 });

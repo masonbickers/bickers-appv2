@@ -1,23 +1,20 @@
-import * as WebBrowser from "expo-web-browser";
+import { AppText as Text, AppPressable as TouchableOpacity, FormField } from "../../components/ui/AppPrimitives";
 import { useRouter } from "expo-router";
-import { onAuthStateChanged } from "firebase/auth";
-import { getDownloadURL, getMetadata, listAll, ref } from "firebase/storage";
-import { useEffect, useMemo, useState } from "react";
 import {
-  ActivityIndicator,
-  FlatList,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View,
-} from "react-native";
-import Icon from "react-native-vector-icons/Feather";
-import { SafeAreaView } from "react-native-safe-area-context";
+  getDownloadURL,
+  getMetadata,
+  listAll,
+  ref,
+} from "firebase/storage";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { StyleSheet, View } from "react-native";
 
-import { auth, storage } from "../../firebaseConfig";
-import { useTheme } from "../../providers/ThemeProvider"; // 👈 theme
+import PageShell from "../../components/layout/PageShell";
+import { storage } from "../../firebaseConfig";
+import { withAlpha } from "../../lib/design/color";
+import { designTokens as t } from "../../lib/design/tokens";
+import { useAuth } from "../../providers/AuthProvider";
+import { useTheme } from "../../providers/ThemeProvider";
 
 // ✅ trailing slash avoids ambiguous matches and mirrors console pathing
 const FOLDER_PATH = "spec sheets/";
@@ -33,42 +30,25 @@ const fmtDate = (iso) =>
 const kb = (bytes) =>
   typeof bytes === "number" ? `${(bytes / 1024).toFixed(2)} KB` : "—";
 
-function withAlpha(hex, alpha) {
-  const safeAlpha = Math.max(0, Math.min(1, Number(alpha) || 0));
-  const raw = String(hex || "").replace("#", "");
-  if (!/^[0-9a-fA-F]{6}$/.test(raw)) return `rgba(255,255,255,${safeAlpha})`;
-  const r = parseInt(raw.slice(0, 2), 16);
-  const g = parseInt(raw.slice(2, 4), 16);
-  const b = parseInt(raw.slice(4, 6), 16);
-  return `rgba(${r},${g},${b},${safeAlpha})`;
-}
-
 export default function SpecSheetsScreen() {
   const router = useRouter();
   const { colors } = useTheme();
+  const { user, loading: authLoading } = useAuth();
 
   const [files, setFiles] = useState([]); // [{name,size,updated,contentType,url}]
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
+  const [err, setErr] = useState(null);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
+    if (authLoading || !user) return undefined;
     let alive = true;
-    let unsub = () => {};
 
     const load = async () => {
       try {
-        setLoading(true);
-        setErr("");
-
-        // 🔐 ensure user is signed-in before listing (matches common Storage rules)
-        await new Promise((resolve) => {
-          unsub = onAuthStateChanged(
-            auth,
-            () => resolve(),
-            () => resolve()
-          );
-        });
+        setErr(null);
 
         const folderRef = ref(storage, FOLDER_PATH);
         const res = await listAll(folderRef);
@@ -93,24 +73,26 @@ export default function SpecSheetsScreen() {
         if (alive) setFiles(details);
       } catch (e) {
         console.log("SPEC SHEETS ERROR:", e?.code, e?.message);
-        if (alive)
-          setErr(
-            `${e?.code || "error"} ${
-              e?.message ||
-              "Couldn’t load spec sheets. Check Storage rules and folder path."
-            }`
-          );
+        if (alive) setErr(e);
       } finally {
-        if (alive) setLoading(false);
+        if (alive) {
+          setLoading(false);
+          setRefreshing(false);
+        }
       }
     };
 
     load();
     return () => {
       alive = false;
-      unsub && unsub();
     };
-  }, []);
+  }, [authLoading, reloadKey, user]);
+
+  const reloadFiles = useCallback(() => {
+    if (files.length > 0) setRefreshing(true);
+    else setLoading(true);
+    setReloadKey((value) => value + 1);
+  }, [files.length]);
 
   const filtered = useMemo(() => {
     const v = q.trim().toLowerCase();
@@ -118,15 +100,15 @@ export default function SpecSheetsScreen() {
     return files.filter((f) => f.name.toLowerCase().includes(v));
   }, [files, q]);
 
-  const openPdf = async (url) => {
-    try {
-      const res = await WebBrowser.openBrowserAsync(url);
-      if (res.type === "cancel") {
-        // user closed
-      }
-    } catch (e) {
-      console.log("Open failed", e);
-    }
+  const openPdf = (item) => {
+    router.push({
+      pathname: "/document-viewer",
+      params: {
+        url: item.url,
+        name: item.name,
+        contentType: item.contentType,
+      },
+    });
   };
 
   const renderItem = ({ item }) => (
@@ -139,7 +121,7 @@ export default function SpecSheetsScreen() {
         },
       ]}
       activeOpacity={0.85}
-      onPress={() => openPdf(item.url)}
+      onPress={() => openPdf(item)}
     >
       <View
         style={[
@@ -172,70 +154,43 @@ export default function SpecSheetsScreen() {
   );
 
   return (
-    <SafeAreaView
-      edges={["top", "left", "right"]}
-      style={[styles.wrap, { backgroundColor: colors.background }]}
+    <PageShell
+      header={{
+        variant: "compact",
+        eyebrow: "Technical Library",
+        title: "Spec Sheets",
+        onBack: router.back,
+      }}
+      state={{
+        resources: [{ data: files, error: err, isInitialLoading: loading || authLoading, isRefreshing: refreshing }],
+        hasContent: files.length > 0,
+        onRetry: reloadFiles,
+        loadingLabel: "Loading spec sheets…",
+        errorTitle: "Spec sheets unavailable",
+        errorMessage: "Could not load the technical library. Please try again.",
+        refreshErrorMessage: "Could not refresh spec sheets. Showing the saved list.",
+        empty: {
+          when: !loading && !authLoading && !err && files.length === 0,
+          icon: "file-text",
+          title: "No spec sheets",
+          message: "Technical documents will appear here when available.",
+        },
+      }}
+      refresh={{ refreshing, onRefresh: reloadFiles }}
     >
-      <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
-        <View style={styles.heroCard}>
-          <View style={styles.heroContent}>
-            <View style={styles.heroTopRow}>
-              <TouchableOpacity
-                onPress={() => router.back()}
-                activeOpacity={0.85}
-                style={[
-                  styles.backBtn,
-                  {
-                    backgroundColor: withAlpha(colors.surfaceAlt, 0.75),
-                    borderColor: withAlpha(colors.border, 0.75),
-                  },
-                ]}
-              >
-                <Icon name="arrow-left" size={15} color={colors.text} />
-              </TouchableOpacity>
-
-              <View style={styles.heroTitleWrap}>
-                <Text style={[styles.heroEyebrow, { color: colors.textMuted }]}>
-                  Technical Library
-                </Text>
-                <Text style={[styles.heroTitle, { color: colors.text }]}>Spec Sheets</Text>
-              </View>
-
-              <View style={styles.heroSpacer} />
-            </View>
-          </View>
-        </View>
-
+      <>
         <View style={styles.sectionCard}>
-          <TextInput
+          <FormField
+            label="Search specification sheets"
             value={q}
             onChangeText={setQ}
             placeholder="Search e.g. ‘Silverado’, ‘Cheyenne’, ‘2025’…"
-            placeholderTextColor={colors.textMuted}
-            style={[
-              styles.search,
-              {
-                backgroundColor: colors.surfaceAlt,
-                borderColor: colors.border,
-                color: colors.text,
-              },
-            ]}
+            inputProps={{ returnKeyType: "search" }}
           />
         </View>
 
         <View style={styles.sectionCard}>
-          {loading ? (
-            <View style={styles.loadingBox}>
-              <ActivityIndicator color={colors.accent} />
-              <Text style={[styles.loadingText, { color: colors.textMuted }]}>
-                Loading spec sheets…
-              </Text>
-            </View>
-          ) : err ? (
-            <View style={[styles.errorBox, { backgroundColor: colors.danger + "22" }]}>
-              <Text style={[styles.errorText, { color: colors.danger }]}>{err}</Text>
-            </View>
-          ) : filtered.length === 0 ? (
+          {filtered.length === 0 ? (
             <View
               style={[
                 styles.emptyBox,
@@ -250,121 +205,73 @@ export default function SpecSheetsScreen() {
               </Text>
             </View>
           ) : (
-            <FlatList
-              data={filtered}
-              keyExtractor={(i) => i.url}
-              renderItem={renderItem}
-              scrollEnabled={false}
-              contentContainerStyle={styles.listContent}
-            />
+            <View style={styles.listContent}>
+              {filtered.map((item) => (
+                <View key={item.url}>{renderItem({ item })}</View>
+              ))}
+            </View>
           )}
         </View>
-      </ScrollView>
-    </SafeAreaView>
+      </>
+    </PageShell>
   );
 }
 
 const styles = StyleSheet.create({
-  wrap: { flex: 1 },
-  scrollContent: { paddingHorizontal: 14, paddingBottom: 24, paddingTop: 8 },
-  heroCard: {
-    position: "relative",
-    marginBottom: 8,
-  },
-  heroContent: {
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-  },
-  heroTopRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 10,
-  },
-  backBtn: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    borderWidth: 1,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  heroTitleWrap: {
-    flex: 1,
-    paddingTop: 1,
-    alignItems: "center",
-  },
-  heroSpacer: {
-    width: 34,
-    height: 34,
-  },
-  heroEyebrow: {
-    fontSize: 12,
-    letterSpacing: 0.6,
-    textTransform: "uppercase",
-    fontWeight: "800",
-    textAlign: "center",
-  },
-  heroTitle: {
-    marginTop: 2,
-    fontSize: 24,
-    fontWeight: "900",
-    letterSpacing: 0.2,
-    textAlign: "center",
-  },
   sectionCard: {
-    marginBottom: 12,
+    marginBottom: t.spacing.sm,
   },
   search: {
     borderWidth: 1,
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    borderRadius: t.radius.md,
+    paddingHorizontal: t.spacing.sm,
+    paddingVertical: t.spacing.xs,
   },
-  loadingBox: { paddingTop: 24, alignItems: "center", gap: 8 },
-  loadingText: {},
-  errorBox: {
-    padding: 14,
-    borderRadius: 12,
-    marginTop: 14,
-  },
-  errorText: {},
   emptyBox: {
-    padding: 18,
-    borderRadius: 12,
+    padding: t.spacing.md,
+    borderRadius: t.radius.md,
     borderWidth: 1,
     alignItems: "center",
   },
   emptyText: {},
-  listContent: { paddingBottom: 8 },
+  listContent: { paddingBottom: t.spacing.xs },
   itemRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-    borderRadius: 12,
+    gap: t.spacing.xs,
+    paddingHorizontal: t.spacing.sm,
+    paddingVertical: t.spacing.sm,
+    borderRadius: t.radius.md,
     borderWidth: 1,
-    marginBottom: 8,
+    marginBottom: t.spacing.xs,
   },
   itemIconWrap: {
     width: 34,
     height: 34,
-    borderRadius: 10,
+    borderRadius: t.radius.md,
     borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
   },
-  badgeText: { fontSize: 10, fontWeight: "700" },
+  badgeText: { fontSize: t.typography.micro.fontSize, fontWeight: "700" },
   itemTextWrap: {
     flex: 1,
     minWidth: 0,
   },
-  itemText: { fontSize: 14, fontWeight: "800", lineHeight: 18 },
-  itemSubText: { fontSize: 12, lineHeight: 16, marginTop: 2 },
+  itemText: {
+    fontSize: t.typography.body.fontSize,
+    fontWeight: "800",
+    lineHeight: t.typography.body.lineHeight,
+  },
+  itemSubText: {
+    fontSize: t.typography.metadata.fontSize,
+    lineHeight: t.typography.metadata.lineHeight,
+    marginTop: t.spacing.none,
+  },
   itemAction: {
     width: 52,
     alignItems: "flex-end",
     justifyContent: "center",
   },
-  viewBtnText: { fontWeight: "800", fontSize: 12 },
+  viewBtnText: { fontWeight: "800", fontSize: t.typography.metadata.fontSize },
 });

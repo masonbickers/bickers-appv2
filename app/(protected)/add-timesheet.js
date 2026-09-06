@@ -1,21 +1,23 @@
-import { useNavigation } from '@react-navigation/native';
-import { addDoc, collection } from 'firebase/firestore';
+import { AppText as Text, AppPressable as TouchableOpacity, TextArea } from "../../components/ui/AppPrimitives";
+import {
+  useNavigation } from '@react-navigation/native';
+import { addDoc,
+  collection } from 'firebase/firestore';
 import { useState } from 'react';
 import {
-  SafeAreaView,
-  ScrollView,
   StyleSheet,
   Switch,
-  Text,
-  TextInput,
-  TouchableOpacity,
   View,
-} from 'react-native';
+} from "react-native";
 import DropDownPicker from 'react-native-dropdown-picker';
 import Icon from 'react-native-vector-icons/Feather';
 import { db } from '../../firebaseConfig';
 import { useDataCache } from '../../providers/DataCacheProvider';
 import { useTheme } from '../../providers/ThemeProvider';
+import { staticColors } from "../../lib/design/staticColors";
+import { withAlpha } from "../../lib/design/color";
+import { designTokens as t } from "../../lib/design/tokens";
+import PageShell from "../../components/layout/PageShell";
 
 const LUNCH_DEDUCTION_MINUTES = 30;
 const ON_SET_BASIC_DAY_MINUTES = 10 * 60;
@@ -30,16 +32,6 @@ for (let h = 0; h < 24; h++) {
     const min = String(m).padStart(2, '0');
     timeOptions.push({ label: `${hour}:${min}`, value: `${hour}:${min}` });
   }
-}
-
-function withAlpha(hex, alpha) {
-  const safeAlpha = Math.max(0, Math.min(1, Number(alpha) || 0));
-  const raw = String(hex || '').replace('#', '');
-  if (!/^[0-9a-fA-F]{6}$/.test(raw)) return `rgba(255,255,255,${safeAlpha})`;
-  const r = parseInt(raw.slice(0, 2), 16);
-  const g = parseInt(raw.slice(2, 4), 16);
-  const b = parseInt(raw.slice(4, 6), 16);
-  return `rgba(${r},${g},${b},${safeAlpha})`;
 }
 
 function timeToMinutes(value) {
@@ -276,7 +268,6 @@ export default function TimesheetPage() {
   };
   const navigation = useNavigation();
 
-
   const getFilteredTimes = (previousValue, allowFullDay = false) => {
     if (!previousValue || allowFullDay) return timeOptions;
     return timeOptions.filter((t) => t.value > previousValue);
@@ -355,24 +346,7 @@ export default function TimesheetPage() {
   
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
-      <ScrollView contentContainerStyle={styles.content}>
-      {submittedMessage ? (
-  <View
-    style={[
-      styles.submittedBanner,
-      {
-        backgroundColor: withAlpha(colors.success || '#22c55e', 0.16),
-        borderColor: withAlpha(colors.success || '#22c55e', 0.42),
-      },
-    ]}
-  >
-    <Text style={[styles.submittedBannerText, { color: colors.text }]}>{submittedMessage}</Text>
-  </View>
-) : null}
-
-
-        <View
+    <PageShell mode="form" width="form" customHeader={<View
           style={[
             styles.heroCard,
             { backgroundColor: colors.surface, borderColor: colors.border },
@@ -416,7 +390,23 @@ export default function TimesheetPage() {
               </View>
             </View>
           </View>
-        </View>
+        </View>} customHeaderPlacement="fixed">
+      <>
+      {submittedMessage ? (
+  <View
+    style={[
+      styles.submittedBanner,
+      {
+        backgroundColor: withAlpha(colors.success || staticColors.hex_22c55e_74qlvk, 0.16),
+        borderColor: withAlpha(colors.success || staticColors.hex_22c55e_74qlvk, 0.42),
+      },
+    ]}
+  >
+    <Text style={[styles.submittedBannerText, { color: colors.text }]}>{submittedMessage}</Text>
+  </View>
+) : null}
+
+        
 
         <View
           style={[
@@ -698,17 +688,11 @@ export default function TimesheetPage() {
 
             {/* Notes */}
             <View style={styles.fieldBlock}>
-              <Text style={[styles.label, { color: colors.textMuted }]}>Notes:</Text>
-              <TextInput
-                style={[
-                  styles.notesInput,
-                  { backgroundColor: colors.surface, color: colors.text, borderColor: colors.border },
-                ]}
+              <TextArea
+                label="Notes:"
                 value={weekData[day].notes}
                 onChangeText={(text) => handleNotesChange(day, text)}
                 placeholder="Enter notes..."
-                placeholderTextColor={colors.textMuted}
-                multiline
               />
             </View>
           </View>
@@ -720,7 +704,6 @@ export default function TimesheetPage() {
 >
   <Text style={[styles.confirmButtonText, { color: colors.surface }]}>Preview & Continue</Text>
 </TouchableOpacity>
-
 
       {showPreview ? (
       <View
@@ -750,7 +733,7 @@ export default function TimesheetPage() {
       {formatHoursMins(weeklySummary.totalTravelMinutes)}
     </Text>
   </View>
-  <ScrollView>
+  <View>
     {daysOfWeek.map((day) => (
       <View
         key={day}
@@ -793,7 +776,7 @@ export default function TimesheetPage() {
         <Text style={[styles.previewText, { color: colors.textMuted }]}>Notes: {weekData[day].notes || '—'}</Text>
       </View>
     ))}
-  </ScrollView>
+  </View>
 
   <TouchableOpacity
     style={[styles.confirmButton, { backgroundColor: colors.accent, borderColor: colors.accent }]}
@@ -818,82 +801,82 @@ export default function TimesheetPage() {
 </View>
       ) : null}
 
-      </ScrollView>
-    </SafeAreaView>
+      </>
+    </PageShell>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0b0b0b' },
-  content: { padding: 12, paddingBottom: 24, overflow: 'visible' },
+  container: { flex: 1, backgroundColor: staticColors.hex_0b0b0b_9v81ck },
+  content: { padding: t.spacing.sm, paddingBottom: t.spacing.xl, overflow: 'visible' },
 
   heroCard: {
     position: 'relative',
-    borderRadius: 18,
+    borderRadius: t.radius.xl,
     borderWidth: 1,
-    marginBottom: 14,
+    marginBottom: t.spacing.sm,
     overflow: 'hidden',
   },
   heroContent: {
-    paddingHorizontal: 16,
-    paddingVertical: 16,
+    paddingHorizontal: t.spacing.md,
+    paddingVertical: t.spacing.md,
   },
   heroEyebrow: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     letterSpacing: 0.6,
     textTransform: 'uppercase',
     fontWeight: '800',
   },
   heroTitle: {
-    marginTop: 3,
-    fontSize: 24,
+    marginTop: t.spacing.xxs,
+    fontSize: t.typography.pageTitle.fontSize,
     fontWeight: '900',
     letterSpacing: 0.2,
   },
   heroSubTitle: {
-    marginTop: 3,
-    fontSize: 13,
-    lineHeight: 18,
+    marginTop: t.spacing.xxs,
+    fontSize: t.typography.bodySmall.fontSize,
+    lineHeight: t.typography.bodySmall.lineHeight,
     fontWeight: '600',
   },
   heroMetaRow: {
-    marginTop: 12,
+    marginTop: t.spacing.sm,
     flexDirection: 'row',
-    gap: 8,
+    gap: t.spacing.xs,
     flexWrap: 'wrap',
   },
   heroMetaChip: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    gap: t.spacing.xxs,
     borderWidth: 1,
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+    borderRadius: t.radius.pill,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
   },
   heroMetaText: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     fontWeight: '700',
   },
 
   dayCard: {
     borderWidth: 1,
-    padding: 16,
-    borderRadius: 14,
-    marginBottom: 14,
+    padding: t.spacing.md,
+    borderRadius: t.radius.lg,
+    marginBottom: t.spacing.sm,
   },
   dayTitle: {
-    fontSize: 18,
+    fontSize: t.typography.sectionTitle.fontSize,
     fontWeight: '900',
-    marginBottom: 12,
+    marginBottom: t.spacing.sm,
   },
   fieldBlock: {
-    marginBottom: 14,
+    marginBottom: t.spacing.sm,
   },
   label: {
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     fontWeight: '700',
-    marginBottom: 6,
+    marginBottom: t.spacing.xxs,
   },
   dropdown: {
     borderWidth: 1,
@@ -902,15 +885,15 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   dropdownText: {
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     fontWeight: '700',
   },
   switchRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginTop: 10,
-    paddingTop: 8,
+    marginTop: t.spacing.xs,
+    paddingTop: t.spacing.xs,
     borderTopWidth: 1,
   },
   lunchToggleRow: {
@@ -918,10 +901,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 10,
+    gap: t.spacing.xs,
   },
   lunchChoiceText: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: '800',
   },
   lunchChoiceLeft: {
@@ -936,142 +919,142 @@ const styles = StyleSheet.create({
     fontWeight: '900',
   },
   notesInput: {
-    borderRadius: 10,
-    padding: 10,
+    borderRadius: t.radius.md,
+    padding: t.spacing.xs,
     minHeight: 60,
     textAlignVertical: 'top',
     borderWidth: 1,
   },
   divider: {
     height: 1,
-    marginVertical: 12,
+    marginVertical: t.spacing.sm,
   },
   previewContainer: {
     borderWidth: 1,
-    borderRadius: 14,
-    padding: 12,
-    marginTop: 12,
+    borderRadius: t.radius.lg,
+    padding: t.spacing.sm,
+    marginTop: t.spacing.sm,
   },
   previewHeader: {
-    fontSize: 18,
+    fontSize: t.typography.sectionTitle.fontSize,
     fontWeight: '900',
-    marginBottom: 12,
+    marginBottom: t.spacing.sm,
   },
   previewSummaryCard: {
     borderWidth: 1,
-    borderRadius: 12,
-    padding: 12,
-    marginBottom: 12,
+    borderRadius: t.radius.md,
+    padding: t.spacing.sm,
+    marginBottom: t.spacing.sm,
   },
   previewSummaryTitle: {
-    fontSize: 16,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: '900',
   },
   previewSummaryText: {
-    marginTop: 4,
-    fontSize: 13,
+    marginTop: t.spacing.xxs,
+    fontSize: t.typography.bodySmall.fontSize,
     fontWeight: '600',
   },
   previewCard: {
     borderWidth: 1,
-    padding: 12,
-    borderRadius: 12,
-    marginBottom: 12,
+    padding: t.spacing.sm,
+    borderRadius: t.radius.md,
+    marginBottom: t.spacing.sm,
   },
   previewDay: {
-    fontSize: 16,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: '900',
-    marginBottom: 6,
+    marginBottom: t.spacing.xxs,
   },
   previewText: {
-    fontSize: 13,
-    marginBottom: 2,
+    fontSize: t.typography.bodySmall.fontSize,
+    marginBottom: t.spacing.none,
     fontWeight: '600',
   },
   summaryCard: {
     borderWidth: 1,
-    borderRadius: 14,
-    padding: 12,
-    marginBottom: 14,
+    borderRadius: t.radius.lg,
+    padding: t.spacing.sm,
+    marginBottom: t.spacing.sm,
   },
   summaryHeaderRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 8,
+    gap: t.spacing.xs,
   },
   summaryTitle: {
-    fontSize: 16,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: '900',
   },
   summaryTotal: {
-    fontSize: 18,
+    fontSize: t.typography.sectionTitle.fontSize,
     fontWeight: '900',
   },
   summaryMetaText: {
-    marginTop: 6,
-    fontSize: 12,
+    marginTop: t.spacing.xxs,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: '600',
   },
   summaryGrid: {
-    gap: 8,
-    marginTop: 10,
+    gap: t.spacing.xs,
+    marginTop: t.spacing.xs,
   },
   summaryDayRow: {
     borderWidth: 1,
-    borderRadius: 12,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
+    borderRadius: t.radius.md,
+    paddingVertical: t.spacing.xs,
+    paddingHorizontal: t.spacing.sm,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: t.spacing.xs,
   },
   summaryDayLabel: {
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
     fontWeight: '800',
   },
   summaryDaySubLabel: {
-    marginTop: 2,
-    fontSize: 11,
+    marginTop: t.spacing.none,
+    fontSize: t.typography.caption.fontSize,
     fontWeight: '600',
   },
   summaryDayHours: {
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     fontWeight: '900',
   },
   confirmButton: {
     borderWidth: 1,
-    paddingVertical: 12,
-    borderRadius: 999,
+    paddingVertical: t.spacing.sm,
+    borderRadius: t.radius.pill,
     alignItems: 'center',
-    marginTop: 20,
+    marginTop: t.spacing.lg,
   },
   confirmButtonText: {
     fontWeight: '900',
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
   },
   backButton: {
     borderWidth: 1,
-    paddingVertical: 12,
-    borderRadius: 999,
+    paddingVertical: t.spacing.sm,
+    borderRadius: t.radius.pill,
     alignItems: 'center',
-    marginTop: 10,
+    marginTop: t.spacing.xs,
   },
   backButtonText: {
     fontWeight: '800',
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
   },
   
   submittedBanner: {
     borderWidth: 1,
-    padding: 10,
-    borderRadius: 10,
-    marginBottom: 12,
+    padding: t.spacing.xs,
+    borderRadius: t.radius.md,
+    marginBottom: t.spacing.sm,
   },
   submittedBannerText: {
     textAlign: 'center',
     fontWeight: '800',
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
   },
   
 });

@@ -1,26 +1,30 @@
+import { AppText as Text, AppPressable as TouchableOpacity, FormField as SharedFormField, TextArea } from "../../../../components/ui/AppPrimitives";
+import {
+  servicePalette as COLORS } from "../../../../lib/design/semantics";
 //app/(protected)/service/mot-precheck/[id].jsx
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useLocalSearchParams, useNavigation, useRouter } from "expo-router";
+import { useLocalSearchParams,
+  useNavigation,
+  useRouter } from "expo-router";
 import {
     collection,
-    doc,
-    serverTimestamp,
-    setDoc,
-    updateDoc,
-} from "firebase/firestore";
-import { useEffect, useMemo, useRef, useState } from "react";
+  doc,
+  serverTimestamp,
+  setDoc,
+  updateDoc,
+  } from "firebase/firestore";
+import { useEffect,
+  useMemo,
+  useRef,
+  useState } from "react";
 import {
     ActivityIndicator,
-    Alert,
-    Platform,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  Alert,
+  Platform,
+  StyleSheet,
+  View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+
 import Icon from "react-native-vector-icons/Feather";
 
 import { db } from "../../../../firebaseConfig";
@@ -36,18 +40,9 @@ import {
 import { useServiceCacheActions, useServiceCollectionReader } from "../../../../hooks/useServiceData";
 import { runOrQueueFirestoreMutations } from "../../../../lib/sync/firestoreQueue";
 import { useTheme } from "../../../../providers/ThemeProvider";
-
-const COLORS = {
-  background: "#0D0D0D",
-  card: "#1A1A1A",
-  border: "#333333",
-  textHigh: "#FFFFFF",
-  textMid: "#E0E0E0",
-  textLow: "#888888",
-  primaryAction: "#ED1C25",
-  inputBg: "#2a2a2a",
-  lightGray: "#4a4a4a",
-};
+import { staticColors } from "../../../../lib/design/staticColors";
+import { designTokens as t } from "../../../../lib/design/tokens";
+import PageShell from "../../../../components/layout/PageShell";
 
 const PRECHECK_STATUS_OPTIONS = [
   "Ready for MOT",
@@ -686,51 +681,16 @@ export default function MotPrecheckScreen() {
   /* ---------------- RENDER ---------------- */
 
   return (
-    <SafeAreaView
-      edges={["left", "right"]}
-      style={[
-        styles.container,
-        { backgroundColor: colors.background || COLORS.background },
-      ]}
-    >
+    <PageShell mode="form" width="form" header={{
+      variant: "compact",
+      title: "MOT Pre-check",
+      subtitle: "Quick safety check before sending vehicle for MOT.",
+      onBack: () => confirmLeave(() => router.back()),
+    }}>
       {/* HEADER */}
-      <View
-        style={[
-          styles.header,
-          { borderBottomColor: colors.border || COLORS.border },
-        ]}
-      >
-        <TouchableOpacity
-          onPress={() => confirmLeave(() => router.back())}
-          style={styles.backButton}
-        >
-          <Icon
-            name="chevron-left"
-            size={22}
-            color={colors.text || COLORS.textHigh}
-          />
-        </TouchableOpacity>
-        <View style={{ flex: 1 }}>
-          <Text
-            style={[
-              styles.pageTitle,
-              { color: colors.text || COLORS.textHigh },
-            ]}
-          >
-            MOT Pre-check
-          </Text>
-          <Text
-            style={[
-              styles.pageSubtitle,
-              { color: colors.textMuted || COLORS.textMid },
-            ]}
-          >
-            Quick safety check before sending vehicle for MOT.
-          </Text>
-        </View>
-      </View>
+      
 
-      <ScrollView contentContainerStyle={styles.scrollContent}>
+      <>
         {/* VEHICLE SECTION */}
         <View style={styles.sectionHeaderRow}>
           <Text
@@ -807,37 +767,12 @@ export default function MotPrecheckScreen() {
             </>
           ) : (
             <>
-              <Text
-                style={[
-                  styles.fieldLabel,
-                  { color: colors.textMuted || COLORS.textMid },
-                ]}
-              >
-                Search vehicle
-              </Text>
-              <View
-                style={[
-                  styles.searchBox,
-                  {
-                    backgroundColor: colors.inputBackground || "#FFFFFF",
-                    borderColor: colors.inputBorder || colors.border || COLORS.border,
-                  },
-                ]}
-              >
-                <Icon
-                  name="search"
-                  size={16}
-                  color={colors.textMuted || COLORS.textMid}
-                  style={{ marginRight: 6 }}
-                />
-                <TextInput
-                  style={[styles.searchInput, { color: colors.text || COLORS.textHigh }]}
+              <SharedFormField
+                  label="Search vehicle"
                   placeholder="Name, reg, manufacturer or model…"
-                  placeholderTextColor={colors.textMuted || COLORS.textLow}
                   value={vehicleSearch}
                   onChangeText={setVehicleSearch}
                 />
-              </View>
 
               {loadingVehicles ? (
                 <View style={styles.centerRow}>
@@ -850,8 +785,8 @@ export default function MotPrecheckScreen() {
                   </Text>
                 </View>
               ) : (
-                <ScrollView
-                  style={{ maxHeight: 180, marginTop: 8 }}
+                <View
+                  style={{ maxHeight: 180, marginTop: t.spacing.xs }}
                   nestedScrollEnabled
                 >
                   {filteredVehicles.map((v) => {
@@ -899,7 +834,7 @@ export default function MotPrecheckScreen() {
                       </TouchableOpacity>
                     );
                   })}
-                </ScrollView>
+                </View>
               )}
             </>
           )}
@@ -934,7 +869,7 @@ export default function MotPrecheckScreen() {
               style={[
                 styles.readonlyField,
                 {
-                  backgroundColor: colors.inputBackground || "#FFFFFF",
+                  backgroundColor: colors.inputBackground || staticColors.hex_ffffff_5c2ocm,
                   borderColor: colors.inputBorder || colors.border || COLORS.border,
                 },
               ]}
@@ -953,7 +888,7 @@ export default function MotPrecheckScreen() {
               style={[
                 styles.readonlyField,
                 {
-                  backgroundColor: colors.inputBackground || "#FFFFFF",
+                  backgroundColor: colors.inputBackground || staticColors.hex_ffffff_5c2ocm,
                   borderColor: colors.inputBorder || colors.border || COLORS.border,
                 },
               ]}
@@ -980,7 +915,7 @@ export default function MotPrecheckScreen() {
               style={[
                 styles.dropdownHeader,
                 {
-                  backgroundColor: colors.inputBackground || "#FFFFFF",
+                  backgroundColor: colors.inputBackground || staticColors.hex_ffffff_5c2ocm,
                   borderColor: colors.inputBorder || colors.border || COLORS.border,
                 },
               ]}
@@ -1001,7 +936,7 @@ export default function MotPrecheckScreen() {
                 style={[
                   styles.dropdownList,
                   {
-                    backgroundColor: colors.inputBackground || "#FFFFFF",
+                    backgroundColor: colors.inputBackground || staticColors.hex_ffffff_5c2ocm,
                     borderColor: colors.border || COLORS.border,
                   },
                 ]}
@@ -1166,7 +1101,7 @@ export default function MotPrecheckScreen() {
             value={signedBy}
             onChangeText={setSignedBy}
           />
-          <View style={{ marginTop: 6 }}>
+          <View style={{ marginTop: t.spacing.xxs }}>
             <Text style={[styles.signatureInfo, { color: colors.textMuted || COLORS.textMid }]}>
               By entering your name you confirm this pre-check has been carried
               out to the best of your ability.
@@ -1189,7 +1124,7 @@ export default function MotPrecheckScreen() {
                 name="check-circle"
                 size={16}
                 color={COLORS.textHigh}
-                style={{ marginRight: 6 }}
+                style={{ marginRight: t.spacing.xxs }}
               />
               <Text style={styles.submitText}>
                 Save MOT pre-check & update vehicle
@@ -1208,14 +1143,14 @@ export default function MotPrecheckScreen() {
             name="trash-2"
             size={16}
             color={COLORS.textHigh}
-            style={{ marginRight: 6 }}
+            style={{ marginRight: t.spacing.xxs }}
           />
           <Text style={styles.deleteText}>Delete pre-check draft</Text>
         </TouchableOpacity>
 
         <View style={{ height: 40 }} />
-      </ScrollView>
-    </SafeAreaView>
+      </>
+    </PageShell>
   );
 }
 
@@ -1229,35 +1164,19 @@ function FormField({
   multiline = false,
   keyboardType = "default",
 }) {
-  const { colors } = useTheme();
-
   return (
     <View style={styles.fieldGroup}>
-      <Text
-        style={[
-          styles.fieldLabel,
-          { color: colors.textMuted || COLORS.textMid },
-        ]}
-      >
-        {label}
-      </Text>
-      <TextInput
-        style={[
-          styles.input,
-          {
-            backgroundColor: colors.inputBackground || "#FFFFFF",
-            borderColor: colors.inputBorder || colors.border || COLORS.border,
-            color: colors.text || COLORS.textHigh,
-          },
-          multiline && styles.inputMultiline,
-        ]}
-        placeholder={placeholder}
-        placeholderTextColor={colors.textMuted || COLORS.textLow}
-        value={value}
-        onChangeText={onChangeText}
-        multiline={multiline}
-        keyboardType={keyboardType}
-      />
+      {multiline ? (
+        <TextArea label={label} placeholder={placeholder} value={value} onChangeText={onChangeText} />
+      ) : (
+        <SharedFormField
+          label={label}
+          placeholder={placeholder}
+          value={value}
+          onChangeText={onChangeText}
+          inputProps={{ keyboardType }}
+        />
+      )}
     </View>
   );
 }
@@ -1422,71 +1341,71 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingHorizontal: t.spacing.md,
+    paddingVertical: t.spacing.sm,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
   },
   backButton: {
-    paddingRight: 10,
+    paddingRight: t.spacing.xs,
   },
   pageTitle: {
-    fontSize: 22,
+    fontSize: t.typography.titleSmall.fontSize,
     fontWeight: "800",
     color: COLORS.textHigh,
   },
   pageSubtitle: {
-    marginTop: 2,
-    fontSize: 13,
+    marginTop: t.spacing.none,
+    fontSize: t.typography.bodySmall.fontSize,
     color: COLORS.textMid,
   },
   scrollContent: {
-    padding: 16,
-    paddingTop: 8,
+    padding: t.spacing.md,
+    paddingTop: t.spacing.xs,
     paddingBottom: 110,
   },
   sectionHeaderRow: {
-    marginTop: 4,
-    marginBottom: 6,
+    marginTop: t.spacing.xxs,
+    marginBottom: t.spacing.xxs,
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "flex-end",
   },
   sectionTitle: {
-    fontSize: 15,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "700",
     color: COLORS.textHigh,
   },
   sectionHint: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textMid,
   },
   card: {
     backgroundColor: COLORS.card,
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 10,
+    borderRadius: t.radius.md,
+    padding: t.spacing.sm,
+    marginBottom: t.spacing.xs,
     borderWidth: 1,
     borderColor: COLORS.border,
   },
   fieldGroup: {
-    marginBottom: 10,
+    marginBottom: t.spacing.xs,
   },
   fieldLabel: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "600",
     color: COLORS.textMid,
-    marginBottom: 4,
+    marginBottom: t.spacing.xxs,
   },
   input: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 8,
+    backgroundColor: staticColors.hex_ffffff_5c2ocm,
+    borderRadius: t.radius.sm,
     borderWidth: 1,
     borderColor: COLORS.border,
     color: COLORS.textHigh,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    fontSize: 14,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xs,
+    fontSize: t.typography.body.fontSize,
   },
   inputMultiline: {
     minHeight: 90,
@@ -1495,125 +1414,125 @@ const styles = StyleSheet.create({
   searchBox: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#FFFFFF",
-    borderRadius: 8,
+    backgroundColor: staticColors.hex_ffffff_5c2ocm,
+    borderRadius: t.radius.sm,
     borderWidth: 1,
     borderColor: COLORS.border,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
   },
   searchInput: {
     flex: 1,
     color: COLORS.textHigh,
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
   },
   centerRow: {
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 10,
+    paddingVertical: t.spacing.xs,
   },
   emptyText: {
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
     color: COLORS.textMid,
   },
   vehicleRow: {
     flexDirection: "row",
     alignItems: "center",
-    paddingVertical: 8,
+    paddingVertical: t.spacing.xs,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
   },
   vehicleRowActive: {
-    backgroundColor: "rgba(255,59,48,0.12)",
+    backgroundColor: staticColors.rgba_mxgb69,
   },
   vehicleName: {
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     fontWeight: "600",
     color: COLORS.textHigh,
   },
   vehicleReg: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textMid,
   },
   vehicleMetaRow: {
-    marginTop: 8,
+    marginTop: t.spacing.xs,
   },
   vehicleMeta: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textMid,
   },
   selectedVehicleRow: {
     flexDirection: "row",
     alignItems: "center",
-    paddingVertical: 4,
+    paddingVertical: t.spacing.xxs,
   },
   readonlyField: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 8,
+    backgroundColor: staticColors.hex_ffffff_5c2ocm,
+    borderRadius: t.radius.sm,
     borderWidth: 1,
     borderColor: COLORS.border,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xs,
   },
   readonlyText: {
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     color: COLORS.textHigh,
   },
   checkRowWrapper: {
     flexDirection: "row",
     alignItems: "center",
-    paddingVertical: 7,
+    paddingVertical: t.spacing.xs,
   },
   checkRowLeft: {
     flexDirection: "row",
     alignItems: "center",
     flex: 1,
-    paddingRight: 6,
+    paddingRight: t.spacing.xxs,
   },
   checkIconWrap: {
-    paddingRight: 8,
+    paddingRight: t.spacing.xs,
   },
   checkIconEmpty: {
     width: 26,
     height: 26,
-    borderRadius: 13,
+    borderRadius: t.radius.pill,
     borderWidth: 2,
     borderColor: COLORS.textMid,
   },
   checkIconFilled: {
     width: 26,
     height: 26,
-    borderRadius: 13,
+    borderRadius: t.radius.pill,
     backgroundColor: COLORS.primaryAction,
     alignItems: "center",
     justifyContent: "center",
   },
   checkLabel: {
     flex: 1,
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
     color: COLORS.textLow,
   },
   ratingRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 4,
+    gap: t.spacing.xxs,
   },
   ratingDot: {
     minWidth: 26,
     height: 26,
-    borderRadius: 13,
+    borderRadius: t.radius.lg,
     borderWidth: 1.5,
     borderColor: COLORS.lightGray,
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 3,
+    paddingHorizontal: t.spacing.xxs,
   },
   ratingDotActive: {
-    backgroundColor: "rgba(255,59,48,0.16)",
+    backgroundColor: staticColors.rgba_mxgb9x,
     borderColor: COLORS.primaryAction,
   },
   ratingText: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textLow,
   },
   ratingTextActive: {
@@ -1621,19 +1540,19 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   naPill: {
-    marginLeft: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 999,
+    marginLeft: t.spacing.xxs,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
+    borderRadius: t.radius.pill,
     borderWidth: 1.5,
     borderColor: COLORS.lightGray,
   },
   naPillActive: {
-    backgroundColor: "rgba(142,142,147,0.2)",
+    backgroundColor: staticColors.rgba_1tlzw3k,
     borderColor: COLORS.textMid,
   },
   naText: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textLow,
   },
   naTextActive: {
@@ -1643,48 +1562,48 @@ const styles = StyleSheet.create({
   dropdownHeader: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#FFFFFF",
-    borderRadius: 8,
+    backgroundColor: staticColors.hex_ffffff_5c2ocm,
+    borderRadius: t.radius.sm,
     borderWidth: 1,
     borderColor: COLORS.border,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xs,
     justifyContent: "space-between",
   },
   dropdownText: {
     color: COLORS.textHigh,
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     flex: 1,
-    marginRight: 8,
+    marginRight: t.spacing.xs,
   },
   dropdownList: {
-    marginTop: 6,
-    borderRadius: 8,
+    marginTop: t.spacing.xxs,
+    borderRadius: t.radius.sm,
     borderWidth: 1,
     borderColor: COLORS.border,
-    backgroundColor: "#FFFFFF",
+    backgroundColor: staticColors.hex_ffffff_5c2ocm,
     overflow: "hidden",
   },
   dropdownItem: {
-    paddingHorizontal: 10,
-    paddingVertical: 8,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xs,
   },
   dropdownItemActive: {
-    backgroundColor: "rgba(255,59,48,0.12)",
+    backgroundColor: staticColors.rgba_mxgb69,
   },
   dropdownItemText: {
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     color: COLORS.textHigh,
   },
   signatureInfo: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     color: COLORS.textMid,
   },
   submitButton: {
-    marginTop: 10,
+    marginTop: t.spacing.xs,
     backgroundColor: COLORS.primaryAction,
-    borderRadius: 10,
-    paddingVertical: 14,
+    borderRadius: t.radius.md,
+    paddingVertical: t.spacing.sm,
     alignItems: "center",
     flexDirection: "row",
     justifyContent: "center",
@@ -1692,22 +1611,22 @@ const styles = StyleSheet.create({
   submitText: {
     color: COLORS.textHigh,
     fontWeight: "700",
-    fontSize: 15,
+    fontSize: t.typography.bodyLarge.fontSize,
   },
   deleteButton: {
-    marginTop: 10,
-    borderRadius: 10,
-    paddingVertical: 12,
+    marginTop: t.spacing.xs,
+    borderRadius: t.radius.md,
+    paddingVertical: t.spacing.sm,
     alignItems: "center",
     flexDirection: "row",
     justifyContent: "center",
     borderWidth: 1,
     borderColor: COLORS.primaryAction,
-    backgroundColor: "rgba(255,59,48,0.08)",
+    backgroundColor: staticColors.rgba_mxga8q,
   },
   deleteText: {
     color: COLORS.textHigh,
     fontWeight: "600",
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
   },
 });

@@ -1,80 +1,56 @@
-// app/(protected)/help.js
 import Constants from "expo-constants";
 import { useRouter } from "expo-router";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  ActivityIndicator,
-  Linking,
-  SafeAreaView,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
-} from "react-native";
-import Icon from "react-native-vector-icons/Feather";
-
-// 🔑 Firebase + Provider
 import { doc, getDoc } from "firebase/firestore";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Linking, StyleSheet, View } from "react-native";
+
+import PageShell from "../../components/layout/PageShell";
+import {
+  AppButton,
+  AppText,
+  IconBadge,
+  ListRow,
+  PageSection,
+  SectionCard,
+} from "../../components/ui/AppPrimitives";
 import { db } from "../../firebaseConfig";
+import { designTokens as t } from "../../lib/design/tokens";
 import { useAuth } from "../../providers/AuthProvider";
-import { useTheme } from "../../providers/ThemeProvider";
+
+const DEFAULT_FAQS = [
+  { q: "How do I submit my timesheet?", a: 'Go to the Timesheets section, select your week, fill in the details, and tap "Submit".' },
+  { q: "How can I request holiday?", a: "Open the Holidays page, pick your dates, and submit." },
+  { q: "What if a vehicle is already booked?", a: "The app prevents double-booking. Pick another vehicle or contact the office." },
+];
 
 export default function HelpCentrePage() {
   const router = useRouter();
-  const { employee, isAuthed, loading } = useAuth();
-  const { colors } = useTheme();
-
+  const { isAuthed, loading } = useAuth();
   const [busy, setBusy] = useState(true);
   const [support, setSupport] = useState({
     email: "info@bickers.co.uk",
     phone: "+44 (0)1449 761300",
     hours: "Mon–Fri, 8:00 – 17:00",
   });
-  const [faqs, setFaqs] = useState([
-    {
-      q: "How do I submit my timesheet?",
-      a: 'Go to the Timesheets section, select your week, fill in the details, and tap "Submit".',
-    },
-    {
-      q: "How can I request holiday?",
-      a: "Open the Holidays page, pick your dates, and submit.",
-    },
-    {
-      q: "What if a vehicle is already booked?",
-      a: "The app prevents double-booking. Pick another vehicle or contact the office.",
-    },
-  ]);
+  const [faqs, setFaqs] = useState(DEFAULT_FAQS);
 
-  const appVersion = useMemo(
-    () =>
-      Constants?.expoConfig?.version ||
-      Constants?.manifest2?.extra?.expoClient?.version ||
-      "—",
-    []
-  );
+  const appVersion = useMemo(() => Constants?.expoConfig?.version || Constants?.manifest2?.extra?.expoClient?.version || "—", []);
 
   const loadContent = useCallback(async () => {
     try {
-      const companySnap = await getDoc(doc(db, "settings", "company")).catch(
-        () => null
-      );
+      const companySnap = await getDoc(doc(db, "settings", "company")).catch(() => null);
       if (companySnap?.exists()) {
-        const c = companySnap.data() || {};
-        setSupport((prev) => ({
-          email: c.supportEmail || c.email || prev.email,
-          phone: c.supportPhone || c.phone || prev.phone,
-          hours: c.supportHours || prev.hours,
+        const company = companySnap.data() || {};
+        setSupport((previous) => ({
+          email: company.supportEmail || company.email || previous.email,
+          phone: company.supportPhone || company.phone || previous.phone,
+          hours: company.supportHours || previous.hours,
         }));
       }
-      const helpSnap = await getDoc(doc(db, "settings", "helpCentre")).catch(
-        () => null
-      );
+      const helpSnap = await getDoc(doc(db, "settings", "helpCentre")).catch(() => null);
       if (helpSnap?.exists()) {
-        const h = helpSnap.data() || {};
-        if (Array.isArray(h.faqs) && h.faqs.length) {
-          setFaqs(h.faqs.filter((x) => x?.q && x?.a));
-        }
+        const nextFaqs = helpSnap.data()?.faqs;
+        if (Array.isArray(nextFaqs) && nextFaqs.length) setFaqs(nextFaqs.filter((item) => item?.q && item?.a));
       }
     } finally {
       setBusy(false);
@@ -83,379 +59,69 @@ export default function HelpCentrePage() {
 
   useEffect(() => {
     if (loading) return;
-    if (!isAuthed) {
-      setBusy(false);
-      return;
-    }
-    loadContent();
-  }, [loading, isAuthed, loadContent]);
+    if (!isAuthed) setBusy(false);
+    else void loadContent();
+  }, [isAuthed, loadContent, loading]);
 
-  const mail = () =>
-    Linking.openURL(`mailto:${support.email}`).catch(() => {});
-  const call = () =>
-    Linking.openURL(`tel:${support.phone.replace(/[^\d+]/g, "")}`).catch(
-      () => {}
-    );
+  if (!loading && !isAuthed) return null;
 
-  if (loading || busy) {
-    return (
-      <SafeAreaView
-        style={[
-          styles.container,
-          {
-            backgroundColor: colors.background,
-            alignItems: "center",
-            justifyContent: "center",
-          },
-        ]}
-      >
-        <ActivityIndicator size="large" color={colors.accent} />
-        <Text style={{ color: colors.textMuted, marginTop: 8 }}>
-          Loading help…
-        </Text>
-      </SafeAreaView>
-    );
-  }
-  if (!isAuthed) return null;
-
-  const initials =
-    (employee?.name || "U")
-      .split(" ")
-      .map((n) => n[0])
-      .join("")
-      .toUpperCase()
-      .slice(0, 2) || "U";
+  const mail = () => Linking.openURL(`mailto:${support.email}`).catch(() => {});
+  const call = () => Linking.openURL(`tel:${support.phone.replace(/[^\d+]/g, "")}`).catch(() => {});
+  const quickLinks = [
+    { icon: "clock", label: "Timesheets", route: "/timesheet" },
+    { icon: "briefcase", label: "Holidays", route: "/holidaypage" },
+    { icon: "calendar", label: "Schedule", route: "/screens/schedule" },
+  ];
 
   return (
-    <SafeAreaView
-      style={[styles.container, { backgroundColor: colors.background }]}
+    <PageShell
+      header={{ variant: "compact", title: "Help Centre", subtitle: `App version ${appVersion}`, onBack: router.back }}
+      state={{ resources: [{ isInitialLoading: loading || busy }], hasContent: !(loading || busy), loadingLabel: "Loading help…" }}
     >
-      <ScrollView contentContainerStyle={{ paddingBottom: 50 }}>
-        {/* Back button */}
-        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
-          <Icon name="arrow-left" size={20} color={colors.text} />
-          <Text style={[styles.backText, { color: colors.text }]}>Back</Text>
-        </TouchableOpacity>
+      <View style={styles.quickLinks}>
+        {quickLinks.map((item) => (
+          <SectionCard key={item.label} onPress={() => router.push(item.route)} layoutStyle={styles.quickAction}>
+            <IconBadge icon={item.icon} label={item.label} />
+            <AppText variant="bodyStrong">{item.label}</AppText>
+          </SectionCard>
+        ))}
+      </View>
 
-        {/* Header */}
-        <View style={styles.headerRow}>
-          <Text style={[styles.title, { color: colors.text }]}>
-            Help Centre
-          </Text>
-          <View
-            style={[
-              styles.avatar,
-              {
-                backgroundColor: colors.surfaceAlt,
-                borderColor: colors.border,
-              },
-            ]}
-          >
-            <Text style={[styles.avatarText, { color: colors.text }]}>
-              {initials}
-            </Text>
-          </View>
-        </View>
-        <Text style={[styles.metaText, { color: colors.textMuted }]}>
-          App version {appVersion}
-        </Text>
-
-        {/* Quick links */}
-        <View style={styles.quickRow}>
-          <QuickBtn
-            icon="clock"
-            label="Timesheets"
-            onPress={() => router.push("/timesheet")}
-            colors={colors}
-          />
-          <QuickBtn
-            icon="briefcase"
-            label="Holidays"
-            onPress={() => router.push("/holidaypage")}
-            colors={colors}
-          />
-          <QuickBtn
-            icon="calendar"
-            label="Schedule"
-            onPress={() => router.push("/screens/schedule")}
-            colors={colors}
-          />
-        </View>
-
-        {/* FAQs */}
-        <View
-          style={[
-            styles.card,
-            {
-              backgroundColor: colors.surfaceAlt,
-              borderColor: colors.border,
-            },
-          ]}
-        >
-          <Text
-            style={[
-              styles.sectionTitle,
-              { color: colors.accent },
-            ]}
-          >
-            FAQs
-          </Text>
-          {faqs.map((f, i) => (
-            <View key={`faq-${i}`} style={styles.faqItem}>
-              <Text
-                style={[
-                  styles.text,
-                  { color: colors.text },
-                ]}
-              >
-                ❓ {f.q}
-              </Text>
-              <Text
-                style={[
-                  styles.answer,
-                  { color: colors.textMuted },
-                ]}
-              >
-                {f.a}
-              </Text>
-            </View>
+      <PageSection title="Frequently asked questions">
+        <View style={styles.sectionList}>
+          {faqs.map((faq, index) => (
+            <ListRow key={`${faq.q}-${index}`} leadingIcon="help-circle" title={faq.q} subtitle={faq.a} divider={index < faqs.length - 1} />
           ))}
         </View>
+      </PageSection>
 
-        {/* Guides */}
-        <View
-          style={[
-            styles.card,
-            {
-              backgroundColor: colors.surfaceAlt,
-              borderColor: colors.border,
-            },
-          ]}
-        >
-          <Text
-            style={[
-              styles.sectionTitle,
-              { color: colors.accent },
-            ]}
-          >
-            Guides
-          </Text>
-          <Text
-            style={[
-              styles.text,
-              { color: colors.textMuted },
-            ]}
-          >
-            📅 Bookings: View jobs, crew assignments, and per-day notes.
-          </Text>
-          <Text
-            style={[
-              styles.text,
-              { color: colors.textMuted },
-            ]}
-          >
-            🚗 Vehicles: Track MOT, service, insurance, and availability.
-          </Text>
-          <Text
-            style={[
-              styles.text,
-              { color: colors.textMuted },
-            ]}
-          >
-            👤 Employees: Contacts, HR tools, and timesheets.
-          </Text>
+      <PageSection title="Guides">
+        <View style={styles.sectionList}>
+          <ListRow leadingIcon="calendar" title="Bookings" subtitle="View jobs, crew assignments and per-day notes." divider />
+          <ListRow leadingIcon="truck" title="Vehicles" subtitle="Track MOT, service, insurance and availability." divider />
+          <ListRow leadingIcon="users" title="Employees" subtitle="Contacts, HR tools and timesheets." />
         </View>
+      </PageSection>
 
-        {/* Contact Support */}
-        <View
-          style={[
-            styles.card,
-            {
-              backgroundColor: colors.surfaceAlt,
-              borderColor: colors.border,
-            },
-          ]}
-        >
-          <Text
-            style={[
-              styles.sectionTitle,
-              { color: colors.accent },
-            ]}
-          >
-            Need More Help?
-          </Text>
-          <TouchableOpacity
-            style={styles.contactRow}
-            onPress={mail}
-            activeOpacity={0.85}
-          >
-            <Icon name="mail" size={16} color={colors.textMuted} />
-            <Text
-              style={[
-                styles.text,
-                { color: colors.text },
-              ]}
-            >
-              {support.email}
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.contactRow}
-            onPress={call}
-            activeOpacity={0.85}
-          >
-            <Icon name="phone" size={16} color={colors.textMuted} />
-            <Text
-              style={[
-                styles.text,
-                { color: colors.text },
-              ]}
-            >
-              {support.phone}
-            </Text>
-          </TouchableOpacity>
-          <View style={styles.contactRow}>
-            <Icon name="clock" size={16} color={colors.textMuted} />
-            <Text
-              style={[
-                styles.text,
-                { color: colors.textMuted },
-              ]}
-            >
-              {support.hours}
-            </Text>
-          </View>
-
-          <View style={{ flexDirection: "row", gap: 10, marginTop: 10 }}>
-            <TouchableOpacity
-              style={[
-                styles.actionBtn,
-                {
-                  backgroundColor: colors.surfaceAlt,
-                  borderWidth: 1,
-                  borderColor: colors.border,
-                },
-              ]}
-              onPress={mail}
-            >
-              <Text
-                style={[
-                  styles.actionText,
-                  { color: colors.text },
-                ]}
-              >
-                Email Support
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[
-                styles.actionBtn,
-                { backgroundColor: colors.accent, flex: 1 },
-              ]}
-              onPress={call}
-            >
-              <Text
-                style={[
-                  styles.actionText,
-                  { color: "#fff" },
-                ]}
-              >
-                Call Office
-              </Text>
-            </TouchableOpacity>
-          </View>
+      <PageSection title="Need more help?">
+        <View style={styles.sectionList}>
+          <ListRow leadingIcon="mail" title={support.email} onPress={mail} divider />
+          <ListRow leadingIcon="phone" title={support.phone} onPress={call} divider />
+          <ListRow leadingIcon="clock" title="Office hours" subtitle={support.hours} />
         </View>
-      </ScrollView>
-    </SafeAreaView>
-  );
-}
-
-function QuickBtn({ icon, label, onPress, colors }) {
-  return (
-    <TouchableOpacity
-      style={[
-        styles.quickBtn,
-        {
-          backgroundColor: colors.surfaceAlt,
-          borderColor: colors.border,
-        },
-      ]}
-      onPress={onPress}
-      activeOpacity={0.85}
-    >
-      <Icon name={icon} size={18} color={colors.text} />
-      <Text
-        style={[
-          styles.quickText,
-          { color: colors.text },
-        ]}
-      >
-        {label}
-      </Text>
-    </TouchableOpacity>
+        <View style={styles.actions}>
+          <AppButton label="Email support" variant="secondary" icon="mail" onPress={mail} layoutStyle={styles.action} />
+          <AppButton label="Call office" icon="phone" onPress={call} layoutStyle={styles.action} />
+        </View>
+      </PageSection>
+    </PageShell>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#000", padding: 12 },
-  backBtn: { flexDirection: "row", alignItems: "center", marginBottom: 12 },
-  backText: { fontSize: 15, marginLeft: 6 },
-  headerRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: 6,
-  },
-  avatar: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: "#2E2E2E",
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 1,
-    borderColor: "#3a3a3a",
-  },
-  avatarText: { fontWeight: "800" },
-  title: { fontSize: 20, fontWeight: "bold" },
-  metaText: { fontSize: 12, marginBottom: 10 },
-  quickRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 12 },
-  quickBtn: {
-    flexGrow: 1,
-    minWidth: 0,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    borderWidth: 1,
-    borderRadius: 10,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-  },
-  quickText: { fontWeight: "700", fontSize: 12 },
-  card: {
-    padding: 14,
-    borderRadius: 8,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: "#262626",
-    backgroundColor: "#1a1a1a",
-  },
-  sectionTitle: { fontSize: 16, fontWeight: "bold", marginBottom: 8 },
-  faqItem: { marginBottom: 10 },
-  text: { fontSize: 14, lineHeight: 20 },
-  answer: { fontSize: 13, marginTop: 4, paddingLeft: 8 },
-  contactRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    marginBottom: 8,
-  },
-  actionBtn: {
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    borderRadius: 10,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  actionText: { fontWeight: "800" },
+  quickLinks: { flexDirection: "row", flexWrap: "wrap", gap: t.spacing.sm },
+  quickAction: { flexGrow: 1, minWidth: 104, alignItems: "center", gap: t.spacing.xs },
+  sectionList: { gap: t.spacing.xxs },
+  actions: { flexDirection: "row", flexWrap: "wrap", gap: t.spacing.xs, marginTop: t.spacing.md },
+  action: { flexGrow: 1 },
 });

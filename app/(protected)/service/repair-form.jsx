@@ -1,4 +1,9 @@
-import { useLocalSearchParams, useNavigation, useRouter } from "expo-router";
+import { AppButton, AppText as Text, AppPressable as TouchableOpacity, DateField, FormField, TextArea } from "../../../components/ui/AppPrimitives";
+import {
+  servicePalette as COLORS } from "../../../lib/design/semantics";
+import { useLocalSearchParams,
+  useNavigation,
+  useRouter } from "expo-router";
 import {
   arrayUnion,
   collection,
@@ -6,20 +11,19 @@ import {
   serverTimestamp,
   setDoc,
   updateDoc,
-} from "firebase/firestore";
-import { useEffect, useMemo, useRef, useState } from "react";
+  } from "firebase/firestore";
+import { useEffect,
+  useMemo,
+  useRef,
+  useState } from "react";
 import {
   ActivityIndicator,
   Alert,
   Platform,
-  ScrollView,
   StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+
 import Icon from "react-native-vector-icons/Feather";
 
 import { db } from "../../../firebaseConfig";
@@ -36,17 +40,9 @@ import {
 import { useServiceCacheActions, useServiceCollectionReader } from "../../../hooks/useServiceData";
 import { runOrQueueFirestoreMutations } from "../../../lib/sync/firestoreQueue";
 import { useTheme } from "../../../providers/ThemeProvider";
-
-const COLORS = {
-  background: "#0D0D0D",
-  card: "#1A1A1A",
-  border: "#333333",
-  textHigh: "#FFFFFF",
-  textMid: "#E0E0E0",
-  textLow: "#888888",
-  inputBg: "#1F1F1F",
-  primaryAction: "#ED1C25",
-};
+import { staticColors } from "../../../lib/design/staticColors";
+import { designTokens as t } from "../../../lib/design/tokens";
+import PageShell from "../../../components/layout/PageShell";
 
 function todayISO() {
   return new Date().toISOString().slice(0, 10);
@@ -383,57 +379,18 @@ export default function RepairFormRoute() {
     backgroundColor: colors.surfaceAlt || COLORS.card,
     borderColor: colors.border || COLORS.border,
   };
-  const themedInput = {
-    backgroundColor: colors.inputBackground || "#FFFFFF",
-    borderColor: colors.inputBorder || colors.border || COLORS.border,
-    color: colors.text || COLORS.textHigh,
-  };
   const themedLabel = { color: colors.textMuted || COLORS.textMid };
 
   return (
-    <SafeAreaView
-      edges={["left", "right"]}
-      style={[
-        styles.container,
-        { backgroundColor: colors.background || COLORS.background },
-      ]}
-    >
-      <View
-        style={[
-          styles.header,
-          { borderBottomColor: colors.border || COLORS.border },
-        ]}
-      >
-        <TouchableOpacity
-          onPress={() => confirmLeave(() => router.back())}
-          style={styles.backButton}
-          activeOpacity={0.8}
-        >
-          <Icon
-            name="chevron-left"
-            size={22}
-            color={colors.text || COLORS.textHigh}
-          />
-        </TouchableOpacity>
-        <View style={{ flex: 1 }}>
-          <Text style={[styles.title, { color: colors.text || COLORS.textHigh }]}>
-            General repairs
-          </Text>
-          <Text
-            style={[
-              styles.subtitle,
-              { color: colors.textMuted || COLORS.textMid },
-            ]}
-          >
-            Record ad-hoc repairs and rectification work against a vehicle.
-          </Text>
-        </View>
-      </View>
+    <PageShell mode="form" width="form" header={{
+      variant: "compact",
+      title: "General repairs",
+      subtitle: "Record ad-hoc repairs and rectification work against a vehicle.",
+      onBack: () => confirmLeave(() => router.back()),
+    }}>
+      
 
-      <ScrollView
-        contentContainerStyle={styles.content}
-        showsVerticalScrollIndicator={false}
-      >
+      <>
         <View style={styles.sectionHeaderRow}>
           <Text
             style={[
@@ -490,25 +447,12 @@ export default function RepairFormRoute() {
             </>
           ) : (
             <>
-              <Text style={[styles.label, themedLabel]}>Search vehicle</Text>
-              <View style={[styles.searchBox, themedInput]}>
-                <Icon
-                  name="search"
-                  size={16}
-                  color={colors.textMuted || COLORS.textMid}
-                  style={{ marginRight: 6 }}
-                />
-                <TextInput
-                  style={[
-                    styles.searchInput,
-                    { color: colors.text || COLORS.textHigh },
-                  ]}
-                  placeholder="Name, reg, manufacturer or model..."
-                  placeholderTextColor={colors.textMuted || COLORS.textLow}
-                  value={vehicleSearch}
-                  onChangeText={setVehicleSearch}
-                />
-              </View>
+              <FormField
+                label="Search vehicle"
+                placeholder="Name, reg, manufacturer or model..."
+                value={vehicleSearch}
+                onChangeText={setVehicleSearch}
+              />
 
               {loadingVehicles ? (
                 <View style={styles.centerRow}>
@@ -521,8 +465,8 @@ export default function RepairFormRoute() {
                   </Text>
                 </View>
               ) : (
-                <ScrollView
-                  style={{ maxHeight: 150, marginTop: 8 }}
+                <View
+                  style={{ maxHeight: 150, marginTop: t.spacing.xs }}
                   nestedScrollEnabled
                 >
                   {filteredVehicles.map((v) => {
@@ -566,27 +510,22 @@ export default function RepairFormRoute() {
                       </TouchableOpacity>
                     );
                   })}
-                </ScrollView>
+                </View>
               )}
             </>
           )}
 
-          <Text style={[styles.label, themedLabel, { marginTop: 12 }]}>
-            Vehicle name
-          </Text>
-          <TextInput
-            style={[styles.input, themedInput]}
+          <FormField
+            label="Vehicle name"
+            style={{ marginTop: t.spacing.sm }}
             placeholder="e.g. Amarok, Silverado..."
-            placeholderTextColor={colors.textMuted || COLORS.textLow}
             value={vehicleName}
             onChangeText={updateField(setVehicleName)}
           />
 
-          <Text style={[styles.label, themedLabel]}>Registration</Text>
-          <TextInput
-            style={[styles.input, themedInput]}
+          <FormField
+            label="Registration"
             placeholder="e.g. AB12 CDE"
-            placeholderTextColor={colors.textMuted || COLORS.textLow}
             value={registration}
             onChangeText={updateField(setRegistration)}
           />
@@ -605,105 +544,67 @@ export default function RepairFormRoute() {
 
         <View style={[styles.card, themedCard]}>
 
-          <Text style={[styles.label, themedLabel]}>Date completed</Text>
-          <TextInput
-            style={[styles.input, themedInput]}
+          <DateField
+            label="Date completed"
             placeholder="YYYY-MM-DD"
-            placeholderTextColor={colors.textMuted || COLORS.textLow}
             value={repairDate}
-            onChangeText={updateField(setRepairDate)}
+            onChange={updateField(setRepairDate)}
           />
 
-          <Text style={[styles.label, themedLabel]}>Repair summary</Text>
-          <TextInput
-            style={[styles.input, themedInput, styles.multiline]}
+          <TextArea
+            label="Repair summary"
             placeholder="e.g. Replaced headlight due to damage"
-            placeholderTextColor={colors.textMuted || COLORS.textLow}
             value={summary}
             onChangeText={updateField(setSummary)}
-            multiline
           />
 
-          <Text style={[styles.label, themedLabel]}>Reason / fault</Text>
-          <TextInput
-            style={[styles.input, themedInput, styles.multiline]}
+          <TextArea
+            label="Reason / fault"
             placeholder="Damage, failed bulb, customer request, wear and tear..."
-            placeholderTextColor={colors.textMuted || COLORS.textLow}
             value={reason}
             onChangeText={updateField(setReason)}
-            multiline
           />
 
-          <Text style={[styles.label, themedLabel]}>Parts used</Text>
-          <TextInput
-            style={[styles.input, themedInput]}
+          <FormField
+            label="Parts used"
             placeholder="e.g. N/S headlight unit, bulb, clips"
-            placeholderTextColor={colors.textMuted || COLORS.textLow}
             value={partsUsed}
             onChangeText={updateField(setPartsUsed)}
           />
 
-          <Text style={[styles.label, themedLabel]}>Mileage</Text>
-          <TextInput
-            style={[styles.input, themedInput]}
+          <FormField
+            label="Mileage"
             placeholder="Current mileage"
-            placeholderTextColor={colors.textMuted || COLORS.textLow}
             value={mileage}
             onChangeText={updateField(setMileage)}
-            keyboardType="numeric"
+            inputProps={{ keyboardType: "numeric" }}
           />
 
-          <Text style={[styles.label, themedLabel]}>Completed by</Text>
-          <TextInput
-            style={[styles.input, themedInput]}
+          <FormField
+            label="Completed by"
             placeholder="Technician name"
-            placeholderTextColor={colors.textMuted || COLORS.textLow}
             value={completedBy}
             onChangeText={updateField(setCompletedBy)}
           />
 
-          <Text style={[styles.label, themedLabel]}>Additional notes</Text>
-          <TextInput
-            style={[styles.input, themedInput, styles.multiline]}
+          <TextArea
+            label="Additional notes"
             placeholder="Anything useful for future reference..."
-            placeholderTextColor={colors.textMuted || COLORS.textLow}
             value={notes}
             onChangeText={updateField(setNotes)}
-            multiline
           />
         </View>
 
-        <TouchableOpacity
-          style={[
-            styles.saveButton,
-            {
-              backgroundColor: saving ? colors.border || COLORS.border : COLORS.primaryAction,
-            },
-          ]}
+        <AppButton
+          label="Save repair"
+          icon="check-circle"
           onPress={handleSave}
-          activeOpacity={0.9}
+          loading={saving}
           disabled={saving}
-        >
-          {saving ? (
-            <ActivityIndicator
-              size="small"
-              color={colors.text || COLORS.textHigh}
-              style={{ marginRight: 8 }}
-            />
-          ) : (
-            <Icon
-              name="check-circle"
-              size={18}
-              color={colors.text || COLORS.textHigh}
-              style={{ marginRight: 8 }}
-            />
-          )}
-          <Text style={[styles.saveButtonText, { color: COLORS.textHigh }]}>
-            {saving ? "Saving..." : "Save repair"}
-          </Text>
-        </TouchableOpacity>
-      </ScrollView>
-    </SafeAreaView>
+          fullWidth
+        />
+      </>
+    </PageShell>
   );
 }
 
@@ -715,60 +616,60 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingHorizontal: t.spacing.md,
+    paddingVertical: t.spacing.sm,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
   },
   backButton: {
-    paddingRight: 10,
+    paddingRight: t.spacing.xs,
   },
   title: {
-    fontSize: 22,
+    fontSize: t.typography.titleSmall.fontSize,
     fontWeight: "800",
     color: COLORS.textHigh,
   },
   subtitle: {
-    marginTop: 2,
-    fontSize: 13,
+    marginTop: t.spacing.none,
+    fontSize: t.typography.bodySmall.fontSize,
     color: COLORS.textMid,
   },
   content: {
-    padding: 16,
+    padding: t.spacing.md,
     paddingBottom: 110,
   },
   sectionHeaderRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: 8,
+    marginBottom: t.spacing.xs,
   },
   sectionTitle: {
-    fontSize: 15,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "800",
     color: COLORS.textHigh,
   },
   sectionHint: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "700",
   },
   card: {
     borderWidth: 1,
     borderColor: COLORS.border,
-    borderRadius: 10,
+    borderRadius: t.radius.md,
     backgroundColor: COLORS.card,
-    padding: 14,
-    marginBottom: 14,
+    padding: t.spacing.sm,
+    marginBottom: t.spacing.sm,
   },
   label: {
-    marginBottom: 6,
-    fontSize: 12,
+    marginBottom: t.spacing.xxs,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "700",
     color: COLORS.textMid,
   },
   labelSmall: {
-    marginBottom: 4,
-    fontSize: 11,
+    marginBottom: t.spacing.xxs,
+    fontSize: t.typography.caption.fontSize,
     fontWeight: "700",
     textTransform: "uppercase",
     color: COLORS.textMid,
@@ -777,12 +678,12 @@ const styles = StyleSheet.create({
     minHeight: 44,
     borderWidth: 1,
     borderColor: COLORS.border,
-    borderRadius: 8,
-    backgroundColor: "#FFFFFF",
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    marginBottom: 12,
-    fontSize: 14,
+    borderRadius: t.radius.sm,
+    backgroundColor: staticColors.hex_ffffff_5c2ocm,
+    paddingHorizontal: t.spacing.sm,
+    paddingVertical: t.spacing.xs,
+    marginBottom: t.spacing.sm,
+    fontSize: t.typography.body.fontSize,
     color: COLORS.textHigh,
   },
   multiline: {
@@ -795,14 +696,14 @@ const styles = StyleSheet.create({
     alignItems: "center",
     borderWidth: 1,
     borderColor: COLORS.border,
-    borderRadius: 8,
-    backgroundColor: "#FFFFFF",
-    paddingHorizontal: 10,
+    borderRadius: t.radius.sm,
+    backgroundColor: staticColors.hex_ffffff_5c2ocm,
+    paddingHorizontal: t.spacing.xs,
   },
   searchInput: {
     flex: 1,
     minHeight: 42,
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
   },
   centerRow: {
     minHeight: 58,
@@ -810,7 +711,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   emptyText: {
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
     color: COLORS.textMid,
   },
   selectedVehicleRow: {
@@ -818,37 +719,37 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   vehicleMetaRow: {
-    marginTop: 8,
+    marginTop: t.spacing.xs,
   },
   vehicleMeta: {
-    fontSize: 12,
-    lineHeight: 18,
+    fontSize: t.typography.metadata.fontSize,
+    lineHeight: t.typography.metadata.lineHeight,
   },
   vehicleRow: {
     flexDirection: "row",
     alignItems: "center",
-    paddingVertical: 10,
+    paddingVertical: t.spacing.xs,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: COLORS.border,
   },
   vehicleRowActive: {
-    backgroundColor: "rgba(237,28,37,0.08)",
-    borderRadius: 8,
-    paddingHorizontal: 8,
+    backgroundColor: staticColors.rgba_qyx95c,
+    borderRadius: t.radius.sm,
+    paddingHorizontal: t.spacing.xs,
   },
   vehicleName: {
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     fontWeight: "800",
     color: COLORS.textHigh,
   },
   vehicleReg: {
-    marginTop: 2,
-    fontSize: 12,
+    marginTop: t.spacing.none,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textMid,
   },
   sectionTitleAlt: {
-    marginBottom: 12,
-    fontSize: 16,
+    marginBottom: t.spacing.sm,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "800",
     color: COLORS.textHigh,
   },
@@ -857,12 +758,12 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: 10,
-    paddingHorizontal: 14,
+    borderRadius: t.radius.md,
+    paddingHorizontal: t.spacing.sm,
     backgroundColor: COLORS.primaryAction,
   },
   saveButtonText: {
-    fontSize: 15,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "800",
     color: COLORS.textHigh,
   },

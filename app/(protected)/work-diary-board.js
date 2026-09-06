@@ -1,22 +1,34 @@
-import { useRouter } from "expo-router";
-import { collection, getDocs } from "firebase/firestore";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AppModal, AppText as Text, AppPressable as TouchableOpacity } from "../../components/ui/AppPrimitives";
+import { useLocalSearchParams, useRouter } from "expo-router";
+import { collection,
+  getDocs } from "firebase/firestore";
+import { useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState } from "react";
 import {
   ActivityIndicator,
-  Modal,
-  RefreshControl,
   ScrollView,
   StyleSheet,
-  Text,
-  TouchableOpacity,
   View,
   useWindowDimensions,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+
 import Icon from "react-native-vector-icons/Feather";
 
 import { db } from "../../firebaseConfig";
+import { getVehicleDisplayLabel } from "../../lib/fleetSchema";
 import { useTheme } from "../../providers/ThemeProvider";
+import { staticColors } from "../../lib/design/staticColors";
+import { withAlpha } from "../../lib/design/color";
+import { designTokens as t } from "../../lib/design/tokens";
+import PageShell from "../../components/layout/PageShell";
+import {
+  getBookingLifecycle,
+  getBookingLifecycleLabel,
+  shouldShowDiaryBooking,
+} from "../../lib/bookingLifecycle";
 
 const DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const COL_WIDTH = 290;
@@ -25,16 +37,6 @@ const ROW_HEIGHT = 260;
 
 let cachedBoardData = null;
 let boardDataRequest = null;
-
-function withAlpha(hex, alpha) {
-  const safeAlpha = Math.max(0, Math.min(1, Number(alpha) || 0));
-  const raw = String(hex || "").replace("#", "");
-  if (!/^[0-9a-fA-F]{6}$/.test(raw)) return `rgba(255,255,255,${safeAlpha})`;
-  const r = parseInt(raw.slice(0, 2), 16);
-  const g = parseInt(raw.slice(2, 4), 16);
-  const b = parseInt(raw.slice(4, 6), 16);
-  return `rgba(${r},${g},${b},${safeAlpha})`;
-}
 
 function getISO(value) {
   if (!value) return null;
@@ -77,14 +79,8 @@ function formatDayHeader(iso) {
   return `${DAY_NAMES[(d.getDay() + 6) % 7]} ${d.getDate()}`;
 }
 
-function formatVehicle(v, vehicleNameById = {}) {
-  if (typeof v === "string") return vehicleNameById[v] || v;
-  if (!v || typeof v !== "object") return "";
-  const id = v.id || v.vehicleId || v.docId;
-  if (id && vehicleNameById[id]) return vehicleNameById[id];
-  const name = v.name || v.label || v.title || "";
-  const reg = v.reg || v.registration || v.numberPlate || "";
-  return reg ? `${name} ${reg}`.trim() : name;
+function formatVehicle(vehicle, vehicleDirectory = []) {
+  return getVehicleDisplayLabel(vehicle, vehicleDirectory);
 }
 
 function toArray(val) {
@@ -160,48 +156,48 @@ function cardTone(job) {
 
   if (isMaintenance) {
     return {
-      bg: "#A7D091",
-      border: "#6E9D5E",
-      text: "#142214",
+      bg: staticColors.hex_a7d091_7z1amk,
+      border: staticColors.hex_6e9d5e_48qwvs,
+      text: staticColors.hex_142214_a6j16u,
     };
   }
 
   if (status.includes("complete")) {
     return {
-      bg: "#A7D091",
-      border: "#6E9D5E",
-      text: "#142214",
+      bg: staticColors.hex_a7d091_7z1amk,
+      border: staticColors.hex_6e9d5e_48qwvs,
+      text: staticColors.hex_142214_a6j16u,
     };
   }
 
   if (status.includes("confirmed")) {
     return {
-      bg: "#F5F57A",
-      border: "#A9A944",
-      text: "#232323",
+      bg: staticColors.hex_f5f57a_4xffkg,
+      border: staticColors.hex_a9a944_8bjrly,
+      text: staticColors.hex_232323_72yy4n,
     };
   }
 
   if (status.includes("first pencil")) {
     return {
-      bg: "#CFE7FF",
-      border: "#7FA9D6",
-      text: "#1C2A3A",
+      bg: staticColors.hex_cfe7ff_8cg5td,
+      border: staticColors.hex_7fa9d6_7g0531,
+      text: staticColors.hex_1c2a3a_8m3it1,
     };
   }
 
   if (status.includes("second pencil")) {
     return {
-      bg: "#F6C9CC",
-      border: "#D28790",
-      text: "#3A1E23",
+      bg: staticColors.hex_f6c9cc_4y74y4,
+      border: staticColors.hex_d28790_63pgd2,
+      text: staticColors.hex_3a1e23_9vcdmp,
     };
   }
 
   return {
-    bg: "#E9EDF3",
-    border: "#98A6BB",
-    text: "#1D2430",
+    bg: staticColors.hex_e9edf3_5qi9vy,
+    border: staticColors.hex_98a6bb_f7qsvk,
+    text: staticColors.hex_1d2430_8jyunq,
   };
 }
 
@@ -342,6 +338,7 @@ function DetailRow({ icon, label, value, colors }) {
 
 export default function WorkDiaryBoardPage() {
   const router = useRouter();
+  const params = useLocalSearchParams();
   const { colors } = useTheme();
   const scrollRef = useRef(null);
   const verticalScrollRef = useRef(null);
@@ -350,17 +347,20 @@ export default function WorkDiaryBoardPage() {
 
   const [weekStart, setWeekStart] = useState(() => isoFromDate(mondayFor(new Date())));
   const [bookings, setBookings] = useState(() => cachedBoardData?.bookings || []);
-  const [vehicleNameById, setVehicleNameById] = useState(
-    () => cachedBoardData?.vehicleNameById || {}
+  const [vehicleDirectory, setVehicleDirectory] = useState(
+    () => cachedBoardData?.vehicles || []
   );
   const [loading, setLoading] = useState(() => !cachedBoardData);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
   const [selectedJob, setSelectedJob] = useState(null);
+  const [includeInactive, setIncludeInactive] = useState(
+    () => String(params.includeInactive || "") === "1"
+  );
 
   const applyBoardData = useCallback((data) => {
     setBookings(data.bookings);
-    setVehicleNameById(data.vehicleNameById);
+    setVehicleDirectory(data.vehicles);
   }, []);
 
   const loadBookings = useCallback(async ({ force = false } = {}) => {
@@ -384,15 +384,9 @@ export default function WorkDiaryBoardPage() {
 
       const [bookingSnap, vehiclesSnap] = await boardDataRequest;
       const rows = bookingSnap.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
-      const vehicleMap = {};
-      vehiclesSnap.docs.forEach((doc) => {
-        const data = doc.data() || {};
-        const name = data.name || data.label || data.title || "Vehicle";
-        const reg = data.reg || data.registration || data.numberPlate || "";
-        vehicleMap[doc.id] = reg ? `${name} (${reg})` : name;
-      });
+      const vehicles = vehiclesSnap.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
 
-      const nextData = { bookings: rows, vehicleNameById: vehicleMap };
+      const nextData = { bookings: rows, vehicles };
       cachedBoardData = nextData;
       if (mountedRef.current) applyBoardData(nextData);
     } catch (e) {
@@ -422,7 +416,12 @@ export default function WorkDiaryBoardPage() {
 
   const boardItems = useMemo(() => {
     const matches = bookings
-      .filter(shouldShowBoardJob)
+      .filter((job) => shouldShowDiaryBooking(job, includeInactive))
+      .filter(
+        (job) =>
+          shouldShowBoardJob(job) ||
+          (includeInactive && getBookingLifecycle(job) !== "active")
+      )
       .map((job) => {
         const dates = extractBookingDates(job);
         const span = overlapSpan(dates, weekDates);
@@ -432,7 +431,12 @@ export default function WorkDiaryBoardPage() {
       .filter(Boolean);
 
     return buildRows(matches);
-  }, [bookings, weekDates]);
+  }, [bookings, includeInactive, weekDates]);
+
+  const inactiveCount = useMemo(
+    () => bookings.filter((job) => getBookingLifecycle(job) !== "active").length,
+    [bookings]
+  );
 
   const boardHeight = HEADER_HEIGHT + boardItems.rowCount * ROW_HEIGHT;
   const boardWidth = COL_WIDTH * 7;
@@ -444,7 +448,7 @@ export default function WorkDiaryBoardPage() {
 
     const dates = extractBookingDates(selectedJob);
     const vehicles = toArray(selectedJob?.vehicles || selectedJob?.vehicle)
-      .map((vehicle) => formatVehicle(vehicle, vehicleNameById))
+      .map((vehicle) => formatVehicle(vehicle, vehicleDirectory))
       .filter(Boolean);
     const people = formatPeople(selectedJob?.employees);
     const callTimes = formatObjectMap(
@@ -475,7 +479,7 @@ export default function WorkDiaryBoardPage() {
       notes: [...new Set([...notesByDate, ...dayNotes])],
       generalNotes: firstText(selectedJob?.notes, selectedJob?.note, selectedJob?.description),
     };
-  }, [selectedJob, vehicleNameById]);
+  }, [selectedJob, vehicleDirectory]);
 
   useEffect(() => {
     requestAnimationFrame(() => {
@@ -485,35 +489,54 @@ export default function WorkDiaryBoardPage() {
   }, [weekStart, loading]);
 
   return (
-    <SafeAreaView
-      edges={["left", "right"]}
-      style={[styles.safeArea, { backgroundColor: colors.background }]}
+    <PageShell
+      header={{
+        variant: "compact",
+        eyebrow: "Operations",
+        title: "Work Diary Board",
+        onBack: router.back,
+      }}
+      refresh={{
+        refreshing,
+        onRefresh: () => {
+          setRefreshing(true);
+          loadBookings({ force: true });
+        },
+      }}
     >
       <View style={[styles.container, { backgroundColor: colors.background }]}>
         <View style={styles.toolbar}>
           <View style={styles.toolbarLeft}>
-            <TouchableOpacity
-              onPress={() => router.back()}
-              activeOpacity={0.85}
-              style={[
-                styles.backBtn,
-                {
-                  backgroundColor: withAlpha(colors.surface, 0.9),
-                  borderColor: withAlpha(colors.border, 0.85),
-                },
-              ]}
-            >
-              <Icon name="arrow-left" size={15} color={colors.text} />
-            </TouchableOpacity>
-
-            <Text style={[styles.pageTitle, { color: colors.text }]}>Work Diary</Text>
-
             <TouchableOpacity
               onPress={() => setWeekStart(isoFromDate(mondayFor(new Date())))}
               activeOpacity={0.85}
               style={[styles.todayBtn, { backgroundColor: colors.surface, borderColor: colors.border }]}
             >
               <Text style={[styles.todayText, { color: colors.text }]}>Today</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={() => setIncludeInactive((value) => !value)}
+              activeOpacity={0.85}
+              accessibilityRole="button"
+              accessibilityState={{ selected: includeInactive }}
+              style={[
+                styles.todayBtn,
+                { backgroundColor: colors.surface, borderColor: colors.border },
+                includeInactive && {
+                  backgroundColor: colors.accentSoft,
+                  borderColor: colors.accent,
+                },
+              ]}
+            >
+              <Icon
+                name={includeInactive ? "eye-off" : "eye"}
+                size={14}
+                color={includeInactive ? colors.accent : colors.textMuted}
+              />
+              <Text style={[styles.todayText, { color: includeInactive ? colors.accent : colors.textMuted }]}>
+                {includeInactive ? "Hide inactive" : `Show inactive (${inactiveCount})`}
+              </Text>
             </TouchableOpacity>
           </View>
 
@@ -558,27 +581,7 @@ export default function WorkDiaryBoardPage() {
             </TouchableOpacity>
           </View>
         ) : (
-          <ScrollView
-            ref={verticalScrollRef}
-            style={styles.boardViewport}
-            refreshControl={
-              <RefreshControl
-                refreshing={refreshing}
-                onRefresh={() => {
-                  setRefreshing(true);
-                  loadBookings({ force: true });
-                }}
-                tintColor={colors.accent}
-              />
-            }
-            contentOffset={{ x: 0, y: 0 }}
-            contentContainerStyle={styles.verticalContent}
-            showsVerticalScrollIndicator
-            nestedScrollEnabled
-            bounces={false}
-            alwaysBounceVertical={false}
-            overScrollMode="never"
-          >
+          <>
             <ScrollView
               ref={scrollRef}
               style={styles.boardViewport}
@@ -627,10 +630,12 @@ export default function WorkDiaryBoardPage() {
 
                   {boardItems.placed.map(({ job, span, row }) => {
                     const tone = cardTone(job);
+                    const lifecycle = getBookingLifecycle(job);
+                    const inactive = lifecycle !== "active";
                     const notes = dayNotesFor(job, weekDates).slice(0, 3);
                     const employees = formatPeople(job?.employees).slice(0, 3).join(", ");
                     const vehicles = toArray(job?.vehicles || job?.vehicle)
-                      .map((vehicle) => formatVehicle(vehicle, vehicleNameById))
+                      .map((vehicle) => formatVehicle(vehicle, vehicleDirectory))
                       .filter(Boolean)
                       .slice(0, 3)
                       .join(" • ");
@@ -651,6 +656,7 @@ export default function WorkDiaryBoardPage() {
                             width,
                             backgroundColor: tone.bg,
                             borderColor: tone.border,
+                            opacity: inactive ? 0.72 : 1,
                           },
                         ]}
                       >
@@ -666,7 +672,11 @@ export default function WorkDiaryBoardPage() {
 
                           <View style={styles.statusWrap}>
                             <Text style={[styles.statusText, { color: tone.text }]}>
-                              {String(job?.status || "").toLowerCase().includes("confirmed") ? "CONFIRMED" : String(job?.status || "BOOKED").toUpperCase()}
+                              {inactive
+                                ? getBookingLifecycleLabel(job).toUpperCase()
+                                : String(job?.status || "").toLowerCase().includes("confirmed")
+                                  ? "CONFIRMED"
+                                  : String(job?.status || "BOOKED").toUpperCase()}
                             </Text>
                             <Text style={[styles.statusText, { color: tone.text }]}>
                               {String(job?.status || "").toLowerCase().includes("crewed") ? "CREWED" : employees ? "CREWED" : ""}
@@ -719,25 +729,15 @@ export default function WorkDiaryBoardPage() {
                 </View>
               </View>
             </ScrollView>
-          </ScrollView>
+          </>
         )}
 
-        <Modal
+        <AppModal
           visible={!!selectedJob}
-          transparent
-          animationType="fade"
+          title={selectedJob ? titleForJob(selectedJob) : "Booking details"}
           onRequestClose={() => setSelectedJob(null)}
+          scrollable
         >
-          <View style={styles.modalBackdrop}>
-            <View
-              style={[
-                styles.detailModalCard,
-                {
-                  backgroundColor: colors.surface,
-                  borderColor: colors.border,
-                },
-              ]}
-            >
               {selectedJob && selectedJobDetails ? (
                 <>
                   <View style={styles.detailHeader}>
@@ -745,26 +745,10 @@ export default function WorkDiaryBoardPage() {
                       <Text style={[styles.detailJobNumber, { color: colors.textMuted }]}>
                         {selectedJob.jobNumber || "Booking"}
                       </Text>
-                      <Text style={[styles.detailTitle, { color: colors.text }]}>
-                        {titleForJob(selectedJob)}
-                      </Text>
                     </View>
-                    <TouchableOpacity
-                      onPress={() => setSelectedJob(null)}
-                      activeOpacity={0.85}
-                      style={[
-                        styles.modalCloseBtn,
-                        {
-                          backgroundColor: withAlpha(colors.surfaceAlt, 0.9),
-                          borderColor: colors.border,
-                        },
-                      ]}
-                    >
-                      <Icon name="x" size={18} color={colors.text} />
-                    </TouchableOpacity>
                   </View>
 
-                  <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.detailModalContent}>
+                  <View style={styles.detailModalContent}>
                     <View style={styles.detailPillRow}>
                       {selectedJob.status ? (
                         <View
@@ -871,14 +855,12 @@ export default function WorkDiaryBoardPage() {
                         .join("\n")}
                       colors={colors}
                     />
-                  </ScrollView>
+                  </View>
                 </>
               ) : null}
-            </View>
-          </View>
-        </Modal>
+        </AppModal>
       </View>
-    </SafeAreaView>
+    </PageShell>
   );
 }
 
@@ -886,71 +868,76 @@ const styles = StyleSheet.create({
   safeArea: { flex: 1 },
   container: { flex: 1 },
   toolbar: {
-    marginHorizontal: 16,
-    marginTop: 12,
-    marginBottom: 12,
-    paddingHorizontal: 0,
-    paddingVertical: 0,
+    marginHorizontal: t.spacing.none,
+    marginTop: t.spacing.sm,
+    marginBottom: t.spacing.sm,
+    paddingHorizontal: t.spacing.none,
+    paddingVertical: t.spacing.none,
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    gap: 12,
+    gap: t.spacing.sm,
+    flexWrap: "wrap",
   },
   toolbarLeft: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
+    gap: t.spacing.sm,
+    flexWrap: "wrap",
   },
   toolbarRight: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
+    gap: t.spacing.xs,
     flexWrap: "wrap",
     justifyContent: "flex-end",
   },
   backBtn: {
     width: 38,
     height: 38,
-    borderRadius: 19,
+    borderRadius: t.radius.pill,
     borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
   },
   pageTitle: {
-    fontSize: 22,
+    fontSize: t.typography.titleSmall.fontSize,
     fontWeight: "900",
   },
   todayBtn: {
     borderWidth: 1,
-    borderRadius: 16,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
+    borderRadius: t.radius.xl,
+    paddingHorizontal: t.spacing.md,
+    paddingVertical: t.spacing.xs,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: t.spacing.xxs,
   },
   todayText: {
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     fontWeight: "800",
   },
   navBtn: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
+    gap: t.spacing.xs,
     borderWidth: 1,
-    borderRadius: 16,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    borderRadius: t.radius.xl,
+    paddingHorizontal: t.spacing.md,
+    paddingVertical: t.spacing.sm,
   },
   navText: {
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     fontWeight: "800",
   },
   horizontalContent: {
-    paddingHorizontal: 16,
-    paddingBottom: 20,
+    paddingHorizontal: t.spacing.none,
+    paddingBottom: t.spacing.lg,
     alignItems: "flex-start",
     justifyContent: "flex-start",
   },
   verticalContent: {
-    paddingBottom: 20,
+    paddingBottom: t.spacing.lg,
     alignItems: "flex-start",
     justifyContent: "flex-start",
   },
@@ -958,13 +945,13 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   boardWrap: {
-    borderRadius: 18,
+    borderRadius: t.radius.xl,
     overflow: "hidden",
   },
   boardGrid: {
     position: "relative",
     borderWidth: 1,
-    backgroundColor: "#fff",
+    backgroundColor: staticColors.hex_fff_yhjmu8,
   },
   dayColumn: {
     position: "absolute",
@@ -978,17 +965,17 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
   },
   dayHeaderText: {
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     fontWeight: "500",
   },
   bookingCard: {
     position: "absolute",
     minHeight: ROW_HEIGHT - 12,
     borderWidth: 2,
-    borderRadius: 12,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    shadowColor: "#000",
+    borderRadius: t.radius.md,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xs,
+    shadowColor: staticColors.hex_000_yhlkvq,
     shadowOpacity: 0.08,
     shadowRadius: 3,
     shadowOffset: { width: 0, height: 1 },
@@ -997,19 +984,19 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "flex-start",
     justifyContent: "space-between",
-    gap: 8,
+    gap: t.spacing.xs,
   },
   initialsWrap: {
-    backgroundColor: "#F9F9F9",
+    backgroundColor: staticColors.hex_f9f9f9_50f01l,
     borderWidth: 1,
-    borderColor: "#707070",
-    borderRadius: 8,
+    borderColor: staticColors.hex_707070_6dnpnl,
+    borderRadius: t.radius.sm,
     maxWidth: "42%",
-    paddingHorizontal: 8,
-    paddingVertical: 4,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
   },
   initialsText: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "800",
     flexWrap: "wrap",
   },
@@ -1018,187 +1005,187 @@ const styles = StyleSheet.create({
     alignItems: "flex-end",
   },
   statusText: {
-    fontSize: 10,
+    fontSize: t.typography.micro.fontSize,
     fontWeight: "900",
-    lineHeight: 11,
+    lineHeight: t.typography.micro.lineHeight,
   },
   jobNumberPill: {
-    backgroundColor: "#F9F9F9",
+    backgroundColor: staticColors.hex_f9f9f9_50f01l,
     borderWidth: 1,
-    borderColor: "#707070",
-    borderRadius: 10,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
+    borderColor: staticColors.hex_707070_6dnpnl,
+    borderRadius: t.radius.md,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
   },
   jobNumberText: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "900",
-    color: "#1F1F1F",
+    color: staticColors.hex_1f1f1f_8imrm9,
   },
   bookingTitle: {
-    marginTop: 6,
-    fontSize: 17,
+    marginTop: t.spacing.xxs,
+    fontSize: t.typography.sectionTitle.fontSize,
     fontWeight: "900",
-    lineHeight: 20,
+    lineHeight: t.typography.sectionTitle.lineHeight,
     textTransform: "uppercase",
   },
   bookingLine: {
-    marginTop: 3,
-    fontSize: 12,
+    marginTop: t.spacing.xxs,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "700",
-    lineHeight: 15,
+    lineHeight: t.typography.metadata.lineHeight,
   },
   notesBlock: {
-    marginTop: 8,
+    marginTop: t.spacing.xs,
     minHeight: 34,
   },
   noteText: {
-    fontSize: 11,
-    lineHeight: 14,
+    fontSize: t.typography.caption.fontSize,
+    lineHeight: t.typography.caption.lineHeight,
     fontStyle: "italic",
   },
   tagsRow: {
-    marginTop: 8,
+    marginTop: t.spacing.xs,
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 6,
+    gap: t.spacing.xxs,
   },
   tagPill: {
-    backgroundColor: "#E56A54",
-    borderRadius: 8,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
+    backgroundColor: staticColors.hex_e56a54_5mfcow,
+    borderRadius: t.radius.sm,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
   },
   tagText: {
-    color: "#fff",
-    fontSize: 11,
+    color: staticColors.hex_fff_yhjmu8,
+    fontSize: t.typography.caption.fontSize,
     fontWeight: "800",
   },
   centerState: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 20,
+    paddingHorizontal: t.spacing.lg,
   },
   stateText: {
-    marginTop: 8,
-    fontSize: 13,
+    marginTop: t.spacing.xs,
+    fontSize: t.typography.bodySmall.fontSize,
   },
   errorCard: {
-    marginHorizontal: 16,
-    marginTop: 12,
+    marginHorizontal: t.spacing.md,
+    marginTop: t.spacing.sm,
     borderWidth: 1,
-    borderRadius: 12,
-    padding: 14,
+    borderRadius: t.radius.md,
+    padding: t.spacing.sm,
   },
   errorText: {
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     fontWeight: "700",
   },
   retryBtn: {
     alignSelf: "flex-start",
-    marginTop: 10,
-    borderRadius: 10,
+    marginTop: t.spacing.xs,
+    borderRadius: t.radius.md,
     borderWidth: 1,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    paddingHorizontal: t.spacing.sm,
+    paddingVertical: t.spacing.xs,
   },
   retryText: {
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
     fontWeight: "800",
   },
   modalBackdrop: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.62)",
+    backgroundColor: staticColors.rgba_18a7thw,
     justifyContent: "center",
     alignItems: "center",
-    paddingHorizontal: 18,
-    paddingVertical: 28,
+    paddingHorizontal: t.spacing.md,
+    paddingVertical: t.spacing.xl,
   },
   detailModalCard: {
     width: "100%",
     maxWidth: 620,
     maxHeight: "86%",
     borderWidth: 1,
-    borderRadius: 20,
+    borderRadius: t.radius.xl,
     overflow: "hidden",
   },
   detailHeader: {
     flexDirection: "row",
     alignItems: "flex-start",
-    gap: 14,
-    paddingHorizontal: 18,
-    paddingTop: 18,
-    paddingBottom: 12,
+    gap: t.spacing.sm,
+    paddingHorizontal: t.spacing.md,
+    paddingTop: t.spacing.md,
+    paddingBottom: t.spacing.sm,
   },
   detailJobNumber: {
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
     fontWeight: "900",
     letterSpacing: 0.6,
   },
   detailTitle: {
-    marginTop: 4,
-    fontSize: 24,
-    lineHeight: 29,
+    marginTop: t.spacing.xxs,
+    fontSize: t.typography.pageTitle.fontSize,
+    lineHeight: t.typography.pageTitle.lineHeight,
     fontWeight: "900",
   },
   modalCloseBtn: {
     width: 38,
     height: 38,
-    borderRadius: 19,
+    borderRadius: t.radius.pill,
     borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
   },
   detailModalContent: {
-    paddingHorizontal: 18,
-    paddingBottom: 20,
+    paddingHorizontal: t.spacing.md,
+    paddingBottom: t.spacing.lg,
   },
   detailPillRow: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 8,
-    marginBottom: 8,
+    gap: t.spacing.xs,
+    marginBottom: t.spacing.xs,
   },
   detailPill: {
     borderWidth: 1,
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+    borderRadius: t.radius.pill,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
   },
   detailPillText: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     fontWeight: "900",
   },
   detailRow: {
     flexDirection: "row",
-    gap: 11,
-    paddingVertical: 12,
+    gap: t.spacing.sm,
+    paddingVertical: t.spacing.sm,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "rgba(130,130,130,0.28)",
+    borderBottomColor: staticColors.rgba_1szoxfc,
   },
   detailIcon: {
     width: 30,
     height: 30,
-    borderRadius: 15,
+    borderRadius: t.radius.pill,
     borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
-    marginTop: 1,
+    marginTop: t.spacing.none,
   },
   detailTextWrap: {
     flex: 1,
   },
   detailLabel: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     fontWeight: "900",
     textTransform: "uppercase",
     letterSpacing: 0.4,
   },
   detailValue: {
-    marginTop: 3,
-    fontSize: 14,
-    lineHeight: 20,
+    marginTop: t.spacing.xxs,
+    fontSize: t.typography.body.fontSize,
+    lineHeight: t.typography.body.lineHeight,
     fontWeight: "700",
   },
 });

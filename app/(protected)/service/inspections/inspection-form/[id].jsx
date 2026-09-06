@@ -1,7 +1,12 @@
+import { AppButton, AppModal, AppText as Text, AppPressable as TouchableOpacity, FormField as SharedFormField, TextArea } from "../../../../../components/ui/AppPrimitives";
+import {
+  servicePalette as COLORS } from "../../../../../lib/design/semantics";
 // app/(protected)/service/inspections/inspection-form/[id].jsx
 import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
-import { useLocalSearchParams, useNavigation, useRouter } from "expo-router";
+import { useLocalSearchParams,
+  useNavigation,
+  useRouter } from "expo-router";
 import {
   collection,
   doc,
@@ -9,23 +14,24 @@ import {
   serverTimestamp,
   setDoc,
   updateDoc,
-} from "firebase/firestore";
-import { getDownloadURL, ref, uploadBytesResumable } from "firebase/storage";
-import { useEffect, useMemo, useRef, useState } from "react";
+  } from "firebase/firestore";
+import { getDownloadURL,
+  ref,
+  uploadBytesResumable } from "firebase/storage";
+import { useEffect,
+  useMemo,
+  useRef,
+  useState } from "react";
 import {
   ActivityIndicator,
   Alert,
   Image,
-  Modal,
   Platform,
   ScrollView,
   StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+
 import Icon from "react-native-vector-icons/Feather";
 
 import { db, storage } from "../../../../../firebaseConfig";
@@ -40,34 +46,25 @@ import {
 import { useServiceCacheActions, useServiceCollectionReader } from "../../../../../hooks/useServiceData";
 import { runOrQueueFirestoreMutations } from "../../../../../lib/sync/firestoreQueue";
 import { useTheme } from "../../../../../providers/ThemeProvider";
+import { staticColors } from "../../../../../lib/design/staticColors";
+import { designTokens as t } from "../../../../../lib/design/tokens";
+import PageShell from "../../../../../components/layout/PageShell";
 
 /* ------------------------------------------------------------------ */
 /*  CONSTANTS                                                           */
 /* ------------------------------------------------------------------ */
 
-const COLORS = {
-  background: "#0D0D0D",
-  card: "#1A1A1A",
-  border: "#333333",
-  textHigh: "#FFFFFF",
-  textMid: "#E0E0E0",
-  textLow: "#888888",
-  primaryAction: "#ED1C25",
-  inputBg: "#2a2a2a",
-  lightGray: "#4a4a4a",
-};
-
 const CHECK_STATUS_OPTIONS = [
-  { value: "green", label: "Green", color: "#22C55E" },
-  { value: "amber", label: "Amber", color: "#F59E0B" },
-  { value: "red",   label: "Red",   color: "#EF4444" },
+  { value: "green", label: "Green", color: staticColors.hex_22c55e_740if4 },
+  { value: "amber", label: "Amber", color: staticColors.hex_f59e0b_4zbh7f },
+  { value: "red",   label: "Red",   color: staticColors.hex_ef4444_4oizhh },
 ];
 
 const NOTE_REQUIRED_STATUSES = new Set(["amber", "red"]);
 
 const OVERALL_RESULT_OPTIONS = [
-  { value: "pass", label: "Pass",    color: "#22C55E" },
-  { value: "fail", label: "Fail",    color: "#EF4444" },
+  { value: "pass", label: "Pass",    color: staticColors.hex_22c55e_740if4 },
+  { value: "fail", label: "Fail",    color: staticColors.hex_ef4444_4oizhh },
 ];
 
 /* ------------------------------------------------------------------ */
@@ -781,31 +778,18 @@ export default function InspectionFormScreen() {
   /*  RENDER                                                           */
   /* ---------------------------------------------------------------- */
   return (
-    <SafeAreaView
-      edges={["left", "right"]}
-      style={[styles.container, { backgroundColor: colors.background || COLORS.background }]}
-    >
+    <PageShell mode="form" width="form" header={{
+      variant: "compact",
+      title: isNew ? "Equipment Inspection" : "Edit Inspection",
+      subtitle: isNew
+        ? "Pre-use condition check. Mark every item and sign off."
+        : "Update inspection findings and sign off.",
+      onBack: () => confirmLeave(() => router.back()),
+    }}>
       {/* HEADER */}
-      <View style={[styles.header, { borderBottomColor: colors.border || COLORS.border }]}>
-        <TouchableOpacity
-          onPress={() => confirmLeave(() => router.back())}
-          style={styles.backButton}
-        >
-          <Icon name="chevron-left" size={22} color={colors.text || COLORS.textHigh} />
-        </TouchableOpacity>
-        <View style={{ flex: 1 }}>
-          <Text style={[styles.pageTitle, { color: colors.text || COLORS.textHigh }]}>
-            {isNew ? "Equipment Inspection" : "Edit Inspection"}
-          </Text>
-          <Text style={[styles.pageSubtitle, { color: colors.textMuted || COLORS.textMid }]}>
-            {isNew
-              ? "Pre-use condition check. Mark every item and sign off."
-              : "Update inspection findings and sign off."}
-          </Text>
-        </View>
-      </View>
+      
 
-      <ScrollView contentContainerStyle={styles.scrollContent}>
+      <>
         {loadingRecord && (
           <View style={styles.centerRow}>
             <ActivityIndicator size="small" color={COLORS.primaryAction} />
@@ -853,19 +837,12 @@ export default function InspectionFormScreen() {
             </>
           ) : (
             <>
-              <Text style={[styles.fieldLabel, { color: colors.textMuted || COLORS.textMid }]}>
-                Search equipment
-              </Text>
-              <View style={styles.searchBox}>
-                <Icon name="search" size={16} color={colors.textMuted || COLORS.textLow} style={{ marginRight: 7 }} />
-                <TextInput
-                  style={[styles.searchInput, { color: colors.text || COLORS.textHigh }]}
+              <SharedFormField
+                  label="Search equipment"
                   placeholder="Name, serial, asset, category or location..."
-                  placeholderTextColor={colors.textMuted || COLORS.textLow}
                   value={equipmentSearch}
                   onChangeText={setEquipmentSearch}
                 />
-              </View>
 
               {loadingEquipment ? (
                 <View style={styles.centerRow}>
@@ -877,7 +854,7 @@ export default function InspectionFormScreen() {
                   No previous equipment found. Enter details below.
                 </Text>
               ) : (
-                <ScrollView style={styles.selectorList} nestedScrollEnabled>
+                <View style={styles.selectorList} nestedScrollEnabled>
                   {filteredEquipment.map((item) => {
                     const active = item.key === selectedEquipmentKey;
                     return (
@@ -909,7 +886,7 @@ export default function InspectionFormScreen() {
                       </TouchableOpacity>
                     );
                   })}
-                </ScrollView>
+                </View>
               )}
             </>
           )}
@@ -1117,7 +1094,7 @@ export default function InspectionFormScreen() {
           title="Defect report"
           items={defectReport}
           badge="R"
-          badgeColor="#EF4444"
+          badgeColor={staticColors.hex_ef4444_4oizhh}
           emptyText="No red equipment defects recorded."
           colors={colors}
         />
@@ -1126,7 +1103,7 @@ export default function InspectionFormScreen() {
           title="Monitor report"
           items={monitorReport}
           badge="M"
-          badgeColor="#F59E0B"
+          badgeColor={staticColors.hex_f59e0b_4zbh7f}
           emptyText="No amber equipment advisories recorded."
           colors={colors}
         />
@@ -1197,7 +1174,7 @@ export default function InspectionFormScreen() {
                 >
                   <Text style={[
                     styles.resultButtonText,
-                    { color: active ? "#FFFFFF" : colors.textMuted || COLORS.textMid },
+                    { color: active ? staticColors.hex_ffffff_5c2ocm : colors.textMuted || COLORS.textMid },
                   ]}>
                     {opt.label}
                   </Text>
@@ -1227,7 +1204,7 @@ export default function InspectionFormScreen() {
             onChangeText={(v) => { setSignedBy(v); setDirty(true); }}
             colors={colors}
           />
-          <View style={{ marginTop: 4 }}>
+          <View style={{ marginTop: t.spacing.xxs }}>
             <Text style={styles.signatureInfo}>
               By entering your name you confirm all checks above have been
               carried out to the best of your ability.
@@ -1250,12 +1227,12 @@ export default function InspectionFormScreen() {
         }]}>
           <View style={styles.photoButtonsRow}>
             <TouchableOpacity style={styles.photoButton} onPress={handleAddPhotoFromLibrary} activeOpacity={0.85}>
-              <Icon name="image" size={18} color={colors.text || COLORS.textHigh} style={{ marginRight: 6 }} />
+              <Icon name="image" size={18} color={colors.text || COLORS.textHigh} style={{ marginRight: t.spacing.xxs }} />
               <Text style={[styles.photoAddText, { color: colors.text || COLORS.textHigh }]}>Add from library</Text>
             </TouchableOpacity>
           </View>
           {photos.length > 0 && (
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 10 }}>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: t.spacing.xs }}>
               {photos.map((p) => (
                 <View key={p.uri} style={styles.photoThumbWrapper}>
                   <Image source={{ uri: p.uri }} style={styles.photoThumb} />
@@ -1283,7 +1260,7 @@ export default function InspectionFormScreen() {
             <ActivityIndicator size="small" color={COLORS.textHigh} />
           ) : (
             <>
-              <Icon name="save" size={18} color={COLORS.textHigh} style={{ marginRight: 6 }} />
+              <Icon name="save" size={18} color={COLORS.textHigh} style={{ marginRight: t.spacing.xxs }} />
               <Text style={styles.submitText}>
                 {isNew ? "Save inspection" : "Save changes"}
               </Text>
@@ -1292,45 +1269,19 @@ export default function InspectionFormScreen() {
         </TouchableOpacity>
 
         <View style={{ height: 20 }} />
-      </ScrollView>
+      </>
 
       {/* PER-CHECK PHOTO PICKER MODAL */}
-      <Modal
+      <AppModal
         visible={!!photoModalLabel}
-        transparent
-        animationType="fade"
+        title="Add photo"
         onRequestClose={() => setPhotoModalLabel(null)}
+        presentation="adaptive"
+        actions={<AppButton label="Cancel" variant="secondary" onPress={() => setPhotoModalLabel(null)} />}
       >
-        <TouchableOpacity
-          style={styles.modalOverlay}
-          activeOpacity={1}
-          onPress={() => setPhotoModalLabel(null)}
-        >
-          <View style={[styles.modalSheet, { backgroundColor: colors.surfaceAlt || COLORS.card }]}>
-            <Text style={[styles.modalTitle, { color: colors.text || COLORS.textHigh }]}>
-              Add photo
-            </Text>
-            <TouchableOpacity
-              style={styles.modalOption}
-              onPress={handleCheckPhotoSource}
-            >
-              <Icon name="image" size={20} color={COLORS.primaryAction} style={{ marginRight: 12 }} />
-              <Text style={[styles.modalOptionText, { color: colors.text || COLORS.textHigh }]}>
-                Choose from library
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.modalOption, { marginTop: 4 }]}
-              onPress={() => setPhotoModalLabel(null)}
-            >
-              <Text style={[styles.modalCancelText, { color: colors.textMuted || COLORS.textMid }]}>
-                Cancel
-              </Text>
-            </TouchableOpacity>
-          </View>
-        </TouchableOpacity>
-      </Modal>
-    </SafeAreaView>
+        <AppButton label="Choose from library" icon="image" variant="secondary" onPress={handleCheckPhotoSource} />
+      </AppModal>
+    </PageShell>
   );
 }
 
@@ -1462,26 +1413,18 @@ function ChecklistRow({
 
       {/* Note input */}
       {needsNote && (
-        <TextInput
-          style={[
-            styles.checkNoteInput,
-            styles.checkNoteInputRequired,
-            {
-              color: colors.text || COLORS.textHigh,
-              borderColor: CHECK_STATUS_OPTIONS.find((opt) => opt.value === rating)?.color,
-            },
-          ]}
+        <TextArea
+          label="Inspection note"
+          error={`Note required for ${rating}`}
           placeholder={`Note required for ${rating}`}
-          placeholderTextColor={colors.textMuted || COLORS.textLow}
           value={note}
           onChangeText={onChangeNote}
-          multiline
         />
       )}
 
       {/* Check photos */}
       {photos.length > 0 && (
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 6 }}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: t.spacing.xxs }}>
           {photos.map((p) => (
             <View key={p.uri} style={styles.photoThumbWrapper}>
               <Image source={{ uri: p.uri }} style={styles.photoThumb} />
@@ -1542,26 +1485,11 @@ function InspectionReportSection({ title, items, badge, badgeColor, colors }) {
 function FormField({ label, placeholder, value, onChangeText, multiline, colors }) {
   return (
     <View style={styles.fieldGroup}>
-      <Text style={[styles.fieldLabel, { color: colors.textMuted || COLORS.textMid }]}>
-        {label}
-      </Text>
-      <TextInput
-        style={[
-          styles.input,
-          multiline && styles.inputMultiline,
-          {
-            color: colors.text || COLORS.textHigh,
-            backgroundColor: colors.inputBackground || "#FFFFFF",
-            borderColor: colors.inputBorder || colors.border || COLORS.border,
-          },
-        ]}
-        placeholder={placeholder}
-        placeholderTextColor={colors.textMuted || COLORS.textLow}
-        value={value}
-        onChangeText={onChangeText}
-        multiline={multiline}
-        returnKeyType={multiline ? "default" : "done"}
-      />
+      {multiline ? (
+        <TextArea label={label} placeholder={placeholder} value={value} onChangeText={onChangeText} />
+      ) : (
+        <SharedFormField label={label} placeholder={placeholder} value={value} onChangeText={onChangeText} />
+      )}
     </View>
   );
 }
@@ -1578,149 +1506,149 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingHorizontal: t.spacing.md,
+    paddingVertical: t.spacing.sm,
     borderBottomWidth: 1,
   },
   backButton: {
-    paddingRight: 10,
+    paddingRight: t.spacing.xs,
   },
   pageTitle: {
-    fontSize: 22,
+    fontSize: t.typography.titleSmall.fontSize,
     fontWeight: "800",
     color: COLORS.textHigh,
   },
   pageSubtitle: {
-    marginTop: 2,
-    fontSize: 13,
+    marginTop: t.spacing.none,
+    fontSize: t.typography.bodySmall.fontSize,
     color: COLORS.textMid,
   },
 
-  scrollContent: { padding: 16, paddingTop: 8, paddingBottom: 110 },
+  scrollContent: { padding: t.spacing.md, paddingTop: t.spacing.xs, paddingBottom: 110 },
   centerRow: {
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 10,
+    paddingVertical: t.spacing.xs,
   },
-  loadingText: { color: COLORS.textMid, marginLeft: 8, fontSize: 13 },
+  loadingText: { color: COLORS.textMid, marginLeft: t.spacing.xs, fontSize: t.typography.bodySmall.fontSize },
 
   sectionHeaderRow: {
-    marginTop: 4,
-    marginBottom: 6,
+    marginTop: t.spacing.xxs,
+    marginBottom: t.spacing.xxs,
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "flex-end",
-    gap: 8,
+    gap: t.spacing.xs,
   },
   sectionTitle: {
-    fontSize: 16,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "700",
     color: COLORS.textHigh,
   },
   sectionHint: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     color: COLORS.textMid,
     flexShrink: 1,
   },
 
   card: {
     backgroundColor: COLORS.card,
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 10,
+    borderRadius: t.radius.md,
+    padding: t.spacing.sm,
+    marginBottom: t.spacing.xs,
     borderWidth: 1,
     borderColor: COLORS.border,
   },
-  fieldGroup:    { marginBottom: 12 },
-  fieldLabel:    { fontSize: 13, fontWeight: "600", color: COLORS.textMid, marginBottom: 4 },
+  fieldGroup:    { marginBottom: t.spacing.sm },
+  fieldLabel:    { fontSize: t.typography.bodySmall.fontSize, fontWeight: "600", color: COLORS.textMid, marginBottom: t.spacing.xxs },
   input: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 8,
+    backgroundColor: staticColors.hex_ffffff_5c2ocm,
+    borderRadius: t.radius.sm,
     borderWidth: 1,
     borderColor: COLORS.border,
     color: COLORS.textHigh,
-    paddingHorizontal: 10,
-    paddingVertical: 10,
-    fontSize: 15,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xs,
+    fontSize: t.typography.bodyLarge.fontSize,
   },
   inputMultiline: {
     minHeight: 110,
     textAlignVertical: "top",
   },
   readonlyField: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 8,
+    backgroundColor: staticColors.hex_ffffff_5c2ocm,
+    borderRadius: t.radius.sm,
     borderWidth: 1,
     borderColor: COLORS.border,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xs,
   },
-  readonlyText: { color: COLORS.textHigh, fontSize: 14 },
+  readonlyText: { color: COLORS.textHigh, fontSize: t.typography.body.fontSize },
   selectedEquipmentRow: {
     flexDirection: "row",
     alignItems: "center",
-    marginBottom: 12,
+    marginBottom: t.spacing.sm,
   },
   selectedEquipmentName: {
-    fontSize: 15,
+    fontSize: t.typography.bodyLarge.fontSize,
     fontWeight: "800",
   },
   selectedEquipmentMeta: {
-    marginTop: 2,
-    fontSize: 12,
+    marginTop: t.spacing.none,
+    fontSize: t.typography.metadata.fontSize,
   },
   changeText: {
     color: COLORS.primaryAction,
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "800",
   },
   searchBox: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#FFFFFF",
-    borderRadius: 8,
+    backgroundColor: staticColors.hex_ffffff_5c2ocm,
+    borderRadius: t.radius.sm,
     borderWidth: 1,
     borderColor: COLORS.border,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xs,
   },
   searchInput: {
     flex: 1,
     color: COLORS.textHigh,
-    fontSize: 15,
+    fontSize: t.typography.bodyLarge.fontSize,
   },
   selectorList: {
     maxHeight: 180,
-    marginBottom: 12,
+    marginBottom: t.spacing.sm,
   },
   selectorEmptyText: {
-    marginBottom: 12,
-    fontSize: 13,
-    lineHeight: 18,
+    marginBottom: t.spacing.sm,
+    fontSize: t.typography.bodySmall.fontSize,
+    lineHeight: t.typography.bodySmall.lineHeight,
   },
   equipmentOptionRow: {
     flexDirection: "row",
     alignItems: "center",
-    paddingVertical: 10,
+    paddingVertical: t.spacing.xs,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: COLORS.border,
   },
   equipmentOptionActive: {
-    backgroundColor: "rgba(237,28,37,0.08)",
-    borderRadius: 8,
-    paddingHorizontal: 8,
+    backgroundColor: staticColors.rgba_qyx95c,
+    borderRadius: t.radius.sm,
+    paddingHorizontal: t.spacing.xs,
   },
   equipmentOptionName: {
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     fontWeight: "800",
   },
   equipmentOptionMeta: {
-    marginTop: 2,
-    fontSize: 12,
+    marginTop: t.spacing.none,
+    fontSize: t.typography.metadata.fontSize,
   },
 
   checkRowWrapper: {
-    paddingVertical: 10,
+    paddingVertical: t.spacing.xs,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
   },
@@ -1728,68 +1656,68 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     flex: 1,
-    paddingRight: 6,
-    marginBottom: 6,
+    paddingRight: t.spacing.xxs,
+    marginBottom: t.spacing.xxs,
   },
   checkIconWrap: {
-    paddingRight: 8,
+    paddingRight: t.spacing.xs,
   },
   checkIconEmpty: {
     width: 30,
     height: 30,
-    borderRadius: 15,
+    borderRadius: t.radius.pill,
     borderWidth: 2.5,
     borderColor: COLORS.textMid,
   },
   checkIconFilled: {
     width: 30,
     height: 30,
-    borderRadius: 15,
+    borderRadius: t.radius.pill,
     backgroundColor: COLORS.primaryAction,
     alignItems: "center",
     justifyContent: "center",
   },
   checkLabel: {
     flex: 1,
-    fontSize: 14,
+    fontSize: t.typography.body.fontSize,
     color: COLORS.textLow,
   },
   ratingRow: {
     flexDirection: "row",
     alignItems: "center",
     flexWrap: "wrap",
-    gap: 6,
-    marginBottom: 6,
+    gap: t.spacing.xxs,
+    marginBottom: t.spacing.xxs,
   },
   conditionPill: {
     minHeight: 32,
-    borderRadius: 999,
+    borderRadius: t.radius.pill,
     borderWidth: 2,
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 10,
-    paddingVertical: 5,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
   },
   conditionText: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "800",
   },
   conditionTextActive: {
     color: COLORS.textHigh,
   },
   naPill: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 999,
+    paddingHorizontal: t.spacing.sm,
+    paddingVertical: t.spacing.xxs,
+    borderRadius: t.radius.pill,
     borderWidth: 2,
     borderColor: COLORS.border,
   },
   naPillActive: {
-    backgroundColor: "rgba(142,142,147,0.2)",
+    backgroundColor: staticColors.rgba_1tlzw3k,
     borderColor: COLORS.textMid,
   },
   naText: {
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
     color: COLORS.textLow,
   },
   naTextActive: {
@@ -1797,10 +1725,10 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
   photoIconButton: {
-    marginLeft: 6,
+    marginLeft: t.spacing.xxs,
     width: 30,
     height: 30,
-    borderRadius: 15,
+    borderRadius: t.radius.pill,
     borderWidth: 1.5,
     borderColor: COLORS.border,
     alignItems: "center",
@@ -1808,21 +1736,21 @@ const styles = StyleSheet.create({
   },
   photoBadge: {
     position: "absolute", top: -5, right: -5,
-    minWidth: 15, height: 15, borderRadius: 8,
+    minWidth: 15, height: 15, borderRadius: t.radius.sm,
     backgroundColor: COLORS.primaryAction,
     alignItems: "center", justifyContent: "center",
-    paddingHorizontal: 3,
+    paddingHorizontal: t.spacing.xxs,
   },
-  photoBadgeText: { color: "#fff", fontSize: 9, fontWeight: "800" },
+  photoBadgeText: { color: staticColors.hex_fff_yhjmu8, fontSize: t.typography.micro.fontSize, fontWeight: "800" },
   checkNoteInput: {
-    marginTop: 4,
-    backgroundColor: "#FFFFFF",
-    borderRadius: 8,
+    marginTop: t.spacing.xxs,
+    backgroundColor: staticColors.hex_ffffff_5c2ocm,
+    borderRadius: t.radius.sm,
     borderWidth: 1,
     borderColor: COLORS.border,
-    paddingHorizontal: 8,
-    paddingVertical: 8,
-    fontSize: 14,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xs,
+    fontSize: t.typography.body.fontSize,
     color: COLORS.textHigh,
     textAlignVertical: "top",
     minHeight: 48,
@@ -1833,93 +1761,93 @@ const styles = StyleSheet.create({
   reportRow: {
     flexDirection: "row",
     alignItems: "flex-start",
-    gap: 10,
-    paddingVertical: 10,
+    gap: t.spacing.xs,
+    paddingVertical: t.spacing.xs,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
   },
   reportBadge: {
     width: 28,
     height: 28,
-    borderRadius: 14,
+    borderRadius: t.radius.pill,
     alignItems: "center",
     justifyContent: "center",
   },
   reportBadgeText: {
     color: COLORS.textHigh,
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "900",
   },
   reportTitle: {
-    fontSize: 13,
+    fontSize: t.typography.bodySmall.fontSize,
     fontWeight: "900",
   },
   reportDetails: {
-    marginTop: 2,
-    fontSize: 12,
+    marginTop: t.spacing.none,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "600",
-    lineHeight: 17,
+    lineHeight: t.typography.metadata.lineHeight,
   },
 
-  resultRow: { flexDirection: "row", gap: 10 },
+  resultRow: { flexDirection: "row", gap: t.spacing.xs },
   resultButton: {
-    flex: 1, borderWidth: 2, borderRadius: 8,
-    paddingVertical: 14, alignItems: "center",
+    flex: 1, borderWidth: 2, borderRadius: t.radius.sm,
+    paddingVertical: t.spacing.sm, alignItems: "center",
   },
-  resultButtonText: { fontSize: 16, fontWeight: "700" },
+  resultButtonText: { fontSize: t.typography.bodyLarge.fontSize, fontWeight: "700" },
 
   signatureInfo: {
-    fontSize: 11,
+    fontSize: t.typography.caption.fontSize,
     color: COLORS.textMid,
   },
 
-  photoButtonsRow: { flexDirection: "row", gap: 8 },
+  photoButtonsRow: { flexDirection: "row", gap: t.spacing.xs },
   photoButton: {
     flex: 1,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: 8,
+    borderRadius: t.radius.sm,
     borderWidth: 1,
     borderColor: COLORS.border,
-    paddingVertical: 10,
-    backgroundColor: "#FFFFFF",
+    paddingVertical: t.spacing.xs,
+    backgroundColor: staticColors.hex_ffffff_5c2ocm,
   },
-  photoAddText: { color: COLORS.textHigh, fontSize: 14, fontWeight: "600" },
-  photoThumbWrapper: { marginRight: 10, position: "relative" },
-  photoThumb: { width: 70, height: 70, borderRadius: 8 },
+  photoAddText: { color: COLORS.textHigh, fontSize: t.typography.body.fontSize, fontWeight: "600" },
+  photoThumbWrapper: { marginRight: t.spacing.xs, position: "relative" },
+  photoThumb: { width: 70, height: 70, borderRadius: t.radius.sm },
   photoRemoveBadge: {
     position: "absolute", top: -4, right: -4,
-    width: 18, height: 18, borderRadius: 9,
-    backgroundColor: "rgba(0,0,0,0.75)",
+    width: 18, height: 18, borderRadius: t.radius.pill,
+    backgroundColor: staticColors.rgba_18a7ub6,
     alignItems: "center", justifyContent: "center",
   },
 
   submitButton: {
-    marginTop: 10,
+    marginTop: t.spacing.xs,
     backgroundColor: COLORS.primaryAction,
-    borderRadius: 10,
-    paddingVertical: 16,
+    borderRadius: t.radius.md,
+    paddingVertical: t.spacing.md,
     alignItems: "center",
     flexDirection: "row",
     justifyContent: "center",
   },
-  submitText: { color: COLORS.textHigh, fontSize: 15, fontWeight: "700" },
+  submitText: { color: COLORS.textHigh, fontSize: t.typography.bodyLarge.fontSize, fontWeight: "700" },
 
   modalOverlay: {
-    flex: 1, backgroundColor: "rgba(0,0,0,0.6)",
+    flex: 1, backgroundColor: staticColors.rgba_11xlyme,
     justifyContent: "flex-end",
   },
   modalSheet: {
     borderTopLeftRadius: 16, borderTopRightRadius: 16,
-    padding: 20, paddingBottom: Platform.OS === "ios" ? 36 : 20,
+    padding: t.spacing.lg, paddingBottom: Platform.OS === "ios" ? 36 : 20,
   },
-  modalTitle: { fontSize: 15, fontWeight: "700", marginBottom: 16 },
+  modalTitle: { fontSize: t.typography.bodyLarge.fontSize, fontWeight: "700", marginBottom: t.spacing.md },
   modalOption: {
     flexDirection: "row", alignItems: "center",
-    paddingVertical: 14, borderTopWidth: StyleSheet.hairlineWidth,
+    paddingVertical: t.spacing.sm, borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: COLORS.border,
   },
-  modalOptionText: { fontSize: 15 },
-  modalCancelText: { fontSize: 14, textAlign: "center", flex: 1 },
+  modalOptionText: { fontSize: t.typography.bodyLarge.fontSize },
+  modalCancelText: { fontSize: t.typography.body.fontSize, textAlign: "center", flex: 1 },
 });

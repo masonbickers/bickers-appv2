@@ -1,63 +1,34 @@
-// components/app/service-footer.jsx
 import { usePathname, useRouter } from "expo-router";
 import { useMemo } from "react";
-import { Platform, StyleSheet, Text, TouchableOpacity, View } from "react-native";
-import Ionicons from "react-native-vector-icons/Ionicons";
 
 import { useServiceCollection } from "../../hooks/useServiceData";
 import { countOpenMonitorItems } from "../../lib/serviceAdvisories";
-import { useTheme } from "../../providers/ThemeProvider";
+import BottomNavigationBar from "./BottomNavigationBar";
+import SyncStatusControl from "./SyncStatusControl";
 
-const FOOTER_BAR_HEIGHT = 64;
-
-function normaliseKey(value) {
-  return String(value || "")
-    .trim()
-    .toLowerCase();
-}
-
-function isApprovedDefect(review) {
+const normaliseKey = (value) => String(value || "").trim().toLowerCase();
+const isApprovedDefect = (review) => {
   const status = normaliseKey(review?.status);
   const category = normaliseKey(review?.category);
-  return (
-    status === "approved" &&
-    (category === "general" || category === "immediate")
+  return status === "approved" && (category === "general" || category === "immediate");
+};
+const isOpenMaintenance = (status) => !["resolved", "complete", "completed"].includes(normaliseKey(status));
+const countOpenCheckDefects = (checks) =>
+  checks.reduce(
+    (sum, check) =>
+      sum +
+      (Array.isArray(check.items) ? check.items : []).filter(
+        (item) => isApprovedDefect(item?.review) && isOpenMaintenance(item?.maintenance?.status)
+      ).length,
+    0
   );
-}
-
-function isOpenMaintenance(status) {
-  const value = normaliseKey(status);
-  return value !== "resolved" && value !== "complete" && value !== "completed";
-}
-
-function countOpenCheckDefects(checks) {
-  return checks.reduce((sum, check) => {
-    const items = Array.isArray(check.items) ? check.items : [];
-    const openItems = items.filter(
-      (item) =>
-        isApprovedDefect(item?.review) &&
-        isOpenMaintenance(item?.maintenance?.status)
-    );
-    return sum + openItems.length;
-  }, 0);
-}
-
-function countOpenIssueDefects(issues) {
-  return issues.filter(
-    (issue) =>
-      isApprovedDefect(issue?.review) &&
-      isOpenMaintenance(issue?.maintenance?.status)
-  ).length;
-}
-
-function countOpenManualDefects(reports) {
-  return reports.filter((report) => isOpenMaintenance(report?.status)).length;
-}
+const countOpenIssueDefects = (issues) =>
+  issues.filter((issue) => isApprovedDefect(issue?.review) && isOpenMaintenance(issue?.maintenance?.status)).length;
+const countOpenManualDefects = (reports) => reports.filter((report) => isOpenMaintenance(report?.status)).length;
 
 export default function ServiceFooter() {
   const router = useRouter();
   const pathname = usePathname();
-  const { colors } = useTheme();
   const vehicleChecks = useServiceCollection("vehicleChecks").data;
   const vehicleIssues = useServiceCollection("vehicleIssues").data;
   const defectReports = useServiceCollection("defectReports").data;
@@ -73,157 +44,31 @@ export default function ServiceFooter() {
     [defectReports, equipmentInspections, serviceRecords, vehicleChecks, vehicleIssues]
   );
 
-  // 🔧 Tabs dedicated to Service / Workshop area
-  // URLs are /service/... (group (protected) is hidden from URL)
   const tabs = [
-    {
-      route: "/service/home",          // app/(protected)/service/home.jsx
-      label: "Home",
-      iconActive: "home",
-      iconInactive: "home-outline",
-    },
-    {
-      // e.g. app/(protected)/service/work.jsx or index for overview
-      route: "/service/work",
-      label: "Overview",
-      iconActive: "construct",
-      iconInactive: "construct-outline",
-    },
-    {
-      // app/(protected)/service/book-work.jsx
-      route: "/service/book-work",
-      label: "Book Work",
-      iconActive: "clipboard",
-      iconInactive: "clipboard-outline",
-    },
-    {
-      // app/(protected)/service/service-list.jsx
-      route: "/service/service-list",
-      label: "Schedule",
-      iconActive: "list",
-      iconInactive: "list-outline",
-    },
+    { route: "/service/home", label: "Home", iconActive: "home", iconInactive: "home-outline", symbol: { active: "house.fill", inactive: "house" } },
+    { route: "/service/work", label: "Forms", iconActive: "construct", iconInactive: "construct-outline", symbol: { active: "wrench.and.screwdriver.fill", inactive: "wrench.and.screwdriver" } },
+    { route: "/service/book-work", label: "To-Do", iconActive: "clipboard", iconInactive: "clipboard-outline", symbol: { active: "clipboard.fill", inactive: "clipboard" } },
+    { route: "/service/service-list", label: "Fleet", iconActive: "list", iconInactive: "list-outline", symbol: { active: "list.bullet.rectangle.fill", inactive: "list.bullet.rectangle" } },
     {
       route: "/service/issues",
       label: "Issues",
       iconActive: "alert-circle",
       iconInactive: "alert-circle-outline",
+      symbol: { active: "exclamationmark.circle.fill", inactive: "exclamationmark.circle" },
+      badge: issueCount > 0 ? (issueCount > 99 ? "99+" : String(issueCount)) : null,
+      accessibilityLabel: issueCount > 0 ? `Issues, ${issueCount} open` : "Issues",
     },
   ];
-
-  const activeColor = colors.accent;
-  const inactiveColor = colors.textMuted;
-  const bg = colors.surface;
+  const activeIndex = tabs.findIndex(
+    (tab) => pathname === tab.route || pathname?.startsWith(`${tab.route}/`)
+  );
 
   return (
-    <View style={[styles.container, { backgroundColor: bg }]}>
-      <View
-        style={[
-          styles.footer,
-          {
-            backgroundColor: bg,
-            borderTopColor: colors.border,
-            shadowColor: "#000",
-          },
-        ]}
-      >
-        {tabs.map((t) => {
-          // ✅ pathname comes back like "/service/home"
-          const isActive =
-            pathname === t.route ||
-            (t.route !== "/" && pathname?.startsWith(t.route + "/"));
-
-          const handlePress = () => {
-            if (isActive) return;
-            router.navigate(t.route);
-          };
-
-          return (
-            <TouchableOpacity
-              key={t.route}
-              style={styles.tab}
-              activeOpacity={isActive ? 1 : 0.6}
-              onPress={handlePress}
-              accessibilityRole="button"
-              accessibilityState={{ selected: isActive }}
-              accessibilityLabel={
-                t.route === "/service/issues" && issueCount > 0
-                  ? `${t.label}, ${issueCount} open`
-                  : t.label
-              }
-            >
-              <View style={styles.iconWrap}>
-                <Ionicons
-                  name={isActive ? t.iconActive : t.iconInactive}
-                  size={26}
-                  color={isActive ? activeColor : inactiveColor}
-                />
-                {t.route === "/service/issues" && issueCount > 0 && (
-                  <View style={styles.badge}>
-                    <Text style={styles.badgeText}>
-                      {issueCount > 99 ? "99+" : issueCount}
-                    </Text>
-                  </View>
-                )}
-              </View>
-            </TouchableOpacity>
-          );
-        })}
-      </View>
-    </View>
+    <BottomNavigationBar
+      tabs={tabs}
+      activeIndex={activeIndex}
+      floatingContent={<SyncStatusControl />}
+      onSelect={(tab) => router.navigate(tab.route)}
+    />
   );
 }
-
-const styles = StyleSheet.create({
-  container: { paddingTop: 0 },
-  footer: {
-    height: FOOTER_BAR_HEIGHT,
-    flexDirection: "row",
-    alignItems: "center",
-    borderTopWidth: StyleSheet.hairlineWidth,
-    marginHorizontal: 0,
-    borderRadius: 0,
-    paddingVertical: 0,
-    paddingHorizontal: 4,
-    ...Platform.select({
-      ios: {
-        shadowOpacity: 0.08,
-        shadowRadius: 10,
-        shadowOffset: { width: 0, height: -2 },
-      },
-      android: { elevation: 8 },
-    }),
-  },
-  tab: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 0,
-  },
-  iconWrap: {
-    width: 38,
-    height: 34,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  badge: {
-    position: "absolute",
-    top: -4,
-    right: -2,
-    minWidth: 17,
-    height: 17,
-    borderRadius: 9,
-    paddingHorizontal: 4,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#ED1C25",
-    borderWidth: 1,
-    borderColor: "#FFFFFF",
-  },
-  badgeText: {
-    color: "#FFFFFF",
-    fontSize: 10,
-    lineHeight: 12,
-    fontWeight: "800",
-  },
-});

@@ -1,38 +1,54 @@
 // app/screens/job-day.js
-import { useRouter } from "expo-router";
-import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  RefreshControl,
-  ScrollView,
+  useRouter } from "expo-router";
+import { useCallback,
+  useEffect,
+  useMemo,
+  useState } from "react";
+import {
   StyleSheet,
-  Text,
-  TouchableOpacity,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "react-native-vector-icons/Feather";
 
 import PageHeaderCard from "../../components/PageHeaderCard";
-import { AsyncContentState, EmptyState, LoadingState } from "../../components/AsyncState";
-import { AppButton, IconButton } from "../../components/ui/AppPrimitives";
+import { EmptyState, LoadingState } from "../../components/AsyncState";
+import PageShell from "../../components/layout/PageShell";
+import { AppButton, IconButton,
+  AppText as Text,
+  AppPressable as TouchableOpacity,
+} from "../../components/ui/AppPrimitives";
 import {
   useBookings,
   useCompanyCollection,
   useHolidays,
   useVehicles,
 } from "../../hooks/useOperationalData";
-import { useResponsiveLayout } from "../../hooks/useResponsiveLayout";
 import { isCrewedBooking } from "../../lib/bookingVisibility";
+import {
+  collapseLinkedJobsForDay,
+  displayJobNumber,
+} from "../../lib/linkedBookingDays";
 import { designTokens as t } from "../../lib/design/tokens";
+import {
+  findVehicleRecord as resolveVehicleRecord,
+  getBookingVehicleReferences,
+  getVehicleDisplayList as resolveVehicleDisplayList,
+  getVehicleDisplayName,
+  getVehicleRegistration,
+} from "../../lib/fleetSchema";
 import { useAuth } from "../../providers/AuthProvider";
 import { useTheme } from "../../providers/ThemeProvider";
+import { staticColors } from "../../lib/design/staticColors";
+import { withAlpha } from "../../lib/design/color";
+import { findVehiclePrepRecord } from "../../lib/vehiclePrep";
 
 /* -------------------------------------------------------------------------- */
 /*                                  CONSTANTS                                 */
 /* -------------------------------------------------------------------------- */
 
-const CALL_BADGE_BG = "#FFD60A"; // keeps that punchy yellow for call time
-const RECCE_BG = "#FF453A"; // recce button accent
+const CALL_BADGE_BG = staticColors.hex_ffd60a_5c6r45; // keeps that punchy yellow for call time
+const RECCE_BG = staticColors.hex_ff453a_5bsa1h; // recce button accent
 
 /* ───────────────────────────────
    BANK HOLIDAYS (UK via GOV.UK)
@@ -91,15 +107,6 @@ const toISODate = (d) => {
   return `${y}-${m}-${dd}`;
 };
 
-function withAlpha(hex, alpha) {
-  const safeAlpha = Math.max(0, Math.min(1, Number(alpha) || 0));
-  const raw = String(hex || "").replace("#", "");
-  if (!/^[0-9a-fA-F]{6}$/.test(raw)) return `rgba(255,255,255,${safeAlpha})`;
-  const r = parseInt(raw.slice(0, 2), 16);
-  const g = parseInt(raw.slice(2, 4), 16);
-  const b = parseInt(raw.slice(4, 6), 16);
-  return `rgba(${r},${g},${b},${safeAlpha})`;
-}
 
 const isWeekend = (date) => {
   const d = date instanceof Date ? date : new Date(date);
@@ -352,93 +359,34 @@ function toJsDate(value) {
   return new Date(value);
 }
 
-// turn any booking into an array of per-day dates within a window
-function getBookingDaysWithinWindow(booking, from, to) {
-  const days = [];
-  const fromDay = startOfDay(from);
-  const toDay = startOfDay(to);
-
+function getBookingDepartureDay(booking) {
   if (Array.isArray(booking.bookingDates) && booking.bookingDates.length > 0) {
-    booking.bookingDates.forEach((ds) => {
-      const d = startOfDay(toJsDate(ds));
-      if (!Number.isNaN(d.getTime()) && d >= fromDay && d <= toDay) {
-        days.push(d);
-      }
-    });
-    return days;
+    const dates = booking.bookingDates
+      .map((value) => startOfDay(toJsDate(value)))
+      .filter((date) => !Number.isNaN(date.getTime()))
+      .sort((a, b) => a - b);
+    return dates[0] || null;
   }
 
   const startRaw = booking.startDate || booking.date;
-  const endRaw = booking.endDate || booking.startDate || booking.date;
-
-  if (!startRaw) return days;
-
-  let start = startOfDay(toJsDate(startRaw));
-  let end = endRaw ? startOfDay(toJsDate(endRaw)) : start;
-
-  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return days;
-
-  if (end < fromDay || start > toDay) return days;
-
-  if (start < fromDay) start = fromDay;
-  if (end > toDay) end = toDay;
-
-  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-    days.push(new Date(d));
-  }
-
-  return days;
+  if (!startRaw) return null;
+  const start = startOfDay(toJsDate(startRaw));
+  return Number.isNaN(start.getTime()) ? null : start;
 }
 
 // normalise vehicles on booking to attach full DB record where possible
 function normalizeVehicles(list, vehiclesData) {
   if (!Array.isArray(list)) return [];
-  return list.map((vRaw) => {
-    if (
-      vRaw &&
-      typeof vRaw === "object" &&
-      (vRaw.name || vRaw.registration || vRaw.id || vRaw.vehicleId)
-    ) {
-      const match = findVehicleRecord(vRaw, vehiclesData);
-      return match ? { ...match, ...vRaw } : vRaw;
-    }
-    const needle = String(vRaw ?? "").trim();
-    const match = findVehicleRecord(needle, vehiclesData);
-    return match || { name: needle };
-  });
-}
-
-function findVehicleRecord(vehicleRef, vehiclesData) {
-  const list = Array.isArray(vehiclesData) ? vehiclesData : [];
-  if (!vehicleRef) return null;
-
-  const id =
-    typeof vehicleRef === "object"
-      ? vehicleRef.id || vehicleRef.vehicleId || vehicleRef.value
-      : vehicleRef;
-  const reg =
-    typeof vehicleRef === "object"
-      ? vehicleRef.registration || vehicleRef.reg || vehicleRef.plate || vehicleRef.license
-      : vehicleRef;
-  const name = typeof vehicleRef === "object" ? vehicleRef.name : vehicleRef;
-
-  const idNeedle = String(id ?? "").trim();
-  const regNeedle = String(reg ?? "").trim().toUpperCase();
-  const nameNeedle = String(name ?? "").trim().toLowerCase();
-
-  return (
-    (idNeedle && list.find((x) => x.id === idNeedle)) ||
-    (regNeedle &&
-      list.find(
-        (x) =>
-          String(x.registration ?? x.reg ?? x.plate ?? x.license ?? "")
-            .trim()
-            .toUpperCase() === regNeedle
-      )) ||
-    (nameNeedle &&
-      list.find((x) => String(x.name ?? "").trim().toLowerCase() === nameNeedle)) ||
-    null
-  );
+  return list
+    .map((vehicleRef) => {
+      const match = resolveVehicleRecord(vehicleRef, vehiclesData);
+      if (match && vehicleRef && typeof vehicleRef === "object") {
+        return { ...vehicleRef, ...match };
+      }
+      if (match) return match;
+      return vehicleRef && typeof vehicleRef === "object" ? vehicleRef : null;
+    })
+    .filter(Boolean);
 }
 
 function isHgvVehicle(vehicle) {
@@ -475,33 +423,7 @@ function jobHasHgvVehicle(job, vehiclesData) {
 
 /** ✅ Display vehicles by NAME/REG but keep bookings stored by ID */
 function getVehicleDisplayList(job, vehiclesData) {
-  const list =
-    job?.vehicles ||
-    job?.vehicleIds ||
-    job?.selectedVehicles ||
-    job?.vehicleIDs ||
-    [];
-
-  const norm = normalizeVehicles(list, vehiclesData);
-
-  return norm
-    .map((v) => {
-      const name =
-        v?.name ||
-        [v?.manufacturer, v?.model].filter(Boolean).join(" ") ||
-        (typeof v === "string" ? v : "") ||
-        "";
-
-      const reg = v?.registration || v?.reg || v?.plate || v?.license || "";
-
-      const cleanName = String(name || "").trim();
-      const cleanReg = String(reg || "").trim();
-
-      if (!cleanName && !cleanReg) return null;
-      if (cleanName && cleanReg) return `${cleanName} · ${cleanReg}`;
-      return cleanName || cleanReg;
-    })
-    .filter(Boolean);
+  return resolveVehicleDisplayList(getBookingVehicleReferences(job), vehiclesData);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -542,61 +464,49 @@ const JobCard = ({ job, dateISO, router, colors, vehiclesData }) => {
       key={job.id}
       style={[
         styles.jobCard,
-        { backgroundColor: colors.surface, borderColor: colors.border },
+        { backgroundColor: colors.surfaceAlt, borderColor: colors.border },
       ]}
     >
       {/* Top row: job + call time */}
       <View style={[styles.titleRow, { borderBottomColor: colors.border }]}>
-        <View style={{ flexDirection: "row", alignItems: "center" }}>
-          <View style={[styles.jobDot, { backgroundColor: colors.accent }]} />
-          <Text style={[styles.jobTitle, { color: colors.text }]}>
-            Job #{job.jobNumber || "N/A"}
-          </Text>
+        <View style={styles.jobHeading}>
+          <View style={styles.jobTitleLine}>
+            <View style={[styles.jobDot, { backgroundColor: staticColors.hex_3568be_8u10kp }]} />
+            <Text style={[styles.jobTitle, { color: colors.text }]} numberOfLines={2}>
+              {job.client || `Job #${displayJobNumber(job)}`}
+            </Text>
+          </View>
+          {job.client ? (
+            <Text style={[styles.jobNumber, { color: colors.textMuted }]}>
+              Job #{displayJobNumber(job)}
+            </Text>
+          ) : null}
         </View>
 
         {callTime ? (
           <View style={[styles.callBadge, { backgroundColor: CALL_BADGE_BG }]}>
-            <Icon name="clock" size={12} color="#111" style={{ marginRight: 4 }} />
-            <Text style={styles.callBadgeText}>{callTime}</Text>
+            <Icon name="clock" size={12} color={staticColors.hex_111_yhln9z} style={{ marginRight: t.spacing.xxs }} />
+            <Text style={styles.callBadgeText}>CALL {callTime}</Text>
           </View>
         ) : null}
       </View>
 
       {/* Details */}
       <View style={styles.detailsContainer}>
-        {job.client && (
-          <Text style={[styles.jobLine, { color: colors.textMuted }]}>
-            <Text style={[styles.jobLabel, { color: colors.textMuted }]}>
-              Production
-            </Text>{" "}
-            <Text style={[styles.jobValue, { color: colors.text }]}>{job.client}</Text>
-          </Text>
-        )}
         {job.location && (
-          <Text style={[styles.jobLine, { color: colors.textMuted }]}>
-            <Text style={[styles.jobLabel, { color: colors.textMuted }]}>
-              Location
-            </Text>{" "}
-            <Text style={[styles.jobValue, { color: colors.text }]}>{job.location}</Text>
-          </Text>
+          <JobDetailRow icon="map-pin" value={job.location} colors={colors} />
         )}
 
         {vehiclesDisplay.length > 0 && (
-          <Text style={[styles.jobLine, { color: colors.textMuted }]}>
-            <Text style={[styles.jobLabel, { color: colors.textMuted }]}>Vehicles</Text>{" "}
-            <Text style={[styles.jobValue, { color: colors.text }]}>
-              {vehiclesDisplay.join(", ")}
-            </Text>
-          </Text>
+          <JobDetailRow icon="truck" value={vehiclesDisplay.join(" · ")} colors={colors} />
         )}
 
         {Array.isArray(job.employees) && job.employees.length > 0 && (
-          <Text style={[styles.jobLine, { color: colors.textMuted }]}>
-            <Text style={[styles.jobLabel, { color: colors.textMuted }]}>Crew</Text>{" "}
-            <Text style={[styles.jobValue, { color: colors.text }]}>
-              {job.employees.map((e) => e?.displayName || e?.name || e).join(", ")}
-            </Text>
-          </Text>
+          <JobDetailRow
+            icon="users"
+            value={job.employees.map((e) => e?.displayName || e?.name || e).join(" · ")}
+            colors={colors}
+          />
         )}
       </View>
 
@@ -612,7 +522,7 @@ const JobCard = ({ job, dateISO, router, colors, vehiclesData }) => {
             name="message-circle"
             size={14}
             color={colors.text}
-            style={{ marginRight: 8, marginTop: 1 }}
+            style={{ marginRight: t.spacing.xs, marginTop: t.spacing.none }}
           />
           <View style={{ flex: 1 }}>
             {dayNote && (
@@ -665,14 +575,25 @@ const JobCard = ({ job, dateISO, router, colors, vehiclesData }) => {
   );
 };
 
+function JobDetailRow({ icon, value, colors }) {
+  if (!value) return null;
+  return (
+    <View style={styles.jobDetailRow}>
+      <Icon name={icon} size={15} color={colors.textMuted} />
+      <Text style={[styles.jobDetailText, { color: colors.text }]}>{value}</Text>
+    </View>
+  );
+}
+
 /* -------------------------------------------------------------------------- */
 /*                             VEHICLE PREP ROW (UI)                          */
 /* -------------------------------------------------------------------------- */
 
-function VehiclePrepRow({ item, colors, prepDone }) {
+function VehiclePrepRow({ item, colors, prepRecord }) {
   const router = useRouter();
+  const prepDone = prepRecord?.completed === true;
 
-  const dateText = new Date(item.date).toLocaleDateString("en-GB", {
+  const dateText = toDateSafe(item.date)?.toLocaleDateString("en-GB", {
     weekday: "short",
     day: "2-digit",
     month: "short",
@@ -684,6 +605,7 @@ function VehiclePrepRow({ item, colors, prepDone }) {
     const base = `/vehicle-prep/${encodeURIComponent(item.vehicleId || "vehicle")}`;
     const params = new URLSearchParams({
       date: item.date,
+      bookingId: item.bookingId || "",
       vehicleName: item.vehicleName || "",
       registration: item.registration || "",
       vehicleId: item.vehicleId || "",
@@ -711,25 +633,88 @@ function VehiclePrepRow({ item, colors, prepDone }) {
 
         <View style={styles.prepBadgeRow}>
           {prepDone ? (
-            <View style={styles.prepDoneBadge}>
-              <Icon name="check-circle" size={12} color="#0b0b0b" />
-              <Text style={styles.prepDoneText}>Prepped</Text>
+            <View
+              style={[
+                styles.prepReadyState,
+                {
+                  backgroundColor: withAlpha(colors.success, 0.14),
+                  borderColor: withAlpha(colors.success, 0.38),
+                },
+              ]}
+            >
+              <Icon name="check-circle" size={13} color={colors.success} />
+              <Text style={[styles.prepReadyText, { color: colors.success }]}>
+                {prepRecord?.completedByName
+                  ? `Prepped by ${prepRecord.completedByName}`
+                  : "Prepped"}
+              </Text>
             </View>
           ) : showComplianceWarning ? (
             <View style={styles.prepComplianceBad}>
-              <Icon name="alert-triangle" size={12} color="#fff" />
+              <Icon name="alert-triangle" size={12} color={staticColors.hex_fff_yhjmu8} />
               <Text style={styles.prepComplianceText}>CHECK TAX / INS</Text>
             </View>
           ) : (
-            <View style={styles.prepComplianceOk}>
-              <Icon name="check" size={12} color="#0b0b0b" />
-              <Text style={styles.prepComplianceOkText}>Compliance OK</Text>
+            <View
+              style={[
+                styles.prepReadyState,
+                {
+                  backgroundColor: withAlpha(colors.warning, 0.12),
+                  borderColor: withAlpha(colors.warning, 0.34),
+                },
+              ]}
+            >
+              <Icon name="clipboard" size={13} color={colors.warning} />
+              <Text style={[styles.prepReadyText, { color: colors.warning }]}>Prep required</Text>
             </View>
           )}
         </View>
       </View>
-      <Icon name="chevron-right" size={18} color={colors.textMuted} style={{ marginLeft: 6 }} />
+      <View style={styles.prepAction}>
+        <Text
+          style={[
+            styles.prepActionText,
+            { color: prepDone ? colors.success : colors.accent },
+          ]}
+        >
+          {prepDone ? "Review" : "Prep"}
+        </Text>
+        <Icon name="chevron-right" size={18} color={colors.textMuted} />
+      </View>
     </TouchableOpacity>
+  );
+}
+
+function VehiclePrepGroups({ title, groups, records, colors, emptyMessage }) {
+  return (
+    <View style={styles.prepRangeSection}>
+      <Text style={[styles.prepRangeLabel, { color: colors.text }]}>{title}</Text>
+      {groups.length === 0 ? (
+        <Text style={[styles.prepRangeEmpty, { color: colors.textMuted }]}>{emptyMessage}</Text>
+      ) : (
+        groups.map((group) => {
+          const label = toDateSafe(group.date)?.toLocaleDateString("en-GB", {
+            weekday: "short",
+            day: "2-digit",
+            month: "short",
+          });
+
+          return (
+            <View key={group.date} style={styles.prepGroup}>
+              <Text style={[styles.prepDateLabel, { color: colors.textMuted }]}>{label}</Text>
+              {group.items.map((item) => (
+                <VehiclePrepRow
+                  key={item.key}
+                  item={item}
+                  colors={colors}
+                  prepRecord={findVehiclePrepRecord(records, item)}
+                />
+              ))}
+            </View>
+          );
+        })
+      )}
+    </View>
   );
 }
 
@@ -741,12 +726,11 @@ export default function JobDayScreen() {
   const router = useRouter();
   const { employee, isAuthed, loading } = useAuth();
   const { colors } = useTheme();
-  const responsive = useResponsiveLayout();
   const bookingsResource = useBookings();
   const holidaysResource = useHolidays();
   const vehiclesResource = useVehicles();
   const vehicleChecksResource = useCompanyCollection("vehicleChecks");
-  const prepChecksResource = useCompanyCollection("vehiclePrepChecks");
+  const prepRecordsResource = useCompanyCollection("vehiclePrepRecords");
 
   const [selectedDate, setSelectedDate] = useState(() => new Date());
   const [jobs, setJobs] = useState([]);
@@ -762,9 +746,6 @@ export default function JobDayScreen() {
   const [bookings, setBookings] = useState([]);
   const [vehiclesData, setVehiclesData] = useState([]);
   const [prepLoading, setPrepLoading] = useState(true);
-
-  // vehicle prep completion status map: `${date}__${vehicleId}` -> true
-  const [prepChecksMap, setPrepChecksMap] = useState({});
 
   const dateISO = useMemo(() => toISODate(selectedDate), [selectedDate]);
 
@@ -843,11 +824,13 @@ export default function JobDayScreen() {
         });
       }
 
+      const visibleJobs = collapseLinkedJobsForDay(todaysJobs, dateISO);
+
       // vehicle check map
-      const jobIds = todaysJobs.map((j) => j.id);
+      const jobIds = visibleJobs.map((j) => j.id);
       const vehicleChecksMap = loadVehicleChecksForJobs(jobIds);
 
-      const jobsWithCheckFlag = todaysJobs.map((job) => ({
+      const jobsWithCheckFlag = visibleJobs.map((job) => ({
         ...job,
         vehicleChecked: !!vehicleChecksMap[job.id],
       }));
@@ -882,41 +865,29 @@ export default function JobDayScreen() {
     loadJobs();
   }, [loadJobs]);
 
-  // 🔄 Load bookings + vehicles for Vehicle prep (next 3 days)
+  // 🔄 Load bookings + vehicles for all upcoming Vehicle prep departures
   useEffect(() => {
     setBookings(bookingsResource.data.filter(isCrewedBooking));
     setVehiclesData(vehiclesResource.data);
     setPrepLoading(
-      bookingsResource.isInitialLoading || vehiclesResource.isInitialLoading
+      bookingsResource.isInitialLoading ||
+        vehiclesResource.isInitialLoading ||
+        prepRecordsResource.isInitialLoading
     );
   }, [
     bookingsResource.data,
     bookingsResource.isInitialLoading,
+    prepRecordsResource.isInitialLoading,
     vehiclesResource.data,
     vehiclesResource.isInitialLoading,
   ]);
-
-  // 🔄 Load prep completion status (runs on focus)
-  const refreshPrepChecks = useCallback(() => {
-    const map = {};
-    prepChecksResource.data.forEach((check) => {
-      if (check.date && check.vehicleId && check.completed) {
-        map[`${check.date}__${check.vehicleId}`] = true;
-      }
-    });
-    setPrepChecksMap(map);
-  }, [prepChecksResource.data]);
-
-  useEffect(() => {
-    refreshPrepChecks();
-  }, [refreshPrepChecks]);
 
   const prepItems = useMemo(() => {
     if (!bookings.length) return [];
 
     const today = startOfDay(new Date());
     const windowStart = startOfDay(addDays(today, 1)); // tomorrow
-    const windowEnd = startOfDay(addDays(today, 3)); // next 3 days
+    const soonWindowEnd = startOfDay(addDays(today, 3));
 
     const validStatuses = new Set(["Confirmed"]); // confirmed jobs only
     const items = [];
@@ -925,42 +896,43 @@ export default function JobDayScreen() {
       const status = b.status || "Confirmed";
       if (!validStatuses.has(status)) return;
 
-      const days = getBookingDaysWithinWindow(b, windowStart, windowEnd);
-      if (!days.length) return;
+      const departureDay = getBookingDepartureDay(b);
+      if (!departureDay || departureDay < windowStart) return;
 
-      const normVehicles = normalizeVehicles(b.vehicles || [], vehiclesData);
+      const normVehicles = normalizeVehicles(
+        getBookingVehicleReferences(b),
+        vehiclesData
+      );
       if (!normVehicles.length) return;
 
-      days.forEach((day) => {
-        const dateKey = day.toISOString().split("T")[0];
+      const dateKey = toISODate(departureDay);
 
-        normVehicles.forEach((v) => {
-          const name =
-            v.name || [v.manufacturer, v.model].filter(Boolean).join(" ") || "Vehicle";
-          const reg = v.registration || v.reg || v.plate || v.license || "";
+      normVehicles.forEach((v) => {
+        const name = getVehicleDisplayName(v, vehiclesData);
+        const reg = getVehicleRegistration(v) || "";
 
-          const taxStatus = v.taxStatus || "";
-          const insuranceStatus = v.insuranceStatus || "";
+        const taxStatus = v.taxStatus || "";
+        const insuranceStatus = v.insuranceStatus || "";
 
-          const tax = String(taxStatus).toLowerCase();
-          const ins = String(insuranceStatus).toLowerCase();
+        const tax = String(taxStatus).toLowerCase();
+        const ins = String(insuranceStatus).toLowerCase();
 
-          const isSornOrUntaxed = ["sorn", "untaxed", "no tax"].includes(tax);
-          const isUninsured = ["not insured", "uninsured", "no insurance"].includes(ins);
+        const isSornOrUntaxed = ["sorn", "untaxed", "no tax"].includes(tax);
+        const isUninsured = ["not insured", "uninsured", "no insurance"].includes(ins);
 
-          items.push({
-            key: `${b.id}-${v.id || name}-${dateKey}`,
-            bookingId: b.id,
-            date: dateKey,
-            dateObj: day,
-            vehicleId: v.id || reg || name,
-            vehicleName: name,
-            registration: reg,
-            taxStatus,
-            insuranceStatus,
-            isSornOrUntaxed,
-            isUninsured,
-          });
+        items.push({
+          key: `${b.id}-${v.id || name}-${dateKey}`,
+          bookingId: b.id,
+          date: dateKey,
+          dateObj: departureDay,
+          vehicleId: v.id || reg || name,
+          vehicleName: name,
+          registration: reg,
+          taxStatus,
+          insuranceStatus,
+          isSornOrUntaxed,
+          isUninsured,
+          isLater: departureDay > soonWindowEnd,
         });
       });
     });
@@ -983,8 +955,17 @@ export default function JobDayScreen() {
 
     return Array.from(map.entries())
       .sort((a, b) => new Date(a[0]) - new Date(b[0]))
-      .map(([date, items]) => ({ date, items }));
+      .map(([date, items]) => ({ date, items, isLater: items[0]?.isLater === true }));
   }, [prepItems]);
+
+  const prepSoonByDate = useMemo(
+    () => prepByDate.filter((group) => !group.isLater),
+    [prepByDate]
+  );
+  const prepLaterByDate = useMemo(
+    () => prepByDate.filter((group) => group.isLater),
+    [prepByDate]
+  );
 
   const goPrevDay = () => {
     setSelectedDate((d) => {
@@ -1002,6 +983,8 @@ export default function JobDayScreen() {
     });
   };
 
+  const goToday = () => setSelectedDate(new Date());
+
   const onRefresh = useCallback(async () => {
     setBusy(true);
     try {
@@ -1010,7 +993,7 @@ export default function JobDayScreen() {
         holidaysResource.refresh(),
         vehiclesResource.refresh(),
         vehicleChecksResource.refresh(),
-        prepChecksResource.refresh(),
+        prepRecordsResource.refresh(),
       ]);
     } finally {
       setBusy(false);
@@ -1018,7 +1001,7 @@ export default function JobDayScreen() {
   }, [
     bookingsResource,
     holidaysResource,
-    prepChecksResource,
+    prepRecordsResource,
     vehicleChecksResource,
     vehiclesResource,
   ]);
@@ -1026,6 +1009,7 @@ export default function JobDayScreen() {
   if (loading || !isAuthed) return null;
 
   const weekend = isWeekend(selectedDate);
+  const isSelectedToday = dateISO === toISODate(new Date());
   const isUnpaidHoliday = holidayInfo.onHoliday && holidayInfo.payType === "unpaid";
 
   // ✅ include Bank Holiday in status logic (only when no jobs and not on holiday)
@@ -1044,47 +1028,26 @@ export default function JobDayScreen() {
 
   const statusColour =
     dayStatus === "On Set"
-      ? colors.accent
+      ? staticColors.hex_3568be_8u10kp
       : dayStatus === "Holiday" || dayStatus === "Unpaid Holiday"
       ? colors.success
       : dayStatus === "Bank Holiday"
-      ? "#a855f7" // purple
+      ? staticColors.hex_a855f7_u9x9hq // purple
       : colors.textMuted;
 
   return (
-    <SafeAreaView
-      edges={["top", "left", "right"]}
-      style={[styles.safeArea, { backgroundColor: colors.background }]}
-    >
-      <PageHeaderCard
-        eyebrow="Operations"
-        title="Job Day"
-        subtitle={selectedDate.toLocaleDateString("en-GB", DAY_FORMAT_LONG)}
-        style={styles.heroCard}
-        contentStyle={styles.heroContent}
-      >
-        <View style={styles.heroMetaRow}>
-            <View
-              style={[
-                styles.datePill,
-                { backgroundColor: colors.surfaceAlt, borderColor: colors.border },
-              ]}
-            >
-              <Icon name="calendar" size={12} color={colors.textMuted} />
-              <Text style={[styles.pillDateText, { color: colors.text }]}>
-                {selectedDate.toLocaleDateString("en-GB", {
-                  weekday: "short",
-                  day: "2-digit",
-                  month: "short",
-                })}
-              </Text>
-            </View>
-
+    <PageShell
+      contentSpacing="compact"
+      customHeader={
+        <PageHeaderCard
+          eyebrow="Operations"
+          title="Job Day"
+          action={
             <View
               style={[
                 styles.statusPill,
                 {
-                  borderColor: isUnpaidHoliday ? "#FFD60A" : statusColour,
+                  borderColor: isUnpaidHoliday ? staticColors.hex_ffd60a_5c6r45 : statusColour,
                   backgroundColor: withAlpha(colors.surfaceAlt, 0.82),
                 },
               ]}
@@ -1092,83 +1055,81 @@ export default function JobDayScreen() {
               <View
                 style={[
                   styles.statusDot,
-                  { backgroundColor: isUnpaidHoliday ? "#FFD60A" : statusColour },
+                  { backgroundColor: isUnpaidHoliday ? staticColors.hex_ffd60a_5c6r45 : statusColour },
                 ]}
               />
               <Text style={[styles.statusText, { color: colors.text }]}>{dayStatus}</Text>
             </View>
-
-            <View
-              style={[
-                styles.countPill,
-                {
-                  backgroundColor: withAlpha(colors.surfaceAlt, 0.82),
-                  borderColor: withAlpha(colors.border, 0.82),
-                },
-              ]}
-            >
-              <Icon name="briefcase" size={12} color={colors.textMuted} />
-              <Text style={[styles.countPillText, { color: colors.text }]}>
-                Jobs: {jobs.length}
-              </Text>
-            </View>
-
-            {bankHolidayTitle && jobs.length === 0 && !holidayInfo.onHoliday && (
-              <View style={[styles.bankHolidayPill, { borderColor: "#a855f7" }]}>
-                <Icon name="flag" size={12} color="#a855f7" />
-                <Text style={styles.bankHolidayPillText} numberOfLines={1}>
-                  {bankHolidayTitle}
-                </Text>
-              </View>
-            )}
-        </View>
-
-        <View style={styles.dayNavRow}>
-            <IconButton
-              icon="chevron-left"
-              label="Previous day"
-              onPress={goPrevDay}
-              disabled={busy}
-              style={styles.dayNavButton}
-            />
-            <Text style={[styles.dayTitle, { color: colors.text }]}>
-              {selectedDate.toLocaleDateString("en-GB", DAY_FORMAT_SHORT)}
-            </Text>
-            <IconButton
-              icon="chevron-right"
-              label="Next day"
-              onPress={goNextDay}
-              disabled={busy}
-              style={styles.dayNavButton}
-            />
-        </View>
-      </PageHeaderCard>
-
-      {/* Body */}
-      <ScrollView
-        contentContainerStyle={[
-          styles.scrollViewContent,
-          { width: "100%", maxWidth: responsive.maxContentWidth, alignSelf: "center" },
-        ]}
-        refreshControl={
-          <RefreshControl refreshing={busy} onRefresh={onRefresh} tintColor={colors.text} />
-        }
-      >
-        <AsyncContentState
-          resources={[
-            bookingsResource,
-            holidaysResource,
-            vehiclesResource,
-            vehicleChecksResource,
-            prepChecksResource,
-          ]}
-          hasContent={
-            bookingsResource.data.length > 0 ||
-            holidaysResource.data.length > 0
           }
-          onRetry={onRefresh}
-          loadingLabel="Loading your jobs…"
+          style={styles.heroCard}
+          contentStyle={styles.heroContent}
         >
+          {bankHolidayTitle && jobs.length === 0 && !holidayInfo.onHoliday ? (
+            <View style={styles.heroMetaRow}>
+                <View style={[styles.bankHolidayPill, { borderColor: staticColors.hex_a855f7_u9x9hq }]}>
+                  <Icon name="flag" size={12} color={staticColors.hex_a855f7_u9x9hq} />
+                  <Text style={styles.bankHolidayPillText} numberOfLines={1}>
+                    {bankHolidayTitle}
+                  </Text>
+                </View>
+            </View>
+          ) : null}
+
+          <View style={styles.dayNavRow}>
+              <IconButton
+                icon="chevron-left"
+                label="Previous day"
+                onPress={goPrevDay}
+                disabled={busy}
+                style={styles.dayNavButton}
+              />
+              <View style={styles.dayTitleBlock}>
+                <Text style={[styles.dayTitle, { color: colors.text }]}>
+                  {selectedDate.toLocaleDateString("en-GB", DAY_FORMAT_LONG)}
+                </Text>
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  accessibilityLabel={isSelectedToday ? "Today selected" : "Return to today"}
+                  disabled={isSelectedToday}
+                  onPress={goToday}
+                  style={styles.todayLink}
+                >
+                  <Icon
+                    name="crosshair"
+                    size={12}
+                    color={isSelectedToday ? colors.textMuted : colors.accent}
+                  />
+                  <Text
+                    style={[
+                      styles.todayLinkText,
+                      { color: isSelectedToday ? colors.textMuted : colors.accent },
+                    ]}
+                  >
+                    {isSelectedToday ? "Today" : "Back to today"}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+              <IconButton
+                icon="chevron-right"
+                label="Next day"
+                onPress={goNextDay}
+                disabled={busy}
+                style={styles.dayNavButton}
+              />
+          </View>
+        </PageHeaderCard>
+      }
+      customHeaderPlacement="scroll"
+      refresh={{ refreshing: busy, onRefresh }}
+      state={{
+        resources: [bookingsResource, holidaysResource, vehiclesResource],
+        hasContent:
+          bookingsResource.data.length > 0 || holidaysResource.data.length > 0,
+        onRetry: onRefresh,
+        loadingLabel: "Loading your jobs…",
+        refreshErrorMessage: "Couldn’t update schedule data · Showing saved data.",
+      }}
+    >
         {jobs.length > 0 ? (
           jobs.map((job) => (
             <JobCard
@@ -1207,21 +1168,32 @@ export default function JobDayScreen() {
           />
         ) : (
           <>
-            {/* Yard status card */}
-            <EmptyState
-              icon="home"
-              title="Yard Based"
-              message="You’re not scheduled on a job for this day."
-              style={{ backgroundColor: colors.surface }}
-            />
+            <View
+              style={[
+                styles.yardStatusRow,
+                { backgroundColor: colors.surface, borderColor: colors.border },
+              ]}
+            >
+              <View style={[styles.yardStatusIcon, { backgroundColor: colors.surfaceAlt }]}>
+                <Icon name="home" size={20} color={colors.textMuted} />
+              </View>
+              <View style={styles.yardStatusCopy}>
+                <Text style={[styles.yardStatusTitle, { color: colors.text }]}>Yard based</Text>
+                <Text style={[styles.yardStatusText, { color: colors.textMuted }]}>No job assigned for this day.</Text>
+              </View>
+            </View>
 
-            {/* 🚚 Vehicle prep – next 3 days (only when Yard) */}
             <View style={styles.prepSectionHeaderRow}>
-              <Text style={[styles.prepSectionTitle, { color: colors.text }]}>
-                Vehicle prep — next 3 days
-              </Text>
+              <View style={styles.prepSectionTitleRow}>
+                <Text style={[styles.prepSectionTitle, { color: colors.text }]}>Vehicle preparation</Text>
+                {!prepLoading ? (
+                  <View style={[styles.prepCount, { backgroundColor: colors.surfaceAlt }]}>
+                    <Text style={[styles.prepCountText, { color: colors.text }]}>{prepItems.length}</Text>
+                  </View>
+                ) : null}
+              </View>
               <Text style={[styles.prepSectionSubtitle, { color: colors.textMuted }]}>
-                Confirmed jobs only · starts from tomorrow.
+                Confirmed upcoming departures.
               </Text>
             </View>
 
@@ -1232,48 +1204,30 @@ export default function JobDayScreen() {
               ]}
             >
               {prepLoading ? (
-                <LoadingState label="Loading vehicles for the next 3 days…" compact />
-              ) : prepByDate.length === 0 ? (
-                <EmptyState
-                  icon="truck"
-                  title="No vehicle preparation required"
-                  message="No confirmed vehicles are going out in the next 3 days."
-                  compact
-                />
+                <LoadingState label="Loading upcoming vehicles…" compact />
               ) : (
-                prepByDate.map((group) => {
-                  const label = new Date(group.date).toLocaleDateString("en-GB", {
-                    weekday: "short",
-                    day: "2-digit",
-                    month: "short",
-                  });
-
-                  return (
-                    <View key={group.date} style={{ marginBottom: 10 }}>
-                      <Text style={[styles.prepDateLabel, { color: colors.textMuted }]}>{label}</Text>
-                      {group.items.map((item) => {
-                        const prepKey = `${item.date}__${item.vehicleId}`;
-                        return (
-                          <VehiclePrepRow
-                            key={item.key}
-                            item={item}
-                            colors={colors}
-                            prepDone={!!prepChecksMap[prepKey]}
-                          />
-                        );
-                      })}
-                    </View>
-                  );
-                })
+                <>
+                  <VehiclePrepGroups
+                    title="Next 3 days"
+                    groups={prepSoonByDate}
+                    records={prepRecordsResource.data}
+                    colors={colors}
+                    emptyMessage="No vehicles need preparing in the next 3 days."
+                  />
+                  <View style={[styles.prepRangeDivider, { backgroundColor: colors.border }]} />
+                  <VehiclePrepGroups
+                    title="Upcoming after 3 days"
+                    groups={prepLaterByDate}
+                    records={prepRecordsResource.data}
+                    colors={colors}
+                    emptyMessage="No later confirmed departures."
+                  />
+                </>
               )}
             </View>
           </>
         )}
-        </AsyncContentState>
-
-        <View style={{ height: 40 }} />
-      </ScrollView>
-    </SafeAreaView>
+    </PageShell>
   );
 }
 
@@ -1287,99 +1241,115 @@ const styles = StyleSheet.create({
   /* Hero */
   heroCard: {
     borderRadius: t.radius.xl,
-    marginHorizontal: 18,
-    marginTop: 10,
-    marginBottom: t.spacing.xs,
     overflow: "hidden",
   },
   heroContent: {
-    paddingHorizontal: 0,
+    paddingHorizontal: t.spacing.none,
     paddingVertical: t.spacing.sm,
   },
   heroEyebrow: {
     ...t.typography.label,
     letterSpacing: 0.6,
   },
-  heroTitle: { ...t.typography.pageTitle, letterSpacing: 0.2, marginTop: 2 },
-  heroDate: { fontSize: 13, marginTop: 3, fontWeight: "600" },
+  heroTitle: { ...t.typography.pageTitle, letterSpacing: 0.2, marginTop: t.spacing.none },
+  heroDate: { fontSize: t.typography.bodySmall.fontSize, marginTop: t.spacing.xxs, fontWeight: "600" },
   heroMetaRow: {
     flexDirection: "row",
     alignItems: "center",
-    marginTop: 10,
-    gap: 8,
+    marginTop: t.spacing.xs,
+    gap: t.spacing.xs,
     flexWrap: "wrap",
   },
   datePill: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
+    gap: t.spacing.xxs,
     minHeight: t.controls.chipMinHeight,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 999,
+    paddingHorizontal: t.spacing.sm,
+    paddingVertical: t.spacing.xxs,
+    borderRadius: t.radius.pill,
   },
-  pillDateText: { fontSize: 12, fontWeight: "800" },
+  pillDateText: { fontSize: t.typography.metadata.fontSize, fontWeight: "800" },
   statusPill: {
     flexDirection: "row",
     alignItems: "center",
     minHeight: t.controls.chipMinHeight,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 999,
-    gap: 6,
+    paddingHorizontal: t.spacing.sm,
+    paddingVertical: t.spacing.xxs,
+    borderRadius: t.radius.pill,
+    borderWidth: StyleSheet.hairlineWidth,
+    gap: t.spacing.xxs,
   },
-  statusDot: { width: 8, height: 8, borderRadius: 999 },
-  statusText: { fontSize: 12, fontWeight: "800" },
+  statusDot: { width: 8, height: 8, borderRadius: t.radius.pill },
+  statusText: { fontSize: t.typography.metadata.fontSize, fontWeight: "800" },
   countPill: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
+    gap: t.spacing.xxs,
     minHeight: t.controls.chipMinHeight,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
+    borderRadius: t.radius.pill,
   },
-  countPillText: { fontSize: 12, fontWeight: "800" },
+  countPillText: { fontSize: t.typography.metadata.fontSize, fontWeight: "800" },
 
   bankHolidayPill: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
+    gap: t.spacing.xxs,
     minHeight: t.controls.chipMinHeight,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
-    backgroundColor: "#16091f",
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
+    borderRadius: t.radius.pill,
+    backgroundColor: staticColors.hex_16091f_a55t3z,
     maxWidth: "55%",
   },
-  bankHolidayPillText: { color: "#e9d5ff", fontSize: 12, fontWeight: "800" },
+  bankHolidayPillText: { color: staticColors.hex_e9d5ff_rltstn, fontSize: t.typography.metadata.fontSize, fontWeight: "800" },
 
   /* Day navigation */
   dayNavRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    marginTop: 10,
-    gap: 10,
+    marginTop: t.spacing.xs,
+    gap: t.spacing.xs,
   },
   dayNavButton: {
     width: t.controls.iconButtonSm,
     height: t.controls.iconButtonSm,
-    borderRadius: 10,
+    borderRadius: t.radius.md,
     alignItems: "center",
     justifyContent: "center",
   },
-  dayTitle: { fontSize: 15, fontWeight: "800", flex: 1, textAlign: "center" },
+  dayTitle: { fontSize: t.typography.bodyLarge.fontSize, fontWeight: "800", textAlign: "center" },
+  dayTitleBlock: {
+    flex: 1,
+    minWidth: 0,
+    alignItems: "center",
+  },
+  todayLink: {
+    minHeight: t.controls.chipMinHeight,
+    paddingHorizontal: t.spacing.xs,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: t.spacing.xxs,
+  },
+  todayLinkText: {
+    fontSize: t.typography.caption.fontSize,
+    lineHeight: t.typography.caption.lineHeight,
+    fontWeight: "800",
+  },
 
   /* Scroll content */
-  scrollViewContent: { paddingHorizontal: 18, paddingTop: 12, paddingBottom: 30 },
+  scrollViewContent: { paddingHorizontal: t.spacing.md, paddingTop: t.spacing.sm, paddingBottom: 200 },
 
   /* Job Card */
   jobCard: {
-    borderRadius: 18,
+    borderRadius: t.radius.xl,
     padding: t.controls.cardPaddingLg,
-    marginBottom: 14,
-    shadowColor: "#000",
+    marginBottom: t.spacing.sm,
+    shadowColor: staticColors.hex_000_yhlkvq,
     shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.35,
     shadowRadius: 18,
@@ -1389,168 +1359,230 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    paddingBottom: 10,
+    paddingBottom: t.spacing.xs,
     borderBottomWidth: StyleSheet.hairlineWidth,
+    gap: t.spacing.sm,
   },
-  jobDot: { width: 8, height: 8, borderRadius: 4, marginRight: 8 },
-  jobTitle: { fontSize: 17, fontWeight: "800", letterSpacing: 0.4 },
+  jobHeading: { flex: 1, minWidth: 0 },
+  jobTitleLine: { flexDirection: "row", alignItems: "center" },
+  jobDot: { width: 8, height: 8, borderRadius: t.radius.pill, marginRight: t.spacing.xs },
+  jobTitle: { flex: 1, fontSize: t.typography.sectionTitle.fontSize, lineHeight: t.typography.sectionTitle.lineHeight, fontWeight: "900", letterSpacing: 0.2 },
+  jobNumber: { marginTop: t.spacing.xxs, marginLeft: t.spacing.md, fontSize: t.typography.caption.fontSize, fontWeight: "700" },
   callBadge: {
     flexDirection: "row",
     alignItems: "center",
-    borderRadius: 999,
-    paddingVertical: 4,
-    paddingHorizontal: 10,
+    borderRadius: t.radius.pill,
+    paddingVertical: t.spacing.xxs,
+    paddingHorizontal: t.spacing.xs,
   },
-  callBadgeText: { color: "#111111", fontWeight: "800", fontSize: 13 },
+  callBadgeText: { color: staticColors.hex_111111_a7aqp2, fontWeight: "800", fontSize: t.typography.bodySmall.fontSize },
 
-  detailsContainer: { paddingTop: 10, marginBottom: 8 },
-  jobLine: { fontSize: 14, marginBottom: 4 },
-  jobLabel: { fontWeight: "600" },
-  jobValue: { fontWeight: "600" },
+  detailsContainer: { paddingTop: t.spacing.sm, marginBottom: t.spacing.xs, gap: t.spacing.xs },
+  jobDetailRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: t.spacing.xs,
+  },
+  jobDetailText: { flex: 1, fontSize: t.typography.body.fontSize, lineHeight: t.typography.body.lineHeight, fontWeight: "600" },
 
   noteBox: {
     flexDirection: "row",
     alignItems: "flex-start",
-    padding: 10,
-    borderRadius: 12,
-    marginTop: 6,
-    marginBottom: 12,
+    padding: t.spacing.xs,
+    borderRadius: t.radius.md,
+    marginTop: t.spacing.xxs,
+    marginBottom: t.spacing.sm,
     borderWidth: 1,
   },
-  noteText: { fontSize: 14, flexShrink: 1 },
+  noteText: { fontSize: t.typography.body.fontSize, flexShrink: 1 },
   noteLabel: { fontWeight: "700" },
   noteBody: {},
 
   actionsRow: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 10,
-    marginTop: 2,
+    gap: t.spacing.xs,
+    marginTop: t.spacing.none,
     alignItems: "center",
   },
   actionBtn: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 8,
+    gap: t.spacing.xs,
     minHeight: t.controls.buttonHeight,
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    borderRadius: 999,
+    paddingVertical: t.spacing.xs,
+    paddingHorizontal: t.spacing.md,
+    borderRadius: t.radius.pill,
     flex: 1,
     minWidth: 150,
   },
-  actionText: { fontWeight: "700", fontSize: 14 },
+  actionText: { fontWeight: "700", fontSize: t.typography.body.fontSize },
 
   /* Empty / Holiday / Weekend cards */
   emptyCard: {
-    marginTop: 18,
-    borderRadius: 20,
-    paddingVertical: 24,
-    paddingHorizontal: 20,
+    marginTop: t.spacing.md,
+    borderRadius: t.radius.xl,
+    paddingVertical: t.spacing.xl,
+    paddingHorizontal: t.spacing.lg,
     alignItems: "center",
     borderWidth: 1,
   },
   bigIconWrap: {
     width: 54,
     height: 54,
-    borderRadius: 27,
+    borderRadius: t.radius.pill,
     justifyContent: "center",
     alignItems: "center",
-    marginBottom: 12,
+    marginBottom: t.spacing.sm,
   },
-  emptyTitle: { fontSize: 18, fontWeight: "800", marginBottom: 4 },
-  emptySubtitle: { fontSize: 14, textAlign: "center" },
+  emptyTitle: { fontSize: t.typography.sectionTitle.fontSize, fontWeight: "800", marginBottom: t.spacing.xxs },
+  emptySubtitle: { fontSize: t.typography.body.fontSize, textAlign: "center" },
 
   /* Loading */
-  loadingWrap: { paddingTop: 40, alignItems: "center" },
-  loadingText: { fontSize: 13, marginTop: 10 },
+  loadingWrap: { paddingTop: t.spacing["3xl"], alignItems: "center" },
+  loadingText: { fontSize: t.typography.bodySmall.fontSize, marginTop: t.spacing.xs },
 
   /* VEHICLE PREP section on Yard days */
+  yardStatusRow: {
+    minHeight: 72,
+    padding: t.spacing.sm,
+    borderRadius: t.radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: t.spacing.sm,
+  },
+  yardStatusIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: t.radius.md,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  yardStatusCopy: { flex: 1, minWidth: 0 },
+  yardStatusTitle: {
+    fontSize: t.typography.bodyLarge.fontSize,
+    lineHeight: t.typography.bodyLarge.lineHeight,
+    fontWeight: "800",
+  },
+  yardStatusText: {
+    marginTop: t.spacing.none,
+    fontSize: t.typography.metadata.fontSize,
+    lineHeight: t.typography.metadata.lineHeight,
+    fontWeight: "600",
+  },
   prepSectionHeaderRow: {
-    marginTop: 22,
-    marginBottom: 8,
+    marginTop: t.spacing.sm,
+    marginBottom: t.spacing.xs,
     flexDirection: "column",
     alignItems: "flex-start",
   },
-  prepSectionTitle: { fontSize: 16, fontWeight: "800" },
-  prepSectionSubtitle: { fontSize: 12, marginTop: 2 },
-  prepCard: { borderRadius: 14, padding: t.controls.cardPadding, marginBottom: 16, borderWidth: 1 },
+  prepSectionTitleRow: {
+    width: "100%",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: t.spacing.xs,
+  },
+  prepSectionTitle: { fontSize: t.typography.bodyLarge.fontSize, fontWeight: "800" },
+  prepSectionSubtitle: { fontSize: t.typography.metadata.fontSize, marginTop: t.spacing.none },
+  prepCount: {
+    minWidth: t.controls.chipMinHeight,
+    height: t.controls.chipMinHeight,
+    paddingHorizontal: t.spacing.xs,
+    borderRadius: t.radius.pill,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  prepCountText: { fontSize: t.typography.metadata.fontSize, fontWeight: "900" },
+  prepCard: { borderRadius: t.radius.lg, padding: t.controls.cardPadding, marginBottom: t.spacing.md, borderWidth: 1 },
+  prepGroup: { marginBottom: t.spacing.xs },
+  prepRangeSection: { width: "100%" },
+  prepRangeLabel: {
+    marginTop: t.spacing.xxs,
+    marginBottom: t.spacing.xs,
+    fontSize: t.typography.caption.fontSize,
+    lineHeight: t.typography.caption.lineHeight,
+    fontWeight: "900",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+  prepRangeEmpty: {
+    paddingVertical: t.spacing.xs,
+    fontSize: t.typography.metadata.fontSize,
+    lineHeight: t.typography.metadata.lineHeight,
+    fontWeight: "600",
+  },
+  prepRangeDivider: {
+    width: "100%",
+    height: StyleSheet.hairlineWidth,
+    marginVertical: t.spacing.sm,
+  },
   prepDateLabel: {
-    fontSize: 12,
+    fontSize: t.typography.metadata.fontSize,
     fontWeight: "800",
-    marginBottom: 4,
+    marginBottom: t.spacing.xxs,
   },
   prepRow: {
     flexDirection: "row",
     alignItems: "center",
-    paddingVertical: 10,
+    paddingVertical: t.spacing.xs,
     borderTopWidth: 1,
-    borderTopColor: "#333333",
+    borderTopColor: staticColors.hex_333333_8y2gva,
   },
-  prepVehicleMain: { fontSize: 14, fontWeight: "700" },
-  prepGoingOutText: { fontSize: 12, marginTop: 2 },
+  prepVehicleMain: { fontSize: t.typography.body.fontSize, fontWeight: "700" },
+  prepGoingOutText: { fontSize: t.typography.metadata.fontSize, marginTop: t.spacing.none },
   prepBadgeRow: {
     flexDirection: "row",
     alignItems: "center",
     flexWrap: "wrap",
-    gap: 6,
-    marginTop: 6,
+    gap: t.spacing.xxs,
+    marginTop: t.spacing.xxs,
   },
+  prepAction: {
+    alignSelf: "flex-start",
+    marginTop: t.spacing.xs,
+    marginLeft: t.spacing.xs,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: t.spacing.xxs,
+  },
+  prepActionText: { fontSize: t.typography.metadata.fontSize, fontWeight: "800" },
 
   prepComplianceBad: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 999,
-    backgroundColor: "#e53935",
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
+    borderRadius: t.radius.pill,
+    backgroundColor: staticColors.hex_e53935_rjwrqy,
     borderWidth: 1,
-    borderColor: "#0b0b0b",
-    gap: 4,
+    borderColor: staticColors.hex_0b0b0b_9v81ck,
+    gap: t.spacing.xxs,
   },
-  prepComplianceText: { fontSize: 10, fontWeight: "800", color: "#fff" },
+  prepComplianceText: { fontSize: t.typography.micro.fontSize, fontWeight: "800", color: staticColors.hex_fff_yhjmu8 },
 
-  prepComplianceOk: {
+  prepReadyState: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 999,
-    backgroundColor: "#7AFE6E",
-    borderWidth: 1,
-    borderColor: "#0b0b0b",
-    gap: 4,
+    paddingHorizontal: t.spacing.xs,
+    paddingVertical: t.spacing.xxs,
+    borderRadius: t.radius.pill,
+    borderWidth: StyleSheet.hairlineWidth,
+    gap: t.spacing.xxs,
   },
-  prepComplianceOkText: { fontSize: 10, fontWeight: "800", color: "#0b0b0b" },
+  prepReadyText: { fontSize: t.typography.micro.fontSize, fontWeight: "800" },
 
   serviceLoadingRow: { flexDirection: "row", alignItems: "center" },
-  serviceLoadingText: { marginLeft: 8, fontSize: 13 },
+  serviceLoadingText: { marginLeft: t.spacing.xs, fontSize: t.typography.bodySmall.fontSize },
   emptyServiceState: { flexDirection: "row", alignItems: "center" },
-  emptyServiceText: { marginLeft: 6, fontSize: 13 },
+  emptyServiceText: { marginLeft: t.spacing.xxs, fontSize: t.typography.bodySmall.fontSize },
 
-  prepDoneBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 999,
-    backgroundColor: "#7AFE6E",
-    borderWidth: 1,
-    borderColor: "#0b0b0b",
-    gap: 4,
-  },
-  prepDoneText: { fontSize: 10, fontWeight: "800", color: "#0b0b0b" },
 });
 const DAY_FORMAT_LONG = {
   weekday: "long",
   day: "2-digit",
   month: "short",
   year: "numeric",
-};
-
-const DAY_FORMAT_SHORT = {
-  weekday: "long",
-  day: "2-digit",
-  month: "short",
 };
