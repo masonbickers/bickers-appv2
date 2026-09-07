@@ -4,6 +4,8 @@ import cors from "cors";
 import crypto from "node:crypto";
 import dotenv from "dotenv";
 import express from "express";
+import { createWorkingTermsResolver } from "./workingTermsIdentity.js";
+import { createStagedPasswordTransition } from "./stagedPasswordTransition.js";
 import admin from "firebase-admin";
 import {
   anonymousDeviceIdentityMatches,
@@ -745,6 +747,10 @@ app.post("/auth/employee-setup-lookup", async (req, res) => {
     if (!employee) {
       return res.status(404).json({ error: "No employee found with that code." });
     }
+    const enrolled = await db.collection("mobilePasswordTransitions").where("employeeId", "==", employee.id).limit(1).get();
+    if (!enrolled.empty) {
+      return res.status(410).json({ error: "Sign in with your work email and password or finish securing your existing app session." });
+    }
 
     if (employeeIsBlocked(employee)) {
       return res.status(403).json({ error: "Your account is disabled. Contact admin." });
@@ -843,13 +849,218 @@ app.post("/auth/employee-setup-lookup", async (req, res) => {
   }
 });
 
+async function findEmployeeForApprovedUid(uid) {
+  const cleanUid = String(uid || "").trim();
+  if (!cleanUid) return null;
+
+  const matches = new Map();
+  for (const field of ["authUid", "uid", "auth.uid"]) {
+    const snap = await db
+      .collection("employees")
+      .where("companyId", "==", DEFAULT_COMPANY_ID)
+      .where(field, "==", cleanUid)
+      .limit(2)
+      .get();
+    for (const employeeDoc of snap.docs) {
+      matches.set(employeeDoc.id, { id: employeeDoc.id, ...employeeDoc.data() });
+    }
+  }
+
+  return matches.size === 1 ? [...matches.values()][0] : null;
+}
+
+
+const resolveWorkingTerms = createWorkingTermsResolver({
+  db, auth: admin.auth(), findEmployeeForApprovedUid, employeeIsBlocked, employeeEmailMatches,
+});
+
+app.get("/auth/working-terms-acceptance", async (req, res) => {
+  res.set("Cache-Control", "no-store");
+  try {
+    const acceptance = await resolveWorkingTerms(bearerToken(req));
+    return res.json({ acceptance });
+  } catch (error) {
+    const authFailure = String(error?.code || "").startsWith("auth/");
+    return res.status(error?.status || (authFailure ? 401 : 503)).json({
+      error: error?.status ? error.message : "We could not check your existing Working Terms. Please try again.",
+    });
+  }
+});
+
+
+function mobileAccessIsApproved(status) {
+  return ["invited", "active"].includes(String(status || "").trim());
+}
+
+function employeeAuthError(status, message) {
+  const error = new Error(message);
+  error.status = status;
+  return error;
+}
+
+async function syncApprovedEmployeeAuth(idToken) {
+  const decoded = await admin.auth().verifyIdToken(idToken, true);
+  if (
+    decodedTokenIsAnonymous(decoded) ||
+    decoded?.firebase?.sign_in_provider !== "password"
+  ) {
+    throw employeeAuthError(403, "A Firebase password account is required.");
+  }
+
+  const emailStr = normaliseEmail(decoded.email);
+  const userSnap = await db.collection("users").doc(decoded.uid).get();
+  const userData = userSnap.exists ? userSnap.data() || {} : null;
+  const employee = await findEmployeeForApprovedUid(decoded.uid);
+
+  if (
+    !userData ||
+    employeeIsBlocked(userData) || userData.isArchived === true || userData.appDisabled === true ||
+    !mobileAccessIsApproved(userData.mobileAccessStatus)
+  ) {
+    throw employeeAuthError(403, "Mobile app access has not been approved.");
+  }
+
+  if (
+    !employee ||
+    employeeIsBlocked(employee) || employee.isArchived === true || employee.appDisabled === true ||
+    !mobileAccessIsApproved(employee?.mobileAccess?.status)
+  ) {
+    throw employeeAuthError(403, "Mobile app access has not been approved.");
+  }
+
+  const approvedEmail = normaliseEmail(employee?.mobileAccess?.approvedEmail);
+  const linkedEmployeeId = String(userData.employeeId || "").trim();
+  const userCompanyId = String(userData.companyId || "").trim();
+  const employeeCompanyId = String(employee.companyId || "").trim();
+  if (
+    linkedEmployeeId !== employee.id ||
+    userCompanyId !== employeeCompanyId ||
+    !approvedEmail ||
+    approvedEmail !== emailStr ||
+    !employeeEmailMatches(employee, emailStr)
+  ) {
+    throw employeeAuthError(
+      403,
+      "The approved employee identity could not be verified."
+    );
+  }
+
+  const sessionData = buildSessionData(
+    employee,
+    normaliseCode(employee.userCode || ""),
+    emailStr
+  );
+  const now = admin.firestore.FieldValue.serverTimestamp();
+  const batch = db.batch();
+  batch.set(
+    db.collection("employees").doc(employee.id),
+    {
+      uid: decoded.uid,
+      authUid: decoded.uid,
+      auth: {
+        ...(employee.auth || {}),
+        uid: decoded.uid,
+        email: decoded.email || employee.email || "",
+        passwordEnabled: true,
+        lastLoginAt: now,
+      },
+      mobileAccess: {
+        ...(employee.mobileAccess || {}),
+        status: "active",
+        activatedAt: employee?.mobileAccess?.activatedAt || now,
+        lastLoginAt: now,
+      },
+    },
+    { merge: true }
+  );
+  batch.set(
+    db.collection("users").doc(decoded.uid),
+    {
+      email: decoded.email || employee.email || "",
+      employeeId: employee.id,
+      authUid: decoded.uid,
+      uid: decoded.uid,
+      companyId: sessionData.companyId,
+      isEnabled: userData.isEnabled !== false,
+      mobileAccessStatus: "active",
+      displayName: employee.name || decoded.name || "",
+      appAccess: sessionData.appAccess,
+      defaultWorkspace: employee.defaultWorkspace || null,
+      updatedAt: now,
+    },
+    { merge: true }
+  );
+  await batch.commit();
+
+  return {
+    employee: {
+      ...employee,
+      uid: decoded.uid,
+      authUid: decoded.uid,
+      mobileAccess: { ...(employee.mobileAccess || {}), status: "active" },
+      auth: {
+        ...(employee.auth || {}),
+        uid: decoded.uid,
+        email: decoded.email || sessionData.email,
+        passwordEnabled: true,
+      },
+    },
+    sessionData,
+  };
+}
+
+
+const passwordTransition = createStagedPasswordTransition({
+  db, auth: admin.auth(), syncApprovedEmployeeAuth,
+  async sendSetupEmail(email) {
+    const apiKey = process.env.FIREBASE_API_KEY || process.env.EXPO_PUBLIC_FIREBASE_API_KEY
+      || "AIzaSyBiKz88kMEAB5C-oRn3qN6E7KooDcmYTWE"; // Public Firebase project key already used by this app.
+    if (!apiKey) throw employeeAuthError(503, "Password setup email is not configured. Contact an administrator.");
+    const response = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key=${encodeURIComponent(apiKey)}`, {
+      method: "POST", headers: { "Content-Type": "application/json", "X-Firebase-Locale": "en-GB" },
+      body: JSON.stringify({ requestType: "PASSWORD_RESET", email }),
+    });
+    if (!response.ok) throw employeeAuthError(503, "Firebase could not send the setup email. Please try again later.");
+  },
+});
+for (const [method, path, action] of [
+  ["get", "/auth/password-transition", "status"],
+  ["post", "/auth/password-transition/email", "sendEmail"],
+  ["post", "/auth/password-transition/complete", "complete"],
+]) {
+  app[method](path, async (req, res) => {
+    res.set("Cache-Control", "no-store");
+    try { res.json(await passwordTransition[action](bearerToken(req))); }
+    catch (error) {
+      // Do not log bearer tokens, email action codes or password material.
+      res.status(error.status || 503).json({ error: error.status ? error.message : "Account setup is temporarily unavailable. Please retry." });
+    }
+  });
+}
+
+
 app.post("/auth/sync-employee-auth", async (req, res) => {
+  const headerToken = bearerToken(req);
+  if (headerToken) {
+    try {
+      return res.json(await syncApprovedEmployeeAuth(headerToken));
+    } catch (error) {
+      const authFailure = String(error?.code || "").startsWith("auth/");
+      return res.status(error?.status || (authFailure ? 401 : 503)).json({
+        error: error?.status ? error.message : "Unable to verify account access. Please try again.",
+      });
+    }
+  }
   try {
     const idToken = String(req.body?.idToken || "").trim();
     const employeeId = String(req.body?.employeeId || "").trim();
     if (!idToken) return res.status(401).json({ error: "Missing auth token." });
 
-    const decoded = await admin.auth().verifyIdToken(idToken);
+    const decoded = await admin.auth().verifyIdToken(idToken, true);
+    const enrolled = await db.collection("mobilePasswordTransitions").doc(decoded.uid).get();
+    if (enrolled.exists) {
+      return res.status(403).json({ error: "Sign in with your work email and password or finish securing your existing app session." });
+    }
     const emailStr = normaliseEmail(decoded.email);
     const employee = await findEmployeeForUser(decoded.uid, emailStr, employeeId);
 
