@@ -7,6 +7,7 @@ import express from "express";
 import { createWorkingTermsResolver } from "./workingTermsIdentity.js";
 import { createStagedPasswordTransition } from "./stagedPasswordTransition.js";
 import admin from "firebase-admin";
+import { createReceiptProxy, receiptUpdateRequired } from "./receiptProxy.js";
 import {
   anonymousDeviceIdentityMatches,
   canonicalNotificationUid,
@@ -81,6 +82,10 @@ const db = admin.firestore(adminApp);
 app.get("/health", (_req, res) => {
   res.json({ ok: true, service: "bickers-api" });
 });
+
+app.use("/receipts/v2", createReceiptProxy());
+app.post("/receipt-groups/:groupId/transition", receiptUpdateRequired);
+app.post("/receipts/:receiptId/resubmit", receiptUpdateRequired);
 
 async function authenticatedReceiptUser(req) {
   const idToken = bearerToken(req);
