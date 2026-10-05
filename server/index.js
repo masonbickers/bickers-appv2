@@ -1,3 +1,4 @@
+import { createWorkshopSubmissionHandler } from "./workshopSubmission.js";
 import axios from "axios";
 import { Buffer } from "node:buffer";
 import cors from "cors";
@@ -82,6 +83,8 @@ const db = admin.firestore(adminApp);
 app.get("/health", (_req, res) => {
   res.json({ ok: true, service: "bickers-api" });
 });
+
+app.post("/workshop/submissions", createWorkshopSubmissionHandler({ db, verifyIdToken: (token, revoked) => admin.auth().verifyIdToken(token, revoked) }));
 
 app.use("/receipts/v2", createReceiptProxy());
 app.post("/receipt-groups/:groupId/transition", receiptUpdateRequired);
