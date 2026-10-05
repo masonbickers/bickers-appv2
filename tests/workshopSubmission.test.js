@@ -102,3 +102,63 @@ test('revoked sessions, pending recovery and non-password identities cannot subm
   }
   await assert.rejects(submitWorkshopRecord({ db: setup(), uid: 'tech', token: { ...token, firebase: { sign_in_provider: 'anonymous' } }, body }));
 });
+
+test('minor service saves the displayed default type and completes its matching request atomically', async () => {
+  const db = setup({'workshopRequests/minor': {companyId:'a', status:'open', workType:'minor_service', assetId:'van'}});
+  await submit(db, {kind:'minor', recordId:'minor', record:{...record, serviceType:'Interim / minor service', workshopRequestId:'minor', workshopWorkType:'minor_service'}});
+  assert.equal(db.rows.get('serviceRecords/minor').serviceType, 'Interim / minor service');
+  assert.equal(db.rows.get('workshopRequests/minor').formCollection, 'serviceRecords');
+  assert.equal(db.rows.get('vehicles/van').serviceHistory.length, 1);
+});
+const motRecord = {companyId:'a', vehicleId:'van', precheckDateTime:'2026-10-05 10:00', precheckDateOnly:'2026-10-05', precheckTime:'10:00', odometer:250, status:'Requires work before MOT', summary:'Brake pads', faultsFound:'Worn pads', workRecommended:'Replace', signedBy:'Technician', checks:{lights:true}, checkRatings:{brakes:2}, checkNA:{}};
+test('MOT precheck saves checks without overwriting actual MOT or service history and replays safely', async () => {
+  const db = setup(); const payload = {kind:'mot', recordId:'mot', record:motRecord};
+  const result = await submit(db, payload); await submit(db, payload);
+  assert.equal(db.rows.get('motPreChecks/mot').companyId,'a');
+  assert.equal(db.rows.get('vehicles/van').motPrecheckStatus,'Requires work before MOT');
+  assert.deepEqual(db.rows.get('vehicles/van').motHistory,['keep']);
+  assert.equal(db.rows.get('vehicles/van').lastService,'2026-01-01');
+  assert.equal(result.replayed,false);
+  assert.equal((await submit(db,payload)).replayed,true);
+});
+test('MOT request is completed with the precheck and wrong work type has no writes', async () => {
+  for (const workType of ['mot_precheck','full_service']) {
+    const db=setup({'workshopRequests/mot':{companyId:'a', status:'open', workType, assetId:'van'}});
+    const payload={kind:'mot',recordId:'mot',record:{...motRecord,workshopRequestId:'mot',workshopWorkType:'mot_precheck'}};
+    if(workType==='mot_precheck'){await submit(db,payload);assert.equal(db.rows.get('workshopRequests/mot').formCollection,'motPreChecks');}
+    else {await assert.rejects(submit(db,payload));assert.equal(db.rows.has('motPreChecks/mot'),false);}
+  }
+});
+const defectRecord={companyId:'a',vehicleId:'van',vehicleName:'Van',registration:'AB12',location:'Workshop',description:'Broken lamp',severity:'Immediate',priority:'high',offRoad:true,reportedBy:'Technician',notes:'Replace',photoURLs:[],photoURIs:[],status:'open'};
+test('standalone defect is company scoped, linked once and retry does not duplicate embedded defects',async()=>{
+  const db=setup(); const payload={kind:'defect',recordId:'defect',record:defectRecord};
+  await submit(db,payload); const result=await submit(db,payload);
+  assert.equal(result.replayed,true);assert.equal(db.rows.get('defectReports/defect').reporterUid,'tech');
+  assert.equal(db.rows.get('vehicles/van').defects.length,1);assert.equal(db.rows.get('vehicles/van').defects[0].defectReportId,'defect');
+  assert.equal(db.rows.get('vehicles/van').operationalStatus,'VOR');
+});
+test('standalone defect allows manually identified assets, rejects foreign assets and cannot set resolved status',async()=>{
+  const db=setup();await submit(db,{kind:'defect',recordId:'manual',record:{...defectRecord,vehicleId:null,status:'resolved'}});
+  assert.equal(db.rows.get('defectReports/manual').status,'open');
+  const foreign=setup({'vehicles/van':{companyId:'b'}});
+  await assert.rejects(submit(foreign,{kind:'defect',recordId:'foreign',record:defectRecord}));
+  assert.equal(foreign.rows.has('defectReports/foreign'),false);
+});
+test('auxiliary submission kinds enforce access, validation and immutable records',async()=>{
+  for(const [kind,value] of [['mot',motRecord],['defect',defectRecord],['minor',{...record,serviceType:'Interim / minor service'}]]){
+    await assert.rejects(submit(setup({'users/tech':{...user,isEnabled:false}}),{kind,recordId:kind,record:value}));
+    const db=setup(); await submit(db,{kind,recordId:kind,record:value});
+    await assert.rejects(submit(db,{kind,recordId:kind,record:{...value,odometer:-1}}));
+    await assert.rejects(submit(db,{kind,recordId:kind,record:{...value,notes:'Changed'}}));
+  }
+  await assert.rejects(submit(setup(),{kind:'unknown',...body}));
+  await assert.rejects(submit(setup(),{kind:'mot',recordId:'bad',record:{...motRecord,precheckDateOnly:'2026-02-30'}}));
+  await assert.rejects(submit(setup(),{kind:'defect',recordId:'bad',record:{...defectRecord,description:''}}));
+});
+test('General severity defects are accepted and stale MOT prechecks cannot regress current markers',async()=>{
+  const db=setup({'vehicles/van':{companyId:'a',motPrecheckDate:'2026-10-06 10:00',motPrecheckStatus:'Ready for MOT',mileage:500}});
+  await submit(db,{kind:'defect',recordId:'general',record:{...defectRecord,severity:'General'}});
+  assert.equal(db.rows.get('defectReports/general').priority,'medium');
+  await submit(db,{kind:'mot',recordId:'old',record:motRecord});
+  assert.equal(db.rows.get('vehicles/van').motPrecheckStatus,'Ready for MOT');assert.equal(db.rows.get('vehicles/van').mileage,500);
+});
